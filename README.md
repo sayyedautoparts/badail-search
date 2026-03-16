@@ -68,3 +68,33 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 - طالما الخدمة شغالة على Render، التطبيق يبقى 24/7 حتى لو كمبيوترك مطفي.
 - أي رفع ملفات من واجهة الموقع ينحفظ على القرص الدائم في Render.
 - إذا غيّرت الكود لاحقاً، فقط اعمل Push وسيتم إعادة النشر تلقائياً.
+
+## تشغيل 24/7 على Railway
+
+تم تجهيز ملفات Railway:
+- `Procfile`
+- `railway.toml`
+
+### الخطوات:
+
+1. ادخل إلى [Railway](https://railway.app) وسجل دخول بحساب GitHub.
+2. اضغط **New Project** ثم **Deploy from GitHub repo**.
+3. اختر الريبو: `sayyedautoparts/badail-search`.
+4. بعد إنشاء المشروع:
+   - افتح **Variables** وأضف:
+     - `APP_DB_PATH=/data/search_data.db`
+5. افتح **Settings** > **Volumes**:
+   - أنشئ Volume جديد
+   - Mount Path: `/data`
+6. اعمل **Redeploy** للخدمة.
+
+### النتيجة:
+
+- التطبيق يطلع على رابط عام من Railway.
+- يبقى شغال 24/7 (حسب الخطة).
+- البيانات تبقى محفوظة لأن قاعدة SQLite موجودة داخل Volume.
+
+### مهم:
+
+- إذا ما أضفت Volume، ممكن تضيع البيانات بعد إعادة النشر.
+- بعد أي تعديل جديد في الكود: اعمل Push على GitHub وRailway يعيد النشر تلقائياً.
