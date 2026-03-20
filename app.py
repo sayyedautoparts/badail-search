@@ -376,6 +376,106 @@ def normalize_text_compact(text: str) -> str:
     return re.sub(r"[\s\-_/]+", "", n)
 
 
+def _norm_segment_word_set(nseg: str) -> set[str]:
+    """كلمات نص مُطبَّع (لتفادي انطباق حرف d داخل كلمة cady)."""
+    out: set[str] = set()
+    for w in (nseg or "").split():
+        w = w.strip(".,|;:()[]")
+        if w:
+            out.add(w)
+    return out
+
+
+def _token_in_norm_segment(ntok: str, nseg: str) -> bool:
+    if not ntok:
+        return False
+    wset = _norm_segment_word_set(nseg)
+    if len(ntok) <= 2:
+        return ntok in wset
+    if ntok in wset:
+        return True
+    return ntok in nseg
+
+
+def _token_appears_in_alternatives_column(ntok: str, alternatives: str) -> bool:
+    """التوكن يظهر في عمود البدائل ككلمة مستقلة وليس حرفاً داخل كلمة أخرى."""
+    nalt = normalize_text(alternatives)
+    if not ntok:
+        return False
+    wset = _norm_segment_word_set(nalt)
+    if len(ntok) <= 2:
+        return ntok in wset
+    if ntok in wset:
+        return True
+    return ntok in nalt
+
+
+def _tokens_matching_alternatives_column(text_tokens: list[str], alternatives: str) -> list[str]:
+    """كلمات البحث التي تخص عمود البدائل فقط (تجاهل ما يطابق اسم الصنف أو الملف فقط)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in text_tokens:
+        nt = normalize_text(t)
+        if not nt or nt in seen:
+            continue
+        if not _token_appears_in_alternatives_column(nt, alternatives):
+            continue
+        seen.add(nt)
+        out.append(nt)
+    return out
+
+
+def _is_word_char_for_alt_match(ch: str) -> bool:
+    """حرف يُعتبر جزءاً من «كلمة» لحدود التطابق (طراز، سعة، إلخ)."""
+    return bool(ch) and (ch.isalnum() or ch in "+.")
+
+
+def _find_whole_word_span(haystack: str, needle: str) -> tuple[int, int] | None:
+    """أول ظهور لـ needle في haystack ككلمة كاملة؛ يعيد (بداية، نهاية) على النص الأصلي."""
+    if not needle or not haystack:
+        return None
+    h = haystack.casefold()
+    n = needle.casefold()
+    pos = 0
+    while True:
+        idx = h.find(n, pos)
+        if idx < 0:
+            return None
+        end = idx + len(n)
+        left_ok = idx == 0 or not _is_word_char_for_alt_match(haystack[idx - 1])
+        right_ok = end >= len(haystack) or not _is_word_char_for_alt_match(haystack[end])
+        if left_ok and right_ok:
+            return (idx, end)
+        pos = idx + 1
+
+
+def _earliest_token_match_span(alternatives: str, tokens: list[str]) -> tuple[int, int] | None:
+    """أبكر موضع بين التوكنات (أول كلمة تُرى في الخانة)."""
+    best: tuple[int, int] | None = None
+    for tok in tokens:
+        span = _find_whole_word_span(alternatives, tok)
+        if span is None:
+            continue
+        if best is None or span[0] < best[0]:
+            best = span
+    return best
+
+
+def _slice_alternatives_from_first_match_to_slash(alternatives: str, tokens: list[str]) -> str | None:
+    """
+    من أول ظهور لأحد التوكنات في خانة البدائل حتى أول «/» بعده،
+    أو حتى نهاية الخانة إن لم يوجد / (مثل آخر مقطع في الخانة).
+    """
+    span = _earliest_token_match_span(alternatives, tokens)
+    if span is None:
+        return None
+    st, _ = span
+    slash_at = alternatives.find("/", st)
+    if slash_at < 0:
+        return alternatives[st:].strip()
+    return alternatives[st:slash_at].strip()
+
+
 def tokenize_query(text: str) -> list[str]:
     raw = str(text).translate(DIGIT_TRANS).strip().lower()
     raw = re.sub(r"[،,;/|]+", " ", raw)
@@ -645,78 +745,72 @@ def extract_matched_alternative(
     raw_query: str = "",
 ) -> str:
     """
-    نص العرض تحت النتيجة الزرقاء: كلمات البحث التي تظهر فعلياً في عمود البدائل
-    (بنفس ترتيب كلمات الاستعلام)، وليس أول شريحة في قائمة البدائل.
+    نص العرض تحت النتيجة الزرقاء: من أول ظهور لكلمة من البحث تظهر في خانة البدائل
+    حتى أول «/» بعدها، أو حتى آخر الخانة إن لم يوجد / بعدها.
+    إن لم ينجح ذلك يُستخدم التطابق بالشرائح كاحتياطي.
     """
+    _ = raw_query  # محجوز للتوافق مع الاستدعاءات.
     if not (alternatives or "").strip():
         return ""
     segments = split_alternative_segments(alternatives)
     if not segments:
         return ""
 
-    alt_norm = normalize_text(alternatives)
+    alt_tokens = _tokens_matching_alternatives_column(text_tokens, alternatives)
+    if alt_tokens:
+        tokens_use = alt_tokens
+    elif years:
+        tokens_use = []
+    else:
+        tokens_use = [normalize_text(t) for t in text_tokens if normalize_text(t)]
 
-    def token_in_alternatives_column(ntok: str) -> bool:
-        if not ntok:
-            return False
-        if not years:
-            return ntok in alt_norm
-        for seg in segments:
-            nseg = normalize_text(seg)
-            if ntok not in nseg:
-                continue
-            if any(year_in_range_text(y, seg) for y in years):
-                return True
-        return False
+    if tokens_use:
+        sliced = _slice_alternatives_from_first_match_to_slash(alternatives, tokens_use)
+        if sliced:
+            if (not years) or any(year_in_range_text(y, sliced) for y in years):
+                return sliced
 
-    forms = (
-        display_forms_for_text_tokens(text_tokens, raw_query)
-        if (raw_query or "").strip()
-        else list(text_tokens)
-    )
+    def seg_matches_tokens(nseg: str) -> bool:
+        if not tokens_use:
+            return True
+        return all(_token_in_norm_segment(tok, nseg) for tok in tokens_use)
 
-    display_parts: list[str] = []
-    seen_nt: set[str] = set()
-    for t, disp in zip(text_tokens, forms):
-        nt = normalize_text(t)
-        if not nt or nt in seen_nt:
-            continue
-        if not token_in_alternatives_column(nt):
-            continue
-        seen_nt.add(nt)
-        display_parts.append(disp)
-
-    if display_parts:
-        return " ".join(display_parts).strip()
-
-    normalized_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t)]
+    candidates: list[str] = []
     for segment in segments:
         nseg = normalize_text(segment)
-        has_text = (not normalized_tokens) or all(tok in nseg for tok in normalized_tokens)
+        if not seg_matches_tokens(nseg):
+            continue
         has_year = (not years) or any(year_in_range_text(y, segment) for y in years)
-        if has_text and has_year:
-            return segment
+        if has_year:
+            candidates.append(segment)
+    if candidates:
+        return max(candidates, key=len).strip()
 
-    if normalized_tokens:
+    pool: list[str] = list(segments)
+    if years:
+        year_pool = [s for s in segments if any(year_in_range_text(y, s) for y in years)]
+        if year_pool:
+            pool = year_pool
+
+    if tokens_use:
         best_seg = ""
         best_score = -1
-        for segment in segments:
+        for segment in pool:
             nseg = normalize_text(segment)
-            score = sum(1 for tok in normalized_tokens if tok in nseg)
-            if score > best_score:
+            score = sum(1 for tok in tokens_use if _token_in_norm_segment(tok, nseg))
+            if score > best_score or (score == best_score and len(segment) > len(best_seg)):
                 best_score = score
                 best_seg = segment
         if best_score > 0:
-            return best_seg
-        return ""
+            return best_seg.strip()
 
     if years:
-        for segment in segments:
-            if any(year_in_range_text(y, segment) for y in years):
-                return segment
+        year_hits = [s for s in segments if any(year_in_range_text(y, s) for y in years)]
+        if year_hits:
+            return max(year_hits, key=len).strip()
         return ""
 
-    return segments[0]
+    return ""
 
 
 def row_matches_query(row: sqlite3.Row, text_tokens: list[str], years: list[int]) -> bool:
@@ -777,24 +871,23 @@ def row_matches_number_query(row: sqlite3.Row, number_tokens: list[str]) -> bool
     return all(normalize_text(t) in number_space for t in number_tokens)
 
 
-def dedupe_rows_by_normalized_original_per_file(rows: list[Any]) -> list[Any]:
+def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
     """
-    صفوف مكررة في الإكسل: إن تطابق الرقم الأصلي (بعد التطبيع) لنفس ملف المصدر
-    يُعرض صف واحد فقط في جدول النتائج (يُحتفظ بأول صف حسب الترتيب الحالي).
+    إن تكرر نفس الرقم الأصلي (بعد التطبيع) لأكثر من صف — حتى من ملفات مختلفة —
+    يُعتبر صنفاً واحداً ويُعرض صف واحد في جدول النتائج (يُحتفظ بأول صف حسب الترتيب الحالي).
+    الصفوف بلا رقم أصلي مُعرَّف لا تُدمج مع بعضها.
     """
     out: list[Any] = []
-    seen: set[tuple[str, str]] = set()
+    seen_orig: set[str] = set()
     for r in rows:
         d = dict(r)
         orig_c = normalize_text_compact(d.get("original_numbers") or "")
-        src = normalize_text(d.get("source_file") or "")
         if not orig_c:
             out.append(r)
             continue
-        key = (orig_c, src)
-        if key in seen:
+        if orig_c in seen_orig:
             continue
-        seen.add(key)
+        seen_orig.add(orig_c)
         out.append(r)
     return out
 
@@ -1749,7 +1842,6 @@ def home() -> str:
         <table id="resultsTable" style="display:none;">
           <thead>
             <tr>
-              <th>الملف</th>
               <th>اسم الصنف</th>
               <th>رقم الصنف</th>
               <th>السيارات البديلة</th>
@@ -2752,66 +2844,157 @@ def home() -> str:
       return String(alternatives || '').split(/[\\/|,\\n;]+/).map(s => s.trim()).filter(Boolean);
     }
 
+    function normSegmentWordSetJs(nseg) {
+      const edges = '.,|;:()[]';
+      const out = new Set();
+      for (const w of String(nseg || '').split(/\s+/)) {
+        let t = w;
+        while (t.length && edges.includes(t[0])) t = t.slice(1);
+        while (t.length && edges.includes(t[t.length - 1])) t = t.slice(0, -1);
+        if (t) out.add(t);
+      }
+      return out;
+    }
+
+    function tokenInNormSegmentJs(ntok, nseg) {
+      if (!ntok) return false;
+      const wset = normSegmentWordSetJs(nseg);
+      if (ntok.length <= 2) return wset.has(ntok);
+      if (wset.has(ntok)) return true;
+      return nseg.includes(ntok);
+    }
+
+    function tokenAppearsInAlternativesColumnJs(ntok, alternatives) {
+      const nAlt = normalizeTextForSearch(alternatives);
+      if (!ntok) return false;
+      const wset = normSegmentWordSetJs(nAlt);
+      if (ntok.length <= 2) return wset.has(ntok);
+      if (wset.has(ntok)) return true;
+      return nAlt.includes(ntok);
+    }
+
+    function tokensMatchingAlternativesColumnJs(textTokens, alternatives) {
+      const seen = new Set();
+      const out = [];
+      for (const t of textTokens) {
+        const nt = normalizeTextForSearch(t);
+        if (!nt || seen.has(nt)) continue;
+        if (!tokenAppearsInAlternativesColumnJs(nt, alternatives)) continue;
+        seen.add(nt);
+        out.push(nt);
+      }
+      return out;
+    }
+
+    function isWordCharAltJs(ch) {
+      if (!ch) return false;
+      const c = ch[0];
+      if (c >= '0' && c <= '9') return true;
+      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return true;
+      if (c >= '\u0600' && c <= '\u06FF') return true;
+      return c === '+' || c === '.';
+    }
+
+    function findWholeWordSpanJs(haystack, needle) {
+      if (!needle || !haystack) return null;
+      const h = haystack.toLowerCase();
+      const n = needle.toLowerCase();
+      let pos = 0;
+      while (true) {
+        const idx = h.indexOf(n, pos);
+        if (idx < 0) return null;
+        const end = idx + n.length;
+        const leftOk = idx === 0 || !isWordCharAltJs(haystack[idx - 1]);
+        const rightOk = end >= haystack.length || !isWordCharAltJs(haystack[end]);
+        if (leftOk && rightOk) return [idx, end];
+        pos = idx + 1;
+      }
+    }
+
+    function earliestTokenMatchSpanJs(alternatives, tokens) {
+      let best = null;
+      for (const tok of tokens) {
+        const sp = findWholeWordSpanJs(alternatives, tok);
+        if (!sp) continue;
+        if (!best || sp[0] < best[0]) best = sp;
+      }
+      return best;
+    }
+
+    function sliceAlternativesFirstMatchToSlashJs(alternatives, tokens) {
+      const sp = earliestTokenMatchSpanJs(alternatives, tokens);
+      if (!sp) return null;
+      const st = sp[0];
+      const slashAt = alternatives.indexOf('/', st);
+      if (slashAt < 0) return alternatives.slice(st).trim();
+      return alternatives.slice(st, slashAt).trim();
+    }
+
     function extractMatchedAlternativeJs(alternatives, textTokens, years, rawQuery = '') {
+      void rawQuery;
       if (!String(alternatives || '').trim()) return '';
       const segments = splitAlternativeSegmentsJs(alternatives);
       if (!segments.length) return '';
-      const altAll = normalizeTextForSearch(alternatives);
 
-      function tokenInAlternativesColumn(ntok) {
-        if (!ntok) return false;
-        if (!years.length) return altAll.includes(ntok);
-        for (const seg of segments) {
-          const n = normalizeTextForSearch(seg);
-          if (!n.includes(ntok)) continue;
-          if (years.some(y => yearInRangeTextJs(y, seg))) return true;
+      const altToks = tokensMatchingAlternativesColumnJs(textTokens, alternatives);
+      let tokensUse;
+      if (altToks.length) tokensUse = altToks;
+      else if (years.length) tokensUse = [];
+      else tokensUse = textTokens.map(normalizeTextForSearch).filter(Boolean);
+
+      if (tokensUse.length) {
+        const sliced = sliceAlternativesFirstMatchToSlashJs(String(alternatives), tokensUse);
+        if (sliced) {
+          if (!years.length || years.some(y => yearInRangeTextJs(y, sliced))) {
+            return sliced;
+          }
         }
-        return false;
       }
 
-      const forms = String(rawQuery || '').trim()
-        ? displayFormsForTextTokensJs(textTokens, rawQuery)
-        : textTokens.slice();
-      const seen = new Set();
-      const parts = [];
-      for (let i = 0; i < textTokens.length; i++) {
-        const t = textTokens[i];
-        const nt = normalizeTextForSearch(t);
-        if (!nt || seen.has(nt)) continue;
-        if (!tokenInAlternativesColumn(nt)) continue;
-        seen.add(nt);
-        parts.push(forms[i] != null ? forms[i] : t);
+      function segMatchesTokens(n) {
+        if (!tokensUse.length) return true;
+        return tokensUse.every(t => tokenInNormSegmentJs(t, n));
       }
-      if (parts.length) return parts.join(' ').trim();
 
-      const normalizedTokens = textTokens.map(normalizeTextForSearch).filter(Boolean);
+      const candidates = [];
       for (const segment of segments) {
         const n = normalizeTextForSearch(segment);
-        const hasText = !normalizedTokens.length || normalizedTokens.every(t => n.includes(t));
+        if (!segMatchesTokens(n)) continue;
         const hasYear = !years.length || years.some(y => yearInRangeTextJs(y, segment));
-        if (hasText && hasYear) return segment;
+        if (hasYear) candidates.push(segment);
       }
-      if (normalizedTokens.length) {
+      if (candidates.length) {
+        return candidates.reduce((a, b) => (a.length >= b.length ? a : b)).trim();
+      }
+
+      let pool = segments.slice();
+      if (years.length) {
+        const yp = segments.filter(s => years.some(y => yearInRangeTextJs(y, s)));
+        if (yp.length) pool = yp;
+      }
+
+      if (tokensUse.length) {
         let bestSeg = '';
         let bestScore = -1;
-        for (const segment of segments) {
+        for (const segment of pool) {
           const n = normalizeTextForSearch(segment);
-          const sc = normalizedTokens.filter(t => n.includes(t)).length;
-          if (sc > bestScore) {
+          const sc = tokensUse.filter(t => tokenInNormSegmentJs(t, n)).length;
+          if (sc > bestScore || (sc === bestScore && segment.length > bestSeg.length)) {
             bestScore = sc;
             bestSeg = segment;
           }
         }
-        if (bestScore > 0) return bestSeg;
-        return '';
+        if (bestScore > 0) return bestSeg.trim();
       }
+
       if (years.length) {
-        for (const segment of segments) {
-          if (years.some(y => yearInRangeTextJs(y, segment))) return segment;
+        const yearHits = segments.filter(s => years.some(y => yearInRangeTextJs(y, s)));
+        if (yearHits.length) {
+          return yearHits.reduce((a, b) => (a.length >= b.length ? a : b)).trim();
         }
         return '';
       }
-      return segments[0];
+      return '';
     }
 
     function yearMatchScoreJs(segment, years) {
@@ -2875,19 +3058,17 @@ def home() -> str:
       return true;
     }
 
-    function dedupeRowsByNormalizedOriginalPerFileJs(rowsIn) {
-      const seen = new Set();
+    function dedupeRowsByNormalizedOriginalJs(rowsIn) {
+      const seenOrig = new Set();
       const out = [];
       for (const r of rowsIn) {
         const origC = normalizeTextCompactJs(String(r.original_numbers || ''));
-        const src = normalizeTextForSearch(r.source_file || '');
         if (!origC) {
           out.push(r);
           continue;
         }
-        const key = `${origC}|${src}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        if (seenOrig.has(origC)) continue;
+        seenOrig.add(origC);
         out.push(r);
       }
       return out;
@@ -2918,7 +3099,7 @@ def home() -> str:
         if (!rowMatchesSizeFiltersJs(r, sizeType, sizeWidth, sizeDiameter, sizeHeight)) return false;
         return true;
       });
-      rows = dedupeRowsByNormalizedOriginalPerFileJs(rows);
+      rows = dedupeRowsByNormalizedOriginalJs(rows);
       rows = rows.slice(0, 300);
       rows = rows.map((r, i) => {
         const altRaw = String(r.alternatives || '').trim();
@@ -3294,13 +3475,25 @@ def home() -> str:
         };
       }).filter((entry) => String(entry.item_name || '').trim());
 
+      /** إزالة لاحقة مثل « بربيش ... ماء.xlsx» إذا وُسِم اسم الصنف باسم ملف في البيانات */
+      function stripTrailingSpreadsheetFileFromDisplayName(label) {
+        const s = String(label || '').trim();
+        if (!s) return s;
+        const re = /\s+([^.]+)\.(xlsx|xlsm|xlsb|xls)\s*$/i;
+        const m = re.exec(s);
+        if (!m || m.index === undefined) return s;
+        const body = String(m[1] || '').trim();
+        if (!/[\u0600-\u06FF]/.test(body)) return s;
+        return s.slice(0, m.index).trim();
+      }
+
       quickItems.forEach(entry => {
         const btn = document.createElement('button');
         btn.className = 'pill pill-btn';
         btn.type = 'button';
         const quickName = document.createElement('span');
         quickName.className = 'quick-name';
-        quickName.textContent = entry.item_name || '';
+        quickName.textContent = stripTrailingSpreadsheetFileFromDisplayName(entry.item_name || '');
         btn.appendChild(quickName);
         if (entry.matched_alternative) {
           const quickAlt = document.createElement('span');
@@ -3323,12 +3516,12 @@ def home() -> str:
       body.innerHTML = '';
       safeRows.forEach(r => {
         const sizeLabel = String(r.size_label || '');
-        const nameCell = `${escapeHtml(r.item_name)}${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
+        const nameForUi = stripTrailingSpreadsheetFileFromDisplayName(r.item_name || '');
+        const nameCell = `${escapeHtml(nameForUi)}${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
         const itemNumberDisplay = String(r.company_number || r.item_number || '');
         const tr = document.createElement('tr');
         tr.dataset.rowKey = String(r.row_key || '');
-        tr.innerHTML = `<td>${escapeHtml(r.source_file)}</td>
-                        <td>${nameCell}</td>
+        tr.innerHTML = `<td>${nameCell}</td>
                         <td>${escapeHtml(itemNumberDisplay)}</td>
                         <td>${escapeHtml(String(r.alternatives ?? ''))}</td>`;
         body.appendChild(tr);
@@ -3727,7 +3920,7 @@ def search(
             and file_matches_size_type_with_fallback(r, r["source_file"] or "", size_type, size_width, size_diameter)
             and row_matches_size_filters(size_type, r, size_width, size_diameter, size_height)
         ]
-        filtered_rows = dedupe_rows_by_normalized_original_per_file(filtered_rows)
+        filtered_rows = dedupe_rows_by_normalized_original(filtered_rows)
         rows = filtered_rows[:500]
     finally:
         conn.close()
