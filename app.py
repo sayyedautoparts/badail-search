@@ -1188,6 +1188,56 @@ def extract_file_search_hints(query: str, tokens: list[str]) -> tuple[list[str],
     return dedup_hints, cleaned_tokens
 
 
+def file_search_hint_matches_path(path: str, hint: str) -> bool:
+    """
+    تطابق تلميح البحث عن الملف مع مسار التخزين.
+    يقبل العبارة كاملة في المسار، أو وجود كل كلمات التلميح في المسار منفصلة
+    (مثل ملف «فلتر بنزين + سولار» مع تلميح «فلتر سولار»).
+    """
+    pn = normalize_text(path or "")
+    hn = normalize_text(hint or "")
+    if not hn:
+        return True
+    if hn in pn:
+        return True
+    significant = [w for w in hn.split() if len(w) >= 2]
+    if len(significant) < 2:
+        return hn in pn
+
+    def word_in_path(w: str) -> bool:
+        if w in pn:
+            return True
+        if w.startswith("ال") and len(w) > 2 and w[2:] in pn:
+            return True
+        return False
+
+    return all(word_in_path(w) for w in significant)
+
+
+def file_hints_sql_clause(hints: list[str]) -> tuple[str, list[str]]:
+    """
+    WHERE فرعي لـ SQLite: لكل تلميح إما LIKE للجملة أو (LIKE لكل كلمة مع AND)
+    ليتوافق مع file_search_hint_matches_path.
+    """
+    or_parts: list[str] = []
+    params: list[str] = []
+    for h in hints:
+        hn = normalize_text(h)
+        if not hn:
+            continue
+        significant = [w for w in hn.split() if len(w) >= 2]
+        if len(significant) >= 2:
+            and_sql = " AND ".join(["lower(source_file) LIKE ?" for _ in significant])
+            or_parts.append(f"({and_sql})")
+            params.extend(f"%{w}%" for w in significant)
+        else:
+            or_parts.append("lower(source_file) LIKE ?")
+            params.append(f"%{hn}%")
+    if not or_parts:
+        return "1=1", []
+    return "(" + " OR ".join(or_parts) + ")", params
+
+
 def get_header_index(header_cells: list[str], keywords: list[str]) -> int | None:
     normalized_headers = [normalize_text(h) for h in header_cells]
     normalized_keywords = [normalize_text(k) for k in keywords]
@@ -2797,6 +2847,21 @@ def home() -> str:
       return { fileHints: uniqueHints, textTokens: cleanedTokens };
     }
 
+    function fileSearchHintMatchesPathJs(pathNorm, hintNorm) {
+      const pn = String(pathNorm || '').trim();
+      const hn = String(hintNorm || '').trim();
+      if (!hn) return true;
+      if (pn.includes(hn)) return true;
+      const significant = hn.split(/\s+/).filter(w => w.length >= 2);
+      if (significant.length < 2) return pn.includes(hn);
+      function wordOk(w) {
+        if (pn.includes(w)) return true;
+        if (w.startsWith('ال') && w.length > 2 && pn.includes(w.slice(2))) return true;
+        return false;
+      }
+      return significant.every(wordOk);
+    }
+
     function parseYearTokenJs(token) {
       const cleaned = String(token || '').replace(/[^\\d]/g, '');
       if (!(cleaned.length === 2 || cleaned.length === 4)) return null;
@@ -3208,7 +3273,7 @@ def home() -> str:
       const numberTokens = tokenizeQueryForSearch(numberQuery);
       const hintData = extractFileSearchHintsJs(query, tokens);
       const fileHints = hintData.fileHints;
-      if (!tokens.length && !numberTokens.length && !sizeType && !sizeWidth && !sizeDiameter && !sizeHeight && !fileHints.length) {
+      if (!hintData.textTokens.length && !numberTokens.length && !sizeType && !sizeWidth && !sizeDiameter && !sizeHeight && !fileHints.length) {
         return { total_rows: 0, matching_item_names: [], matching_items: [], rows: [] };
       }
       const parsedYears = hintData.textTokens.map(parseQueryYearTokenJs);
@@ -3220,7 +3285,7 @@ def home() -> str:
         if (!rowMatchesQueryJs(r, textTokens, years)) return false;
         if (fileHints.length) {
           const sf = normalizeTextForSearch(r.source_file || '');
-          if (!fileHints.some(h => sf.includes(h))) return false;
+          if (!fileHints.some(h => fileSearchHintMatchesPathJs(sf, h))) return false;
         }
         const numberSpace = normalizeTextForSearch(`${r.company_number || ''} ${r.original_numbers || ''} ${r.notes || ''}`);
         if (!numberTokens.every(t => numberSpace.includes(normalizeTextForSearch(t)))) return false;
@@ -4011,8 +4076,9 @@ def search(
             params.extend([like, like, like])
 
         if file_hints:
-            where_parts.append("(" + " OR ".join(["lower(source_file) LIKE ?" for _ in file_hints]) + ")")
-            params.extend([f"%{normalize_text(h)}%" for h in file_hints])
+            fh_sql, fh_params = file_hints_sql_clause(file_hints)
+            where_parts.append(fh_sql)
+            params.extend(fh_params)
 
         # تصفية أولية بالقياسات (أرقام فقط) لتقليل الصفوف قبل فلترة بايثون
         if size_active:
@@ -4047,7 +4113,10 @@ def search(
             for r in candidate_rows
             if row_matches_query(r, text_tokens, query_years)
             and row_matches_number_query(r, number_tokens)
-            and (not file_hints or any(normalize_text(h) in normalize_text(r["source_file"] or "") for h in file_hints))
+            and (
+                not file_hints
+                or any(file_search_hint_matches_path(r["source_file"] or "", h) for h in file_hints)
+            )
             and file_matches_size_type_with_fallback(r, r["source_file"] or "", size_type, size_width, size_diameter)
             and row_matches_size_filters(size_type, r, size_width, size_diameter, size_height)
         ]
