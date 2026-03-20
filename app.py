@@ -892,6 +892,81 @@ def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
     return out
 
 
+def _row_search_relevance_score(row: Any, text_tokens: list[str], years: list[int]) -> tuple[int, int, int, str]:
+    """درجة أعلى = الصف أنسب لكلمات البحث الحالية (لاختيار مَن يُبقى عند تكرار الرقم الأصلي)."""
+    d = dict(row)
+    item = d.get("item_name") or ""
+    alt = d.get("alternatives") or ""
+    bag = normalize_text(f"{item} {alt}")
+    bag_c = normalize_text_compact(f"{item} {alt}")
+    item_n = normalize_text(item)
+    alt_n = normalize_text(alt)
+    alt_c = normalize_text_compact(alt)
+    item_c = normalize_text_compact(item)
+    score = 0
+    for t in text_tokens:
+        nt = normalize_text(t)
+        if not nt:
+            continue
+        nct = normalize_text_compact(nt)
+        in_bag = nt in bag or (bool(nct) and nct in bag_c)
+        if not in_bag:
+            continue
+        in_alt = nt in alt_n or (bool(nct) and nct in alt_c)
+        in_item = nt in item_n or (bool(nct) and nct in item_c)
+        if in_alt:
+            score += 5
+        elif in_item:
+            score += 2
+    year_bonus = 0
+    if years:
+        if any(year_in_range_text(y, alt) for y in years):
+            year_bonus = 3
+        elif any(year_in_range_text(y, item) for y in years):
+            year_bonus = 1
+    detail = min(len(alt), 5000)
+    return (score + year_bonus, year_bonus, detail, item)
+
+
+def dedupe_rows_by_normalized_original_for_search(
+    rows: list[Any],
+    text_tokens: list[str],
+    years: list[int],
+) -> list[Any]:
+    """
+    دمج تكرار الرقم الأصلي مع اختيار الصف الأكثر ارتباطاً بالاستعلام الحالي
+    (كلمات البحث في البدائل تُوزَّن أعلى من الاسم فقط)، حتى لا يختفي صف مثل Octavia
+    لأن صفاً آخر بنفس الرقم سبقه أبجدياً (مثل Cady Life).
+    """
+    winners: dict[str, Any] = {}
+    for r in rows:
+        d = dict(r)
+        oc = normalize_text_compact(d.get("original_numbers") or "")
+        if not oc:
+            continue
+        if oc not in winners:
+            winners[oc] = r
+        else:
+            s_new = _row_search_relevance_score(r, text_tokens, years)
+            s_old = _row_search_relevance_score(winners[oc], text_tokens, years)
+            if s_new > s_old:
+                winners[oc] = r
+
+    out: list[Any] = []
+    emitted: set[str] = set()
+    for r in rows:
+        d = dict(r)
+        oc = normalize_text_compact(d.get("original_numbers") or "")
+        if not oc:
+            out.append(r)
+            continue
+        if oc in emitted:
+            continue
+        emitted.add(oc)
+        out.append(winners[oc])
+    return out
+
+
 def _numbers_in_normalized_text(text: str) -> list[float]:
     """Extract numeric literals from normalized size text (handles 'قطر 98 مم', '29 x 98', etc.)."""
     out: list[float] = []
@@ -3058,18 +3133,70 @@ def home() -> str:
       return true;
     }
 
-    function dedupeRowsByNormalizedOriginalJs(rowsIn) {
-      const seenOrig = new Set();
-      const out = [];
+    function rowSearchRelevanceScoreJs(row, textTokens, years) {
+      const item = String(row.item_name || '');
+      const alt = String(row.alternatives || '');
+      const bag = normalizeTextForSearch(`${item} ${alt}`);
+      const bagC = normalizeTextCompactJs(`${item} ${alt}`);
+      const altN = normalizeTextForSearch(alt);
+      const itemN = normalizeTextForSearch(item);
+      const altC = normalizeTextCompactJs(alt);
+      const itemC = normalizeTextCompactJs(item);
+      let score = 0;
+      for (const t of textTokens) {
+        const nt = normalizeTextForSearch(t);
+        if (!nt) continue;
+        const nct = normalizeTextCompactJs(nt);
+        const inBag = bag.includes(nt) || (nct && bagC.includes(nct));
+        if (!inBag) continue;
+        const inAlt = altN.includes(nt) || (nct && altC.includes(nct));
+        const inItem = itemN.includes(nt) || (nct && itemC.includes(nct));
+        if (inAlt) score += 5;
+        else if (inItem) score += 2;
+      }
+      let yb = 0;
+      if (years.length) {
+        if (years.some(y => yearInRangeTextJs(y, alt))) yb += 3;
+        else if (years.some(y => yearInRangeTextJs(y, item))) yb += 1;
+      }
+      const detail = Math.min(alt.length, 5000);
+      return [score + yb, yb, detail, item];
+    }
+
+    function scoreTupleBetterJs(a, b) {
+      for (let i = 0; i < 4; i++) {
+        const x = a[i];
+        const y = b[i];
+        if (x !== y) return x > y;
+      }
+      return false;
+    }
+
+    function dedupeRowsByNormalizedOriginalForSearchJs(rowsIn, textTokens, years) {
+      const tt = textTokens || [];
+      const yy = years || [];
+      const winners = {};
       for (const r of rowsIn) {
-        const origC = normalizeTextCompactJs(String(r.original_numbers || ''));
-        if (!origC) {
+        const oc = normalizeTextCompactJs(String(r.original_numbers || ''));
+        if (!oc) continue;
+        if (!winners[oc]) winners[oc] = r;
+        else {
+          const sa = rowSearchRelevanceScoreJs(r, tt, yy);
+          const sb = rowSearchRelevanceScoreJs(winners[oc], tt, yy);
+          if (scoreTupleBetterJs(sa, sb)) winners[oc] = r;
+        }
+      }
+      const out = [];
+      const emitted = new Set();
+      for (const r of rowsIn) {
+        const oc = normalizeTextCompactJs(String(r.original_numbers || ''));
+        if (!oc) {
           out.push(r);
           continue;
         }
-        if (seenOrig.has(origC)) continue;
-        seenOrig.add(origC);
-        out.push(r);
+        if (emitted.has(oc)) continue;
+        emitted.add(oc);
+        out.push(winners[oc]);
       }
       return out;
     }
@@ -3099,7 +3226,7 @@ def home() -> str:
         if (!rowMatchesSizeFiltersJs(r, sizeType, sizeWidth, sizeDiameter, sizeHeight)) return false;
         return true;
       });
-      rows = dedupeRowsByNormalizedOriginalJs(rows);
+      rows = dedupeRowsByNormalizedOriginalForSearchJs(rows, textTokens, years);
       rows = rows.slice(0, 300);
       rows = rows.map((r, i) => {
         const altRaw = String(r.alternatives || '').trim();
@@ -3920,7 +4047,9 @@ def search(
             and file_matches_size_type_with_fallback(r, r["source_file"] or "", size_type, size_width, size_diameter)
             and row_matches_size_filters(size_type, r, size_width, size_diameter, size_height)
         ]
-        filtered_rows = dedupe_rows_by_normalized_original(filtered_rows)
+        filtered_rows = dedupe_rows_by_normalized_original_for_search(
+            filtered_rows, text_tokens, query_years
+        )
         rows = filtered_rows[:500]
     finally:
         conn.close()
