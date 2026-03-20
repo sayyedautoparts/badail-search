@@ -74,7 +74,7 @@ ARABIC_LETTER_TRANS = str.maketrans(
     }
 )
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
-INGEST_PARSER_VERSION = "2"
+INGEST_PARSER_VERSION = "4"
 
 
 class DBConnection:
@@ -389,10 +389,34 @@ def tokenize_query(text: str) -> list[str]:
     return [t for t in tokens if t not in {"+", "-", "–", "—"}]
 
 
-def is_brakes_file(file_name: str) -> bool:
-    normalized_name = normalize_text(file_name)
-    brake_markers = ["بريك", "بريكات", "brake", "brakes"]
-    return any(marker in normalized_name for marker in brake_markers)
+def split_query_display_words(q: str) -> list[str]:
+    """كلمات الاستعلام مع الإبقاء على شكل الكتابة (للعرض تحت نتيجة البحث)."""
+    raw = str(q).translate(DIGIT_TRANS).strip()
+    raw = re.sub(r"[،,;/|]+", " ", raw)
+    raw = re.sub(r"[\(\)]+", " ", raw)
+    raw = re.sub(r"(\d{1,2})\s*[.,،]\s*(\d{1,3})(?!\d)", r"\1.\2", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    tokens = [t for t in raw.split(" ") if t]
+    return [t for t in tokens if t not in {"+", "-", "–", "—"}]
+
+
+def display_forms_for_text_tokens(text_tokens: list[str], raw_query: str) -> list[str]:
+    """يطابق كل توكن بحث مع أول كلمة في الاستعلام الأصلي لنفس التطبيع (للحفاظ على Cady مثلاً)."""
+    words = split_query_display_words(raw_query)
+    used_word_idx: set[int] = set()
+    forms: list[str] = []
+    for t in text_tokens:
+        nt = normalize_text(t)
+        found: str | None = None
+        for i, w in enumerate(words):
+            if i in used_word_idx:
+                continue
+            if normalize_text(w) == nt:
+                found = w
+                used_word_idx.add(i)
+                break
+        forms.append(found if found is not None else t)
+    return forms
 
 
 def parse_year_token(token: str) -> int | None:
@@ -614,13 +638,56 @@ def year_match_score(segment: str, years: list[int]) -> int:
     return best
 
 
-def extract_matched_alternative(alternatives: str, text_tokens: list[str], years: list[int]) -> str:
-    """لا نُرجع نصًا من عمود آخر؛ إذا خانة المتشابهات فاضية يبقى الفراغ."""
+def extract_matched_alternative(
+    alternatives: str,
+    text_tokens: list[str],
+    years: list[int],
+    raw_query: str = "",
+) -> str:
+    """
+    نص العرض تحت النتيجة الزرقاء: كلمات البحث التي تظهر فعلياً في عمود البدائل
+    (بنفس ترتيب كلمات الاستعلام)، وليس أول شريحة في قائمة البدائل.
+    """
     if not (alternatives or "").strip():
         return ""
     segments = split_alternative_segments(alternatives)
     if not segments:
         return ""
+
+    alt_norm = normalize_text(alternatives)
+
+    def token_in_alternatives_column(ntok: str) -> bool:
+        if not ntok:
+            return False
+        if not years:
+            return ntok in alt_norm
+        for seg in segments:
+            nseg = normalize_text(seg)
+            if ntok not in nseg:
+                continue
+            if any(year_in_range_text(y, seg) for y in years):
+                return True
+        return False
+
+    forms = (
+        display_forms_for_text_tokens(text_tokens, raw_query)
+        if (raw_query or "").strip()
+        else list(text_tokens)
+    )
+
+    display_parts: list[str] = []
+    seen_nt: set[str] = set()
+    for t, disp in zip(text_tokens, forms):
+        nt = normalize_text(t)
+        if not nt or nt in seen_nt:
+            continue
+        if not token_in_alternatives_column(nt):
+            continue
+        seen_nt.add(nt)
+        display_parts.append(disp)
+
+    if display_parts:
+        return " ".join(display_parts).strip()
 
     normalized_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t)]
     for segment in segments:
@@ -631,15 +698,20 @@ def extract_matched_alternative(alternatives: str, text_tokens: list[str], years
             return segment
 
     if normalized_tokens:
+        best_seg = ""
+        best_score = -1
         for segment in segments:
             nseg = normalize_text(segment)
-            if any(tok in nseg for tok in normalized_tokens):
-                return segment
+            score = sum(1 for tok in normalized_tokens if tok in nseg)
+            if score > best_score:
+                best_score = score
+                best_seg = segment
+        if best_score > 0:
+            return best_seg
         return ""
 
     if years:
         for segment in segments:
-            nseg = normalize_text(segment)
             if any(year_in_range_text(y, segment) for y in years):
                 return segment
         return ""
@@ -648,6 +720,7 @@ def extract_matched_alternative(alternatives: str, text_tokens: list[str], years
 
 
 def row_matches_query(row: sqlite3.Row, text_tokens: list[str], years: list[int]) -> bool:
+    """تطابق نصي: كل كلمات البحث يجب أن تظهر في الصف (حقيبة كلمات — ترتيب الكلمات لا يهم)."""
     item_name = row["item_name"] or ""
     alternatives = row["alternatives"] or ""
     source_file = row["source_file"] or ""
@@ -702,6 +775,28 @@ def row_matches_number_query(row: sqlite3.Row, number_tokens: list[str]) -> bool
         f"{row['company_number'] or ''} {row['original_numbers'] or ''} {row['notes'] or ''}"
     )
     return all(normalize_text(t) in number_space for t in number_tokens)
+
+
+def dedupe_rows_by_normalized_original_per_file(rows: list[Any]) -> list[Any]:
+    """
+    صفوف مكررة في الإكسل: إن تطابق الرقم الأصلي (بعد التطبيع) لنفس ملف المصدر
+    يُعرض صف واحد فقط في جدول النتائج (يُحتفظ بأول صف حسب الترتيب الحالي).
+    """
+    out: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        d = dict(r)
+        orig_c = normalize_text_compact(d.get("original_numbers") or "")
+        src = normalize_text(d.get("source_file") or "")
+        if not orig_c:
+            out.append(r)
+            continue
+        key = (orig_c, src)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
 
 
 def _numbers_in_normalized_text(text: str) -> list[float]:
@@ -942,7 +1037,11 @@ def get_header_index(header_cells: list[str], keywords: list[str]) -> int | None
 HEADER_COMPANY_NUMBER = [
     "رقم الشركات",
     "رقم الشركة",
+    "رقم الشركه",
     "رقم شركة",
+    "رقم شركات",
+    "ارقام الشركه",
+    "أرقام الشركه",
     "ارقام الشركات",
     "أرقام الشركات",
     "ارقام شركات",
@@ -954,10 +1053,20 @@ HEADER_COMPANY_NUMBER = [
     "مرجع الشركة",
     "كود الشركة",
     "كود الصنف",
+    "رقم الصنف التجاري",
+    "الصنف التجاري",
+    "الكود التجاري",
+    "كود المنتج",
+    "رقم المنتج التجاري",
+    "رقم التاجر",
+    "رقم المورد",
+    "كود التخزين",
     "رقم التعريف",
     "رقم مرجع",
     "part number",
     "reference",
+    "stock code",
+    "sku",
 ]
 HEADER_ORIGINAL_NUMBERS = [
     "الرقم الاصلي",
@@ -1050,6 +1159,15 @@ def _header_bad_for_company(h: str) -> bool:
     if "شركة" in h and "رقم" in h and "نوع" not in h:
         return False
     if "نوع" in h and "شركة" not in h and "شركات" not in h:
+        # «رقم نوع القطعة» وما شابهها قد يكون عمود المرجع التجاري وليس «نوع السيارة» فقط
+        if (
+            "قطعه" in h
+            or "قطعة" in h
+            or "القطعه" in h
+            or "القطعة" in h
+            or "صنف" in h
+        ):
+            return False
         return True
     if h in ("الصنف", "صنف") or (len(h) <= 12 and "صنف" in h and "رقم" not in h and "شرك" not in h):
         return True
@@ -1101,7 +1219,26 @@ def find_header_column(
     return best_idx
 
 
-def resolve_product_column_indices(header_cells: list[str], use_h_for_alternatives: bool) -> dict[str, int | None]:
+# عنوان عمود «رقم الصنف» في الواجهة — يُلتقط من الإكسل بالاسم التالي في صف العناوين (بعد normalize_text)
+HEADER_COMPANY_EXACT_LABEL = "رقم الشركات"
+
+
+def find_company_column_by_exact_header(header_cells: list[str]) -> int | None:
+    """
+    عمود رقم الصنف في البرنامج = عمود الإكسل الذي عنوان خليته في صف العناوين «رقم الشركات»
+    (مطابقة كاملة بعد تطبيع الحروف والأرقام والمسافات).
+    """
+    target = normalize_text(HEADER_COMPANY_EXACT_LABEL)
+    if not target:
+        return None
+    for idx, raw in enumerate(header_cells):
+        h = normalize_text(str(raw or ""))
+        if h == target:
+            return idx
+    return None
+
+
+def resolve_product_column_indices(header_cells: list[str]) -> dict[str, int | None]:
     used: set[int] = set()
 
     def assign(
@@ -1116,14 +1253,14 @@ def resolve_product_column_indices(header_cells: list[str], use_h_for_alternativ
             used.add(idx)
         return idx
 
-    company_index = assign(HEADER_COMPANY_NUMBER, 6, reject=_header_bad_for_company)
+    # أولوية مطلقة: عمود عنوانه بالضبط «رقم الشركات» في صف العناوين
+    company_index = find_company_column_by_exact_header(header_cells)
+    if company_index is not None:
+        used.add(company_index)
+    else:
+        company_index = assign(HEADER_COMPANY_NUMBER, 6, reject=_header_bad_for_company)
     original_index = assign(HEADER_ORIGINAL_NUMBERS, 6, reject=_header_bad_for_original)
     alt_index = assign(HEADER_ALTERNATIVES, 5, reject=_header_bad_for_alt)
-    if alt_index is None and use_h_for_alternatives:
-        for c in (7, 6):
-            if c not in used:
-                alt_index = c
-                break
 
     if original_index is not None and alt_index == original_index:
         alt_index = None
@@ -1143,6 +1280,28 @@ def resolve_product_column_indices(header_cells: list[str], use_h_for_alternativ
         if item_number_index is None:
             item_number_index = 4
 
+    # مطابقة مرنة لعناوين «رقم/أرقام الشركات» إذا فاتتها القائمة (تاء مربوطة، دمج خلايا، إلخ)
+    if company_index is None:
+        skip_loose = {x for x in (original_index, alt_index, notes_index) if x is not None}
+        for i, raw in enumerate(header_cells):
+            if i in skip_loose:
+                continue
+            h = normalize_text(str(raw or ""))
+            if not h:
+                continue
+            if ("رقم" in h or "كود" in h or "ارقام" in h) and ("شركات" in h or "شركه" in h):
+                if _header_bad_for_company(h):
+                    continue
+                company_index = i
+                break
+
+    # غالبًا عمود «رقم الشركات» يقع مباشرة قبل «الرقم الأصلي» إن لم يُعثر على عنوان مناسب
+    if company_index is None and original_index is not None and original_index >= 1:
+        fb = original_index - 1
+        blocked = {x for x in (item_name_index, alt_index, original_index, notes_index) if x is not None}
+        if fb not in blocked:
+            company_index = fb
+
     return {
         "company_index": company_index,
         "original_index": original_index,
@@ -1153,11 +1312,41 @@ def resolve_product_column_indices(header_cells: list[str], use_h_for_alternativ
     }
 
 
+def sanitize_alternatives_vs_original(alternatives: str, original_numbers: str) -> str:
+    """خانة البدائل تبقى فارغة إن كانت فارغة في الملف؛ ولا نخزّن نصًا مطابقًا للرقم الأصلي."""
+    a = (alternatives or "").strip()
+    if not a:
+        return ""
+    o = (original_numbers or "").strip()
+    if not o:
+        return a
+    if normalize_text(a) == normalize_text(o):
+        return ""
+    # فراغات/أسطر زائدة أو اختلاف بسيط يجعل النص يبدو مثل الأصلي في الواجهة
+    if normalize_text_compact(a) == normalize_text_compact(o):
+        return ""
+    return a
+
+
 def clean_cell(value: object) -> str:
     if value is None:
         return ""
     text = str(value).strip()
     return "" if text.lower() == "none" else text
+
+
+def forward_fill_header_row(raw_cells: list[object] | tuple[object, ...]) -> list[str]:
+    """عند دمج خلايا العنوان أفقيًا تبقى الخلايا التالية فارغة في openpyxl — ننقل عنوان العمود للخلايا الفارغة."""
+    cleaned = [clean_cell(v) for v in raw_cells]
+    out: list[str] = []
+    carry = ""
+    for s in cleaned:
+        if s:
+            carry = s
+            out.append(s)
+        else:
+            out.append(carry)
+    return out
 
 
 def pick_item_name(values: list[str], preferred_idx: int | None) -> str:
@@ -1289,7 +1478,6 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
     try:
         conn.execute("DELETE FROM products WHERE source_file = ?", (source_key,))
         wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-        use_h_for_alternatives = is_brakes_file(file_name)
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
@@ -1316,10 +1504,10 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
                         best_score = score
                         best_idx = idx
                 header_row = preview_rows[best_idx] if preview_rows else ()
-                header_cells = [clean_cell(v) for v in (header_row or ())]
+                header_cells = forward_fill_header_row(list(header_row or ()))
                 data_start_row = best_idx + 2
 
-                cols = resolve_product_column_indices(header_cells, use_h_for_alternatives)
+                cols = resolve_product_column_indices(header_cells)
                 company_index = cols["company_index"]
                 original_index = cols["original_index"]
                 alt_index = cols["alt_index"]
@@ -1346,17 +1534,7 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
                     original_numbers = by_idx(original_index)
                     notes = by_idx(notes_index)
                     alternatives = by_idx(alt_index) if alt_index is not None else ""
-                    if use_h_for_alternatives and not (alternatives or "").strip():
-                        g_alt = by_idx(6)
-                        h_alt = by_idx(7)
-                        alternatives = (h_alt or g_alt)
-                    if (
-                        (alternatives or "").strip()
-                        and (original_numbers or "").strip()
-                        and normalize_text((alternatives or "").strip())
-                        == normalize_text((original_numbers or "").strip())
-                    ):
-                        alternatives = ""
+                    alternatives = sanitize_alternatives_vs_original(alternatives, original_numbers)
                     size_width = by_idx(1)
                     size_diameter = by_idx(2)
                     size_height = by_idx(3)
@@ -1446,7 +1624,8 @@ def home() -> str:
     .muted { color: #666; font-size: 13px; }
     .pill { display: inline-block; background: #eef4ff; color: #2d5fff; padding: 7px 10px; border-radius: 10px; margin: 4px 4px 0 0; font-size: 12px; text-align: right; }
     .pill-btn { border: none; cursor: pointer; min-width: 180px; }
-    .quick-name { display: block; font-weight: 700; }
+    .quick-name { display: inline; font-weight: 700; }
+    .quick-file { display: inline; font-size: 11px; font-weight: 600; color: #1a4a9e; margin-inline-start: 6px; opacity: 0.92; }
     .quick-alt { display: block; margin-top: 3px; color: #4e5f8f; }
     .quick-size { display: block; margin-top: 3px; color: #3e4d76; font-size: 12px; }
     .row-focus { background: #fff7d6; transition: background-color 0.25s ease; }
@@ -1802,11 +1981,6 @@ def home() -> str:
       document.getElementById('uploadResult').innerText = 'تمت إضافة العناصر المسحوبة. اضغط رفع الملفات.';
     }
 
-    function isBrakesFileNameJs(fileName) {
-      const n = normalizeTextForSearch(fileName || '');
-      return n.includes('بريك') || n.includes('بريكات') || n.includes('brake') || n.includes('brakes');
-    }
-
     function getHeaderIndexJs(headers, keywords) {
       const hs = (headers || []).map(h => normalizeTextForSearch(h));
       const ks = keywords.map(k => normalizeTextForSearch(k));
@@ -1840,7 +2014,10 @@ def home() -> str:
       if (h.includes('رقم الشركات') || h.includes('رقم الشركة')) return false;
       if (h.includes('شركات') && h.includes('رقم')) return false;
       if (h.includes('شركة') && h.includes('رقم') && !h.includes('نوع')) return false;
-      if (h.includes('نوع') && !h.includes('شركة') && !h.includes('شركات')) return true;
+      if (h.includes('نوع') && !h.includes('شركة') && !h.includes('شركات')) {
+        if (h.includes('قطعه') || h.includes('قطعة') || h.includes('القطعه') || h.includes('القطعة') || h.includes('صنف')) return false;
+        return true;
+      }
       if (h === 'الصنف' || h === 'صنف' || (h.length <= 12 && h.includes('صنف') && !h.includes('رقم') && !h.includes('شرك'))) return true;
       return false;
     }
@@ -1876,31 +2053,63 @@ def home() -> str:
       return bestIdx;
     }
 
-    const HEADER_COMPANY_JS = ['رقم الشركات', 'رقم الشركة', 'رقم شركة', 'ارقام الشركات', 'أرقام الشركات', 'ارقام شركات', 'أرقام شركات', 'company number', 'رقم الشركات الموحد', 'رقم المرجع', 'المرجع', 'مرجع الشركة', 'كود الشركة', 'كود الصنف', 'رقم التعريف', 'رقم مرجع', 'part number', 'reference'];
+    const HEADER_COMPANY_JS = ['رقم الشركات', 'رقم الشركة', 'رقم الشركه', 'رقم شركة', 'رقم شركات', 'ارقام الشركات', 'أرقام الشركات', 'ارقام شركات', 'أرقام شركات', 'ارقام الشركه', 'أرقام الشركه', 'company number', 'رقم الشركات الموحد', 'رقم المرجع', 'المرجع', 'مرجع الشركة', 'كود الشركة', 'كود الصنف', 'رقم الصنف التجاري', 'الصنف التجاري', 'الكود التجاري', 'كود المنتج', 'رقم المنتج التجاري', 'رقم التاجر', 'رقم المورد', 'كود التخزين', 'رقم التعريف', 'رقم مرجع', 'part number', 'reference', 'stock code', 'sku'];
     const HEADER_ORIGINAL_JS = ['الرقم الاصلي', 'الرقم الأصلي', 'رقم اصلي', 'رقم أصلي', 'ارقام اصلية', 'أرقام أصلية', 'ارقام أصلية', 'أرقام اصلية', 'original number', 'الرقم الاصلي للقطعة', 'الرقم الأصلي للقطعة'];
     const HEADER_ALT_JS = ['متشابهات', 'متشابهاب', 'المتشابهات', 'التشابهات', 'المشابهات', 'المشابهين', 'البدائل', 'بدائل', 'البديلة', 'السيارات البديلة', 'السيارة البديلة', 'سيارات مشابهة', 'سيارة مشابهة', 'alternatives', 'alternative', 'سيارات بديلة', 'السيارات المعادلة'];
     const HEADER_ITEM_NAME_JS = ['اسم السيارة', 'اسم الصنف', 'اسم السيارة/الصنف', 'النوع', 'نوع', 'نوع السيارة', 'نوع المركبة', 'نوع المركبه', 'الصنف', 'item name', 'name'];
     const HEADER_ITEM_NUMBER_JS = ['رقم الصنف', 'رقم القطعة', 'رقم الصنف الدولي', 'item number', 'part number'];
     const HEADER_NOTES_JS = ['ملاحظات', 'ملاحظة', 'notes'];
 
-    function resolveProductColumnIndicesJs(header, useHForAlt) {
+    function forwardFillHeaderRowJs(rawRow) {
+      const cleaned = (rawRow || []).map(v => String(v || '').trim());
+      const out = [];
+      let carry = '';
+      for (const s of cleaned) {
+        if (s) {
+          carry = s;
+          out.push(s);
+        } else {
+          out.push(carry);
+        }
+      }
+      return out;
+    }
+
+    function sanitizeAlternativesVsOriginalJs(alternatives, originalNumbers) {
+      const a = String(alternatives || '').trim();
+      if (!a) return '';
+      const o = String(originalNumbers || '').trim();
+      if (!o) return a;
+      if (normalizeTextForSearch(a) === normalizeTextForSearch(o)) return '';
+      if (normalizeTextCompactJs(a) === normalizeTextCompactJs(o)) return '';
+      return a;
+    }
+
+    function findCompanyColumnByExactHeaderJs(header) {
+      const target = normalizeTextForSearch('رقم الشركات');
+      if (!target) return null;
+      for (let i = 0; i < header.length; i++) {
+        const h = normalizeTextForSearch(String(header[i] || ''));
+        if (h === target) return i;
+      }
+      return null;
+    }
+
+    function resolveProductColumnIndicesJs(header) {
       const used = new Set();
       function assign(kws, minSub, rejectFn) {
         const idx = findHeaderColumnJs(header, kws, used, minSub, rejectFn);
         if (idx !== null && idx !== undefined) used.add(idx);
         return idx;
       }
-      const companyIdx = assign(HEADER_COMPANY_JS, 6, headerBadForCompanyJs);
+      let companyIdx = findCompanyColumnByExactHeaderJs(header);
+      if (companyIdx !== null && companyIdx !== undefined) {
+        used.add(companyIdx);
+      } else {
+        companyIdx = assign(HEADER_COMPANY_JS, 6, headerBadForCompanyJs);
+      }
       const originalIdx = assign(HEADER_ORIGINAL_JS, 6, headerBadForOriginalJs);
       let altIdx = assign(HEADER_ALT_JS, 5, headerBadForAltJs);
-      if ((altIdx === null || altIdx === undefined) && useHForAlt) {
-        for (const c of [7, 6]) {
-          if (!used.has(c)) {
-            altIdx = c;
-            break;
-          }
-        }
-      }
       const itemNameIdx = assign(HEADER_ITEM_NAME_JS, 4);
       const notesIdx = assign(HEADER_NOTES_JS, 4);
       let itemNumIdx = findHeaderColumnJs(header, HEADER_ITEM_NUMBER_JS, used, 6);
@@ -1908,6 +2117,27 @@ def home() -> str:
       else if (companyIdx !== null && companyIdx !== undefined) itemNumIdx = companyIdx;
       else itemNumIdx = 4;
       if (originalIdx != null && originalIdx !== undefined && altIdx === originalIdx) altIdx = null;
+      if (companyIdx === null || companyIdx === undefined) {
+        const skipLoose = new Set([originalIdx, altIdx, notesIdx].filter((x) => x !== null && x !== undefined));
+        for (let i = 0; i < header.length; i++) {
+          if (skipLoose.has(i)) continue;
+          const h = normalizeTextForSearch(String(header[i] || ''));
+          if (!h) continue;
+          if ((h.includes('رقم') || h.includes('كود') || h.includes('ارقام')) && (h.includes('شركات') || h.includes('شركه'))) {
+            if (headerBadForCompanyJs(h)) continue;
+            companyIdx = i;
+            break;
+          }
+        }
+      }
+      if (
+        (companyIdx === null || companyIdx === undefined)
+        && originalIdx != null && originalIdx !== undefined && originalIdx >= 1
+      ) {
+        const fb = originalIdx - 1;
+        const blocked = new Set([itemNameIdx, altIdx, originalIdx, notesIdx].filter((x) => x !== null && x !== undefined));
+        if (!blocked.has(fb)) companyIdx = fb;
+      }
       return { companyIdx, originalIdx, altIdx, itemNameIdx, itemNumIdx, notesIdx };
     }
 
@@ -1948,7 +2178,6 @@ def home() -> str:
     async function parseExcelRowsForChunkUpload(file) {
       const arrayBuffer = await file.arrayBuffer();
       const wb = XLSX.read(arrayBuffer, { type: 'array' });
-      const useHForAlt = isBrakesFileNameJs(file.name);
       const sourceKey = sourceKeyForFile(file);
       const rows = [];
       const itemNamesSet = new Set();
@@ -1983,8 +2212,8 @@ def home() -> str:
             headerRowIndex = i;
           }
         }
-        const header = (grid[headerRowIndex] || []).map(v => String(v || '').trim());
-        const colMap = resolveProductColumnIndicesJs(header, useHForAlt);
+        const header = forwardFillHeaderRowJs(grid[headerRowIndex] || []);
+        const colMap = resolveProductColumnIndicesJs(header);
         const itemNameIdx = colMap.itemNameIdx != null ? colMap.itemNameIdx : 0;
         const itemNumberIdx = colMap.itemNumIdx != null ? colMap.itemNumIdx : 4;
         const companyIdx = colMap.companyIdx;
@@ -1999,14 +2228,7 @@ def home() -> str:
           const originalNumbers = String((originalIdx != null && originalIdx >= 0) ? r[originalIdx] || '' : '').trim();
           const notes = String((notesIdx != null && notesIdx >= 0) ? r[notesIdx] || '' : '').trim();
           let alternatives = String((altIdx != null && altIdx >= 0) ? r[altIdx] || '' : '').trim();
-          if (useHForAlt && !alternatives) {
-            const gAlt = String(r[6] || '').trim();
-            const hAlt = String(r[7] || '').trim();
-            alternatives = hAlt || gAlt;
-          }
-          if (alternatives && originalNumbers && normalizeTextForSearch(alternatives) === normalizeTextForSearch(originalNumbers)) {
-            alternatives = '';
-          }
+          alternatives = sanitizeAlternativesVsOriginalJs(alternatives, originalNumbers);
           const sizeWidth = String(r[1] || '').trim();
           const sizeDiameter = String(r[2] || '').trim();
           const sizeHeight = String(r[3] || '').trim();
@@ -2126,6 +2348,34 @@ def home() -> str:
       raw = raw.replace(/(\d{1,2})\s*[.,،]\s*(\d{1,3})(?!\d)/g, '$1.$2');
       raw = raw.replace(/\s+/g, ' ').trim();
       return raw.split(' ').filter(Boolean).filter(t => !['+', '-', '–', '—'].includes(t));
+    }
+
+    function splitQueryDisplayWordsJs(text) {
+      let raw = String(text || '')
+        .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .trim();
+      raw = raw.replace(/[،,;/|]+/g, ' ');
+      raw = raw.replace(/[()]+/g, ' ');
+      raw = raw.replace(/(\d{1,2})\s*[.,،]\s*(\d{1,3})(?!\d)/g, '$1.$2');
+      raw = raw.replace(/\s+/g, ' ').trim();
+      return raw.split(' ').filter(Boolean).filter(t => !['+', '-', '–', '—'].includes(t));
+    }
+
+    function displayFormsForTextTokensJs(textTokens, rawQuery) {
+      const words = splitQueryDisplayWordsJs(rawQuery);
+      const used = new Set();
+      return textTokens.map(t => {
+        const nt = normalizeTextForSearch(t);
+        for (let i = 0; i < words.length; i++) {
+          if (used.has(i)) continue;
+          if (normalizeTextForSearch(words[i]) === nt) {
+            used.add(i);
+            return words[i];
+          }
+        }
+        return t;
+      });
     }
 
     function formatSizeLabelDisplayJs(sourceFile, width, diameter, height) {
@@ -2425,10 +2675,38 @@ def home() -> str:
       return String(alternatives || '').split(/[\\/|,\\n;]+/).map(s => s.trim()).filter(Boolean);
     }
 
-    function extractMatchedAlternativeJs(alternatives, textTokens, years) {
+    function extractMatchedAlternativeJs(alternatives, textTokens, years, rawQuery = '') {
       if (!String(alternatives || '').trim()) return '';
       const segments = splitAlternativeSegmentsJs(alternatives);
       if (!segments.length) return '';
+      const altAll = normalizeTextForSearch(alternatives);
+
+      function tokenInAlternativesColumn(ntok) {
+        if (!ntok) return false;
+        if (!years.length) return altAll.includes(ntok);
+        for (const seg of segments) {
+          const n = normalizeTextForSearch(seg);
+          if (!n.includes(ntok)) continue;
+          if (years.some(y => yearInRangeTextJs(y, seg))) return true;
+        }
+        return false;
+      }
+
+      const forms = String(rawQuery || '').trim()
+        ? displayFormsForTextTokensJs(textTokens, rawQuery)
+        : textTokens.slice();
+      const seen = new Set();
+      const parts = [];
+      for (let i = 0; i < textTokens.length; i++) {
+        const t = textTokens[i];
+        const nt = normalizeTextForSearch(t);
+        if (!nt || seen.has(nt)) continue;
+        if (!tokenInAlternativesColumn(nt)) continue;
+        seen.add(nt);
+        parts.push(forms[i] != null ? forms[i] : t);
+      }
+      if (parts.length) return parts.join(' ').trim();
+
       const normalizedTokens = textTokens.map(normalizeTextForSearch).filter(Boolean);
       for (const segment of segments) {
         const n = normalizeTextForSearch(segment);
@@ -2437,10 +2715,17 @@ def home() -> str:
         if (hasText && hasYear) return segment;
       }
       if (normalizedTokens.length) {
+        let bestSeg = '';
+        let bestScore = -1;
         for (const segment of segments) {
           const n = normalizeTextForSearch(segment);
-          if (normalizedTokens.some(t => n.includes(t))) return segment;
+          const sc = normalizedTokens.filter(t => n.includes(t)).length;
+          if (sc > bestScore) {
+            bestScore = sc;
+            bestSeg = segment;
+          }
         }
+        if (bestScore > 0) return bestSeg;
         return '';
       }
       if (years.length) {
@@ -2477,6 +2762,7 @@ def home() -> str:
     }
 
     function rowMatchesQueryJs(row, textTokens, years) {
+      // كل توكن يجب أن يظهر في الصف (اسم/بدائل/ملف) — ترتيب الكلمات في الاستعلام لا يؤثر.
       const itemName = row.item_name || '';
       const alternatives = row.alternatives || '';
       const sourceFile = row.source_file || '';
@@ -2512,6 +2798,24 @@ def home() -> str:
       return true;
     }
 
+    function dedupeRowsByNormalizedOriginalPerFileJs(rowsIn) {
+      const seen = new Set();
+      const out = [];
+      for (const r of rowsIn) {
+        const origC = normalizeTextCompactJs(String(r.original_numbers || ''));
+        const src = normalizeTextForSearch(r.source_file || '');
+        if (!origC) {
+          out.push(r);
+          continue;
+        }
+        const key = `${origC}|${src}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(r);
+      }
+      return out;
+    }
+
     function searchOfflineSnapshot(query, numberQuery = '', sizeType = '', sizeWidth = '', sizeDiameter = '', sizeHeight = '') {
       const tokens = tokenizeQueryForSearch(query);
       const numberTokens = tokenizeQueryForSearch(numberQuery);
@@ -2536,10 +2840,12 @@ def home() -> str:
         if (!fileMatchesSizeTypeWithFallbackJs(r, sizeType, sizeWidth, sizeDiameter)) return false;
         if (!rowMatchesSizeFiltersJs(r, sizeType, sizeWidth, sizeDiameter, sizeHeight)) return false;
         return true;
-      }).slice(0, 300);
+      });
+      rows = dedupeRowsByNormalizedOriginalPerFileJs(rows);
+      rows = rows.slice(0, 300);
       rows = rows.map((r, i) => {
         const altRaw = String(r.alternatives || '').trim();
-        let matched = extractMatchedAlternativeJs(altRaw, textTokens, years);
+        let matched = extractMatchedAlternativeJs(altRaw, textTokens, years, query);
         if (!altRaw) matched = '';
         return {
           ...r,
@@ -2559,11 +2865,12 @@ def home() -> str:
       const matchingItems = [];
       const seen = new Set();
       for (const r of rows) {
-        const key = `${r.item_name}|${r.matched_alternative || ''}`;
+        const key = `${r.item_name}|${r.matched_alternative || ''}|${r.source_file || ''}`;
         if (!r.item_name || seen.has(key)) continue;
         seen.add(key);
         matchingItems.push({
           item_name: r.item_name,
+          source_file: r.source_file || '',
           matched_alternative: r.matched_alternative || '',
           size_label: r.size_label || '',
           row_key: r.row_key
@@ -2897,6 +3204,7 @@ def home() -> str:
         ? data.matching_items
         : (Array.isArray(data && data.matching_item_names) ? data.matching_item_names.map(name => ({
             item_name: name,
+            source_file: '',
             matched_alternative: '',
             size_label: '',
             row_key: name
@@ -2905,11 +3213,18 @@ def home() -> str:
         if (entry && typeof entry === 'object') return entry;
         return {
           item_name: String(entry || ''),
+          source_file: '',
           matched_alternative: '',
           size_label: '',
           row_key: String(entry || '')
         };
       }).filter((entry) => String(entry.item_name || '').trim());
+
+      function basenameOnlyJs(p) {
+        const s = String(p || '').trim().replace(/\\\\/g, '/');
+        const i = s.lastIndexOf('/');
+        return i >= 0 ? s.slice(i + 1) : s;
+      }
 
       quickItems.forEach(entry => {
         const btn = document.createElement('button');
@@ -2919,6 +3234,13 @@ def home() -> str:
         quickName.className = 'quick-name';
         quickName.textContent = entry.item_name || '';
         btn.appendChild(quickName);
+        const sf = basenameOnlyJs(entry.source_file);
+        if (sf) {
+          const quickFile = document.createElement('span');
+          quickFile.className = 'quick-file';
+          quickFile.textContent = sf;
+          btn.appendChild(quickFile);
+        }
         if (entry.matched_alternative) {
           const quickAlt = document.createElement('span');
           quickAlt.className = 'quick-alt';
@@ -3204,7 +3526,7 @@ def upload_rows_chunk(payload: UploadRowsChunkIn) -> dict:
                 row.company_number.strip(),
                 row.original_numbers.strip(),
                 row.notes.strip(),
-                row.alternatives.strip(),
+                sanitize_alternatives_vs_original(row.alternatives, row.original_numbers),
                 row.size_width.strip(),
                 row.size_diameter.strip(),
                 row.size_height.strip(),
@@ -3345,6 +3667,7 @@ def search(
             and file_matches_size_type_with_fallback(r, r["source_file"] or "", size_type, size_width, size_diameter)
             and row_matches_size_filters(size_type, r, size_width, size_diameter, size_height)
         ]
+        filtered_rows = dedupe_rows_by_normalized_original_per_file(filtered_rows)
         rows = filtered_rows[:500]
     finally:
         conn.close()
@@ -3354,7 +3677,12 @@ def search(
     seen_quick = set()
     for index, row in enumerate(rows):
         row_dict = dict(row)
-        matched_alt = extract_matched_alternative(row_dict.get("alternatives", ""), text_tokens, query_years)
+        matched_alt = extract_matched_alternative(
+            row_dict.get("alternatives", ""),
+            text_tokens,
+            query_years,
+            q,
+        )
         if not (row_dict.get("alternatives") or "").strip():
             matched_alt = ""
         row_key = f"{row_dict.get('source_file', '')}|{row_dict.get('source_sheet', '')}|{row_dict.get('company_number') or row_dict.get('item_number', '')}|{index}"
@@ -3373,12 +3701,17 @@ def search(
         row_dict["row_key"] = row_key
         prepared_rows.append(row_dict)
 
-        quick_key = (row_dict.get("item_name", ""), matched_alt)
+        quick_key = (
+            row_dict.get("item_name", ""),
+            matched_alt,
+            row_dict.get("source_file") or "",
+        )
         if quick_key not in seen_quick and row_dict.get("item_name", ""):
             seen_quick.add(quick_key)
             quick_items.append(
                 {
                     "item_name": row_dict["item_name"],
+                    "source_file": row_dict.get("source_file") or "",
                     "matched_alternative": matched_alt,
                     "size_label": row_dict.get("size_label", ""),
                     "row_key": row_key,
@@ -3398,13 +3731,18 @@ def search(
             quick_items = []
             seen_quick = set()
             for r in prepared_rows:
-                quick_key = (r.get("item_name", ""), r.get("matched_alternative", ""))
+                quick_key = (
+                    r.get("item_name", ""),
+                    r.get("matched_alternative", ""),
+                    r.get("source_file") or "",
+                )
                 if quick_key in seen_quick or not r.get("item_name"):
                     continue
                 seen_quick.add(quick_key)
                 quick_items.append(
                     {
                         "item_name": r["item_name"],
+                        "source_file": r.get("source_file") or "",
                         "matched_alternative": r.get("matched_alternative", ""),
                         "size_label": r.get("size_label", ""),
                         "row_key": r.get("row_key", ""),
