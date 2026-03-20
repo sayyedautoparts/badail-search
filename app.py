@@ -1839,6 +1839,7 @@ def home() -> str:
     button:hover { opacity: 0.95; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; table-layout: fixed; }
     th, td { border: 1px solid #eee; padding: 6px; text-align: right; vertical-align: top; word-wrap: break-word; }
+    #resultsTable th:first-child, #resultsTable td:first-child { width: 14%; font-size: 12px; color: #444; }
     th { background: #fafafa; }
     .muted { color: #666; font-size: 13px; }
     .pill { display: inline-block; background: #eef4ff; color: #2d5fff; padding: 7px 10px; border-radius: 10px; margin: 4px 4px 0 0; font-size: 12px; text-align: right; }
@@ -1917,6 +1918,7 @@ def home() -> str:
         <table id="resultsTable" style="display:none;">
           <thead>
             <tr>
+              <th>اسم الملف</th>
               <th>اسم الصنف</th>
               <th>رقم الصنف</th>
               <th>السيارات البديلة</th>
@@ -3646,9 +3648,11 @@ def home() -> str:
         const nameForUi = stripTrailingSpreadsheetFileFromDisplayName(r.item_name || '');
         const nameCell = `${escapeHtml(nameForUi)}${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
         const itemNumberDisplay = String(r.company_number || r.item_number || '');
+        const fileName = String(r.source_file || '').trim();
         const tr = document.createElement('tr');
         tr.dataset.rowKey = String(r.row_key || '');
-        tr.innerHTML = `<td>${nameCell}</td>
+        tr.innerHTML = `<td>${escapeHtml(fileName)}</td>
+                        <td>${nameCell}</td>
                         <td>${escapeHtml(itemNumberDisplay)}</td>
                         <td>${escapeHtml(String(r.alternatives ?? ''))}</td>`;
         body.appendChild(tr);
