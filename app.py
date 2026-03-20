@@ -74,7 +74,7 @@ ARABIC_LETTER_TRANS = str.maketrans(
     }
 )
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
-INGEST_PARSER_VERSION = "4"
+INGEST_PARSER_VERSION = "5"
 
 
 class DBConnection:
@@ -1219,22 +1219,42 @@ def find_header_column(
     return best_idx
 
 
-# عنوان عمود «رقم الصنف» في الواجهة — يُلتقط من الإكسل بالاسم التالي في صف العناوين (بعد normalize_text)
-HEADER_COMPANY_EXACT_LABEL = "رقم الشركات"
+# عناوين عمود «رقم الصنف» في الواجهة (بعد normalize_text) — تشمل أشكال الكتابة الشائعة في الإكسل
+COMPANY_HEADER_CANONICAL: frozenset[str] = frozenset(
+    {
+        normalize_text("رقم الشركات"),
+        normalize_text("رقم الشركة"),
+        normalize_text("رقم شركات"),
+        normalize_text("ارقام الشركات"),
+        normalize_text("أرقام الشركات"),
+        normalize_text("ارقام الشركة"),
+        normalize_text("أرقام الشركة"),
+    }
+)
+
+
+def normalize_header_cell_for_match(raw: str) -> str:
+    """إزالة مسافات غريبة وحروف عرض صفرية قد تمنع مطابقة عنوان «رقم الشركات»."""
+    t = normalize_text(str(raw or ""))
+    for ch in ("\u200c", "\u200b", "\ufeff", "\xa0"):
+        t = t.replace(ch, "")
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def find_company_column_by_exact_header(header_cells: list[str]) -> int | None:
     """
-    عمود رقم الصنف في البرنامج = عمود الإكسل الذي عنوان خليته في صف العناوين «رقم الشركات»
-    (مطابقة كاملة بعد تطبيع الحروف والأرقام والمسافات).
+    عمود رقم الصنف = عمود عنوانه يطابق «رقم الشركات» أو مرادفاته بعد التطبيع.
     """
-    target = normalize_text(HEADER_COMPANY_EXACT_LABEL)
-    if not target:
-        return None
     for idx, raw in enumerate(header_cells):
-        h = normalize_text(str(raw or ""))
-        if h == target:
+        h = normalize_header_cell_for_match(raw)
+        if not h:
+            continue
+        if h in COMPANY_HEADER_CANONICAL:
             return idx
+        # عنوان طويل قليلاً لكنه واضح (مثل تعليق في الخلية)
+        if len(h) <= 32 and "رقم" in h and ("شركات" in h or h.endswith("شركه")):
+            if not _header_bad_for_company(h):
+                return idx
     return None
 
 
@@ -1295,12 +1315,17 @@ def resolve_product_column_indices(header_cells: list[str]) -> dict[str, int | N
                 company_index = i
                 break
 
-    # غالبًا عمود «رقم الشركات» يقع مباشرة قبل «الرقم الأصلي» إن لم يُعثر على عنوان مناسب
-    if company_index is None and original_index is not None and original_index >= 1:
-        fb = original_index - 1
+    # غالبًا «رقم الشركات» بجانب «الرقم الأصلي» — جرّب يمين ثم يسار (ملفات ثيرموستات: الأصلي ثم الشركات)
+    if company_index is None and original_index is not None:
         blocked = {x for x in (item_name_index, alt_index, original_index, notes_index) if x is not None}
-        if fb not in blocked:
+        for delta in (1, -1, 2, -2):
+            fb = original_index + delta
+            if fb < 0 or fb in blocked:
+                continue
+            if fb >= len(header_cells):
+                continue
             company_index = fb
+            break
 
     return {
         "company_index": company_index,
@@ -1529,9 +1554,35 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
 
                     item_name = pick_item_name(values, item_name_index)
                     item_number = by_idx(item_number_index)
-                    # رقم الصنف في الواجهة = عمود رقم الشركات فقط (لا نسخ من أعمدة أخرى)
+                    # رقم الصنف في الواجهة = عمود رقم الشركات؛ إن كانت الخلية فارغة (دمج) نجرّب عمودًا مجاورًا للرقم الأصلي
                     company_number = by_idx(company_index)
                     original_numbers = by_idx(original_index)
+                    if (
+                        not (company_number or "").strip()
+                        and (original_numbers or "").strip()
+                        and original_index is not None
+                    ):
+                        o_c = normalize_text_compact(original_numbers)
+                        skip_adj = {
+                            i
+                            for i in (
+                                company_index,
+                                alt_index,
+                                notes_index,
+                                item_name_index,
+                                item_number_index,
+                            )
+                            if i is not None
+                        }
+                        for delta in (1, -1):
+                            j = original_index + delta
+                            if j in skip_adj or j < 0 or j >= len(values):
+                                continue
+                            cand = (values[j] or "").strip() if j < len(values) else ""
+                            if not cand or normalize_text_compact(cand) == o_c:
+                                continue
+                            company_number = cand
+                            break
                     notes = by_idx(notes_index)
                     alternatives = by_idx(alt_index) if alt_index is not None else ""
                     alternatives = sanitize_alternatives_vs_original(alternatives, original_numbers)
@@ -1625,7 +1676,6 @@ def home() -> str:
     .pill { display: inline-block; background: #eef4ff; color: #2d5fff; padding: 7px 10px; border-radius: 10px; margin: 4px 4px 0 0; font-size: 12px; text-align: right; }
     .pill-btn { border: none; cursor: pointer; min-width: 180px; }
     .quick-name { display: inline; font-weight: 700; }
-    .quick-file { display: inline; font-size: 11px; font-weight: 600; color: #1a4a9e; margin-inline-start: 6px; opacity: 0.92; }
     .quick-alt { display: block; margin-top: 3px; color: #4e5f8f; }
     .quick-size { display: block; margin-top: 3px; color: #3e4d76; font-size: 12px; }
     .row-focus { background: #fff7d6; transition: background-color 0.25s ease; }
@@ -1702,7 +1752,6 @@ def home() -> str:
               <th>الملف</th>
               <th>اسم الصنف</th>
               <th>رقم الصنف</th>
-              <th>الرقم الاصلي</th>
               <th>السيارات البديلة</th>
             </tr>
           </thead>
@@ -2085,12 +2134,27 @@ def home() -> str:
       return a;
     }
 
+    function normalizeHeaderCellForMatchJs(raw) {
+      let t = normalizeTextForSearch(String(raw || ''));
+      t = t.replace(/\u200c|\u200b|\ufeff|\xa0/g, '');
+      return t.replace(/\s+/g, ' ').trim();
+    }
+
     function findCompanyColumnByExactHeaderJs(header) {
-      const target = normalizeTextForSearch('رقم الشركات');
-      if (!target) return null;
+      const canon = new Set([
+        normalizeTextForSearch('رقم الشركات'),
+        normalizeTextForSearch('رقم الشركة'),
+        normalizeTextForSearch('رقم شركات'),
+        normalizeTextForSearch('ارقام الشركات'),
+        normalizeTextForSearch('أرقام الشركات'),
+        normalizeTextForSearch('ارقام الشركة'),
+        normalizeTextForSearch('أرقام الشركة')
+      ]);
       for (let i = 0; i < header.length; i++) {
-        const h = normalizeTextForSearch(String(header[i] || ''));
-        if (h === target) return i;
+        const h = normalizeHeaderCellForMatchJs(header[i]);
+        if (!h) continue;
+        if (canon.has(h)) return i;
+        if (h.length <= 32 && h.includes('رقم') && (h.includes('شركات') || h.endsWith('شركه')) && !headerBadForCompanyJs(h)) return i;
       }
       return null;
     }
@@ -2130,13 +2194,14 @@ def home() -> str:
           }
         }
       }
-      if (
-        (companyIdx === null || companyIdx === undefined)
-        && originalIdx != null && originalIdx !== undefined && originalIdx >= 1
-      ) {
-        const fb = originalIdx - 1;
+      if ((companyIdx === null || companyIdx === undefined) && originalIdx != null && originalIdx !== undefined) {
         const blocked = new Set([itemNameIdx, altIdx, originalIdx, notesIdx].filter((x) => x !== null && x !== undefined));
-        if (!blocked.has(fb)) companyIdx = fb;
+        for (const delta of [1, -1, 2, -2]) {
+          const fb = originalIdx + delta;
+          if (fb < 0 || blocked.has(fb) || fb >= header.length) continue;
+          companyIdx = fb;
+          break;
+        }
       }
       return { companyIdx, originalIdx, altIdx, itemNameIdx, itemNumIdx, notesIdx };
     }
@@ -2224,8 +2289,20 @@ def home() -> str:
         for (const r of grid.slice(headerRowIndex + 1)) {
           const itemName = pickItemNameJs(r, itemNameIdx);
           const itemNumber = String(r[itemNumberIdx] || '').trim();
-          const companyNumber = String((companyIdx != null && companyIdx >= 0) ? r[companyIdx] || '' : '').trim();
+          let companyNumber = String((companyIdx != null && companyIdx >= 0) ? r[companyIdx] || '' : '').trim();
           const originalNumbers = String((originalIdx != null && originalIdx >= 0) ? r[originalIdx] || '' : '').trim();
+          if (!companyNumber && originalNumbers && originalIdx != null && originalIdx !== undefined) {
+            const oC = normalizeTextCompactJs(originalNumbers);
+            const skipAdj = new Set([companyIdx, altIdx, notesIdx, itemNameIdx, itemNumberIdx].filter((x) => x != null && x !== undefined));
+            for (const delta of [1, -1]) {
+              const j = originalIdx + delta;
+              if (skipAdj.has(j) || j < 0) continue;
+              const cand = String(r[j] || '').trim();
+              if (!cand || normalizeTextCompactJs(cand) === oC) continue;
+              companyNumber = cand;
+              break;
+            }
+          }
           const notes = String((notesIdx != null && notesIdx >= 0) ? r[notesIdx] || '' : '').trim();
           let alternatives = String((altIdx != null && altIdx >= 0) ? r[altIdx] || '' : '').trim();
           alternatives = sanitizeAlternativesVsOriginalJs(alternatives, originalNumbers);
@@ -2849,7 +2926,7 @@ def home() -> str:
         if (!altRaw) matched = '';
         return {
           ...r,
-          item_number: String(r.company_number || ''),
+          item_number: String(r.company_number || r.item_number || ''),
           alternatives: altRaw,
           size_label: formatSizeLabelDisplayJs(r.source_file, r.size_width, r.size_diameter, r.size_height),
           matched_alternative: matched,
@@ -2865,12 +2942,11 @@ def home() -> str:
       const matchingItems = [];
       const seen = new Set();
       for (const r of rows) {
-        const key = `${r.item_name}|${r.matched_alternative || ''}|${r.source_file || ''}`;
+        const key = `${r.item_name}|${r.matched_alternative || ''}`;
         if (!r.item_name || seen.has(key)) continue;
         seen.add(key);
         matchingItems.push({
           item_name: r.item_name,
-          source_file: r.source_file || '',
           matched_alternative: r.matched_alternative || '',
           size_label: r.size_label || '',
           row_key: r.row_key
@@ -3204,7 +3280,6 @@ def home() -> str:
         ? data.matching_items
         : (Array.isArray(data && data.matching_item_names) ? data.matching_item_names.map(name => ({
             item_name: name,
-            source_file: '',
             matched_alternative: '',
             size_label: '',
             row_key: name
@@ -3213,18 +3288,11 @@ def home() -> str:
         if (entry && typeof entry === 'object') return entry;
         return {
           item_name: String(entry || ''),
-          source_file: '',
           matched_alternative: '',
           size_label: '',
           row_key: String(entry || '')
         };
       }).filter((entry) => String(entry.item_name || '').trim());
-
-      function basenameOnlyJs(p) {
-        const s = String(p || '').trim().replace(/\\\\/g, '/');
-        const i = s.lastIndexOf('/');
-        return i >= 0 ? s.slice(i + 1) : s;
-      }
 
       quickItems.forEach(entry => {
         const btn = document.createElement('button');
@@ -3234,13 +3302,6 @@ def home() -> str:
         quickName.className = 'quick-name';
         quickName.textContent = entry.item_name || '';
         btn.appendChild(quickName);
-        const sf = basenameOnlyJs(entry.source_file);
-        if (sf) {
-          const quickFile = document.createElement('span');
-          quickFile.className = 'quick-file';
-          quickFile.textContent = sf;
-          btn.appendChild(quickFile);
-        }
         if (entry.matched_alternative) {
           const quickAlt = document.createElement('span');
           quickAlt.className = 'quick-alt';
@@ -3263,13 +3324,12 @@ def home() -> str:
       safeRows.forEach(r => {
         const sizeLabel = String(r.size_label || '');
         const nameCell = `${escapeHtml(r.item_name)}${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
-        const itemNumberDisplay = String(r.company_number || '');
+        const itemNumberDisplay = String(r.company_number || r.item_number || '');
         const tr = document.createElement('tr');
         tr.dataset.rowKey = String(r.row_key || '');
         tr.innerHTML = `<td>${escapeHtml(r.source_file)}</td>
                         <td>${nameCell}</td>
                         <td>${escapeHtml(itemNumberDisplay)}</td>
-                        <td>${escapeHtml(r.original_numbers || '')}</td>
                         <td>${escapeHtml(String(r.alternatives ?? ''))}</td>`;
         body.appendChild(tr);
       });
@@ -3692,7 +3752,7 @@ def search(
             row_dict.get("size_diameter") or "",
             row_dict.get("size_height") or "",
         )
-        item_number_display = (row_dict.get("company_number") or "").strip()
+        item_number_display = (row_dict.get("company_number") or row_dict.get("item_number") or "").strip()
         row_dict["item_number"] = item_number_display
         row_dict["size_label"] = size_label
         row_dict["matched_alternative"] = matched_alt
@@ -3701,17 +3761,12 @@ def search(
         row_dict["row_key"] = row_key
         prepared_rows.append(row_dict)
 
-        quick_key = (
-            row_dict.get("item_name", ""),
-            matched_alt,
-            row_dict.get("source_file") or "",
-        )
+        quick_key = (row_dict.get("item_name", ""), matched_alt)
         if quick_key not in seen_quick and row_dict.get("item_name", ""):
             seen_quick.add(quick_key)
             quick_items.append(
                 {
                     "item_name": row_dict["item_name"],
-                    "source_file": row_dict.get("source_file") or "",
                     "matched_alternative": matched_alt,
                     "size_label": row_dict.get("size_label", ""),
                     "row_key": row_key,
@@ -3731,18 +3786,13 @@ def search(
             quick_items = []
             seen_quick = set()
             for r in prepared_rows:
-                quick_key = (
-                    r.get("item_name", ""),
-                    r.get("matched_alternative", ""),
-                    r.get("source_file") or "",
-                )
+                quick_key = (r.get("item_name", ""), r.get("matched_alternative", ""))
                 if quick_key in seen_quick or not r.get("item_name"):
                     continue
                 seen_quick.add(quick_key)
                 quick_items.append(
                     {
                         "item_name": r["item_name"],
-                        "source_file": r.get("source_file") or "",
                         "matched_alternative": r.get("matched_alternative", ""),
                         "size_label": r.get("size_label", ""),
                         "row_key": r.get("row_key", ""),
