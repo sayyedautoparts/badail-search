@@ -2,51 +2,234 @@ import io
 import os
 import re
 import sqlite3
+import hashlib
+import json
+import base64
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from openpyxl import load_workbook
+from pydantic import BaseModel
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover
+    psycopg = None
+    dict_row = None
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+except Exception:  # pragma: no cover
+    service_account = None
+    build = None
+    MediaIoBaseDownload = None
 
 
-DB_PATH = Path(os.getenv("APP_DB_PATH", str(Path(__file__).with_name("search_data.db"))))
+DEFAULT_DB_PATH = "/tmp/search_data.db" if os.getenv("VERCEL") else str(Path(__file__).with_name("search_data.db"))
+DB_PATH = Path(os.getenv("APP_DB_PATH", DEFAULT_DB_PATH))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+SUPABASE_POSTGRES_URL = (
+    os.getenv("SUPABASE_DB_URL")
+    or os.getenv("SUPABASE_DATABASE_URL")
+    or os.getenv("SUPABASE_POOLER_URL")
+    or ""
+).strip()
+NEON_POSTGRES_URL = (os.getenv("NEON_DATABASE_URL") or "").strip()
+POSTGRES_DB_URL = (SUPABASE_POSTGRES_URL or NEON_POSTGRES_URL or os.getenv("DATABASE_URL") or "").strip()
+USE_POSTGRES = POSTGRES_DB_URL.startswith("postgres")
+
+
+def detect_db_backend() -> str:
+    if not USE_POSTGRES:
+        return "sqlite"
+    host = POSTGRES_DB_URL.lower()
+    if "supabase" in host:
+        return "supabase"
+    if "neon" in host:
+        return "neon"
+    return "postgres"
+
+
+DB_BACKEND = detect_db_backend()
 CURRENT_YEAR = datetime.now().year
+DIGIT_TRANS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+ARABIC_LETTER_TRANS = str.maketrans(
+    {
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ٱ": "ا",
+        "ى": "ي",
+        "ؤ": "و",
+        "ئ": "ي",
+        "ة": "ه",
+        "ء": "",
+        "ـ": "",
+    }
+)
+APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+INGEST_PARSER_VERSION = "2"
 
 
-def get_db() -> sqlite3.Connection:
+class DBConnection:
+    def __init__(self, conn: Any, postgres: bool):
+        self._conn = conn
+        self._postgres = postgres
+
+    def _adapt_sql(self, sql: str) -> str:
+        if not self._postgres:
+            return sql
+        # Keep SQL source code sqlite-friendly and adapt placeholders for postgres.
+        return sql.replace("?", "%s")
+
+    def execute(self, sql: str, params: tuple | list = ()):
+        return self._conn.execute(self._adapt_sql(sql), params)
+
+    def executemany(self, sql: str, params_seq: list[tuple] | list[list]):
+        if not self._postgres:
+            return self._conn.executemany(self._adapt_sql(sql), params_seq)
+        with self._conn.cursor() as cur:
+            cur.executemany(self._adapt_sql(sql), params_seq)
+            return cur
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    @property
+    def postgres(self) -> bool:
+        return self._postgres
+
+
+def get_db() -> DBConnection:
+    if USE_POSTGRES:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed; add it to requirements first.")
+        conn = psycopg.connect(POSTGRES_DB_URL, row_factory=dict_row)
+        return DBConnection(conn, postgres=True)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return DBConnection(conn, postgres=False)
 
 
 def init_db() -> None:
     conn = get_db()
     try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS uploaded_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_name TEXT UNIQUE NOT NULL,
-                uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                rows_count INTEGER NOT NULL DEFAULT 0
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uploaded_files (
+                    id BIGSERIAL PRIMARY KEY,
+                    file_name TEXT UNIQUE NOT NULL,
+                    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    rows_count INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT,
+                    file_size BIGINT NOT NULL DEFAULT 0,
+                    parser_version TEXT NOT NULL DEFAULT ''
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_name TEXT,
-                item_number TEXT,
-                original_numbers TEXT,
-                alternatives TEXT,
-                source_file TEXT NOT NULL,
-                source_sheet TEXT NOT NULL
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uploaded_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_name TEXT UNIQUE NOT NULL,
+                    uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    rows_count INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT,
+                    file_size INTEGER NOT NULL DEFAULT 0
+                )
+                """
             )
-            """
-        )
+        # Keep compatibility with older DBs created before these columns existed.
+        if conn.postgres:
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'uploaded_files'
+                    """
+                ).fetchall()
+            }
+        else:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(uploaded_files)").fetchall()}
+        if "content_hash" not in columns:
+            conn.execute("ALTER TABLE uploaded_files ADD COLUMN content_hash TEXT")
+        if "file_size" not in columns:
+            conn.execute("ALTER TABLE uploaded_files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
+        if "parser_version" not in columns:
+            conn.execute("ALTER TABLE uploaded_files ADD COLUMN parser_version TEXT NOT NULL DEFAULT ''")
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS products (
+                    id BIGSERIAL PRIMARY KEY,
+                    item_name TEXT,
+                    item_number TEXT,
+                    company_number TEXT,
+                    original_numbers TEXT,
+                    notes TEXT,
+                    alternatives TEXT,
+                    size_width TEXT,
+                    size_diameter TEXT,
+                    size_height TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+            product_columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'products'
+                    """
+                ).fetchall()
+            }
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_name TEXT,
+                    item_number TEXT,
+                    company_number TEXT,
+                    original_numbers TEXT,
+                    notes TEXT,
+                    alternatives TEXT,
+                    size_width TEXT,
+                    size_diameter TEXT,
+                    size_height TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+            product_columns = {row["name"] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+        if "company_number" not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN company_number TEXT")
+        if "notes" not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN notes TEXT")
+        if "size_width" not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN size_width TEXT")
+        if "size_diameter" not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN size_diameter TEXT")
+        if "size_height" not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN size_height TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_products_item_name ON products(item_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_products_alternatives ON products(alternatives)")
         conn.commit()
@@ -54,10 +237,150 @@ def init_db() -> None:
         conn.close()
 
 
+def file_fingerprint(file_bytes: bytes) -> tuple[str, int]:
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    return digest, len(file_bytes)
+
+
+def is_same_uploaded_file(file_name: str, content_hash: str, file_size: int) -> bool:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT content_hash, file_size, COALESCE(parser_version, '') AS parser_version
+            FROM uploaded_files
+            WHERE file_name = ?
+            """,
+            (source_key,),
+        ).fetchone()
+        if not row:
+            return False
+        return (
+            (row["content_hash"] == content_hash)
+            and (int(row["file_size"] or 0) == int(file_size))
+            and (str(row["parser_version"] or "") == INGEST_PARSER_VERSION)
+        )
+    finally:
+        conn.close()
+
+
+def get_sync_meta() -> dict:
+    conn = get_db()
+    try:
+        files = conn.execute(
+            """
+            SELECT file_name, COALESCE(content_hash, '') AS content_hash, COALESCE(file_size, 0) AS file_size, uploaded_at
+            FROM uploaded_files
+            ORDER BY file_name
+            """
+        ).fetchall()
+        total_rows = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
+        updated_at = conn.execute("SELECT MAX(uploaded_at) AS ts FROM uploaded_files").fetchone()["ts"] or ""
+
+        if files:
+            fingerprint_input = "|".join(
+                f"{f['file_name']}:{f['content_hash']}:{f['file_size']}:{f['uploaded_at']}" for f in files
+            )
+        else:
+            fingerprint_input = f"rows:{total_rows}:updated:{updated_at}"
+        version = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
+        return {"version": version, "updated_at": updated_at, "total_rows": total_rows, "files_count": len(files)}
+    finally:
+        conn.close()
+
+
+def get_sync_rows() -> list[dict]:
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT item_name, item_number, company_number, original_numbers, notes, alternatives,
+                   size_width, size_diameter, size_height, source_file, source_sheet
+            FROM products
+            ORDER BY id
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+class UploadRowsStartIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+
+
+class UploadRowIn(BaseModel):
+    item_name: str = ""
+    item_number: str = ""
+    company_number: str = ""
+    original_numbers: str = ""
+    notes: str = ""
+    alternatives: str = ""
+    size_width: str = ""
+    size_diameter: str = ""
+    size_height: str = ""
+    source_sheet: str = "Sheet1"
+
+
+class UploadRowsChunkIn(BaseModel):
+    file_name: str
+    rows: list[UploadRowIn]
+
+
+class UploadRowsFinishIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+
+
+class UploadRowsAbortIn(BaseModel):
+    file_name: str
+
+
+def upsert_uploaded_file_meta(file_name: str, rows_count: int, content_hash: str, file_size: int) -> None:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (file_name, rows_count, content_hash, file_size, parser_version)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(file_name) DO UPDATE SET
+                uploaded_at = CURRENT_TIMESTAMP,
+                rows_count = excluded.rows_count,
+                content_hash = excluded.content_hash,
+                file_size = excluded.file_size,
+                parser_version = excluded.parser_version
+            """,
+            (source_key, rows_count, content_hash, file_size, INGEST_PARSER_VERSION),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def normalize_text(text: str) -> str:
-    text = str(text).strip().lower()
+    text = str(text).translate(DIGIT_TRANS).translate(ARABIC_LETTER_TRANS).strip().lower()
+    text = re.sub(r"[\u064B-\u065F\u0670\u06D6-\u06ED]", "", text)
     text = re.sub(r"[\s\-_]+", " ", text)
     return text
+
+
+def normalize_text_compact(text: str) -> str:
+    n = normalize_text(text)
+    return re.sub(r"[\s\-_/]+", "", n)
+
+
+def tokenize_query(text: str) -> list[str]:
+    raw = str(text).translate(DIGIT_TRANS).strip().lower()
+    raw = re.sub(r"[،,;/|]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw)
+    tokens = [t for t in raw.split(" ") if t]
+    # Standalone symbols are separators, not meaningful tokens.
+    return [t for t in tokens if t not in {"+", "-", "–", "—"}]
 
 
 def is_brakes_file(file_name: str) -> bool:
@@ -67,7 +390,7 @@ def is_brakes_file(file_name: str) -> bool:
 
 
 def parse_year_token(token: str) -> int | None:
-    cleaned = re.sub(r"[^\d]", "", token)
+    cleaned = re.sub(r"[^\d]", "", str(token).translate(DIGIT_TRANS))
     if len(cleaned) not in (2, 4):
         return None
     year = int(cleaned)
@@ -76,19 +399,63 @@ def parse_year_token(token: str) -> int | None:
     return year
 
 
-def parse_query_year_token(token: str) -> int | None:
-    raw = str(token).strip().lower()
-    # Query-side years should be explicit to avoid misreading engine values like "1.6" as years.
-    if not re.fullmatch(r"\+?\d{2,4}", raw):
-        return None
-    return parse_year_token(raw)
+def parse_query_year_token(token: str) -> list[int] | None:
+    raw = str(token).translate(DIGIT_TRANS).strip().lower()
+
+    # +15 or 15+ => 2015 .. current year
+    if re.fullmatch(r"(?:\+\d{2,4}|\d{2,4}\+)", raw):
+        start_token = raw[1:] if raw.startswith("+") else raw[:-1]
+        start = parse_year_token(start_token)
+        if start is None:
+            return None
+        return list(range(start, CURRENT_YEAR + 1))
+
+    # 10-15 => 2010 .. 2015 (range token only)
+    match = re.fullmatch(r"(\d{2,4})\s*[-–—]\s*(\d{2,4})", raw)
+    if match:
+        start = parse_year_token(match.group(1))
+        end = parse_year_token(match.group(2))
+        if start is None or end is None:
+            return None
+        low = min(start, end)
+        high = max(start, end)
+        return list(range(low, high + 1))
+
+    # -07 or 07- => up to 2007 (inclusive).
+    if re.fullmatch(r"(?:-\d{2,4}|\d{2,4}-)", raw):
+        end_token = raw[1:] if raw.startswith("-") else raw[:-1]
+        end = parse_year_token(end_token)
+        if end is None:
+            return None
+        return list(range(1900, end + 1))
+
+    # Single explicit 2/4-digit token is a single year (e.g. 11 => 2011).
+    # One-digit tokens (e.g. 2) remain normal text for model numbers.
+    if re.fullmatch(r"\d{2,4}", raw):
+        year = parse_year_token(raw)
+        if year is not None:
+            return [year]
+
+    # Other tokens (e.g. 2, 1.6, octavia2) are normal text tokens.
+    return None
+
+
+def is_explicit_year_operator_token(token: str) -> bool:
+    raw = str(token).translate(DIGIT_TRANS).strip().lower()
+    return bool(
+        re.fullmatch(r"(?:\+\d{2,4}|\d{2,4}\+)", raw)
+        or re.fullmatch(r"(\d{2,4})\s*[-–—]\s*(\d{2,4})", raw)
+        or re.fullmatch(r"(?:-\d{2,4}|\d{2,4}-)", raw)
+    )
 
 
 def year_in_range_text(year: int, text: str) -> bool:
     if not text:
         return False
 
-    normalized = normalize_text(text)
+    # Keep range symbols like "-" and "+" for year parsing.
+    normalized = str(text).translate(DIGIT_TRANS).strip().lower()
+    normalized = re.sub(r"\s+", " ", normalized)
 
     # Exact standalone year tokens (e.g. 2011, 11).
     for match in re.finditer(r"(?<!\d)(\d{4})(?!\d)", normalized):
@@ -99,8 +466,30 @@ def year_in_range_text(year: int, text: str) -> bool:
         if token_year == year:
             return True
 
-    # Supports formats like: "lancer +04" => 2004 .. current year.
+    # Chained plus markers, e.g. +03,+08 => 03-07 and +08.
+    plus_marks: list[tuple[int, int]] = []
+    for match in re.finditer(r"(?:\+\s*(\d{2,4})(?!\d)|(?<!\d)(\d{2,4})\s*\+(?!\d))", normalized):
+        token = match.group(1) or match.group(2)
+        start = parse_year_token(token)
+        if start is not None:
+            plus_marks.append((match.start(), start))
+    if plus_marks:
+        plus_marks.sort(key=lambda x: x[0])
+        for i, (_, start) in enumerate(plus_marks):
+            if i + 1 < len(plus_marks):
+                next_start = plus_marks[i + 1][1]
+                end = next_start - 1
+            else:
+                end = CURRENT_YEAR
+            if start <= year <= end:
+                return True
+
+    # Supports formats like: "lancer +04" or "lancer 04+" => 2004 .. current year.
     for match in re.finditer(r"\+\s*(\d{2,4})(?!\d)", normalized):
+        start = parse_year_token(match.group(1))
+        if start is not None and start <= year <= CURRENT_YEAR:
+            return True
+    for match in re.finditer(r"(?<!\d)(\d{2,4})\s*\+(?!\d)", normalized):
         start = parse_year_token(match.group(1))
         if start is not None and start <= year <= CURRENT_YEAR:
             return True
@@ -115,10 +504,34 @@ def year_in_range_text(year: int, text: str) -> bool:
         if low <= year <= high:
             return True
 
-    # Supports open-ended formats like: "04-" => 2004 .. current year.
+    # Chained minus markers, e.g. -03,-08 => <=03 and 04-08.
+    minus_marks: list[tuple[int, int]] = []
+    for match in re.finditer(r"(?:[-–—]\s*(\d{2,4})(?!\d)|(?<!\d)(\d{2,4})\s*[-–—](?!\s*\d))", normalized):
+        token = match.group(1) or match.group(2)
+        end = parse_year_token(token)
+        if end is not None:
+            minus_marks.append((match.start(), end))
+    if minus_marks:
+        minus_marks.sort(key=lambda x: x[0])
+        first_end = minus_marks[0][1]
+        if year <= first_end:
+            return True
+        for i in range(1, len(minus_marks)):
+            prev_end = minus_marks[i - 1][1]
+            cur_end = minus_marks[i][1]
+            low = prev_end + 1
+            high = cur_end
+            if low <= high and low <= year <= high:
+                return True
+
+    # Supports open-ended formats like: "-07" or "07-" => up to 2007.
+    for match in re.finditer(r"(?<!\d)[-–—]\s*(\d{2,4})(?!\d)", normalized):
+        end = parse_year_token(match.group(1))
+        if end is not None and year <= end:
+            return True
     for match in re.finditer(r"(?<!\d)(\d{2,4})\s*[-–—](?!\s*\d)", normalized):
-        start = parse_year_token(match.group(1))
-        if start is not None and start <= year <= CURRENT_YEAR:
+        end = parse_year_token(match.group(1))
+        if end is not None and year <= end:
             return True
     return False
 
@@ -141,111 +554,792 @@ def split_year_chunks(text: str) -> list[str]:
     return chunks or [text.strip()]
 
 
+def year_match_score(segment: str, years: list[int]) -> int:
+    if not segment or not years:
+        return 0
+
+    normalized = str(segment).translate(DIGIT_TRANS).strip().lower()
+    best = 0
+
+    # Exact year token (e.g. 2011 or 11) - highest precision.
+    for y in years:
+        for match in re.finditer(r"(?<!\d)(\d{4})(?!\d)", normalized):
+            if int(match.group(1)) == y:
+                best = max(best, 6000)
+        for match in re.finditer(r"(?<!\d)(\d{2})(?!\d)", normalized):
+            yy = parse_year_token(match.group(1))
+            if yy == y:
+                best = max(best, 5500)
+
+    # +15 or 15+ => start..current (prefer higher start when matching same year).
+    for match in re.finditer(r"(?:\+\s*(\d{2,4})|(?<!\d)(\d{2,4})\s*\+)", normalized):
+        token = match.group(1) or match.group(2)
+        start = parse_year_token(token)
+        if start is None:
+            continue
+        if all(start <= y <= CURRENT_YEAR for y in years):
+            best = max(best, 4000 + start)
+
+    # -07 or 07- => up to end year (prefer tighter upper bound).
+    for match in re.finditer(r"(?:[-–—]\s*(\d{2,4})|(?<!\d)(\d{2,4})\s*[-–—](?!\s*\d))", normalized):
+        token = match.group(1) or match.group(2)
+        end = parse_year_token(token)
+        if end is None:
+            continue
+        if all(y <= end for y in years):
+            best = max(best, 3000 + end)
+
+    # 10-15 => closed range (prefer narrower range when matching).
+    for match in re.finditer(r"(?<!\d)(\d{2,4})\s*[-–—]\s*(\d{2,4})(?!\d)", normalized):
+        start = parse_year_token(match.group(1))
+        end = parse_year_token(match.group(2))
+        if start is None or end is None:
+            continue
+        low = min(start, end)
+        high = max(start, end)
+        if all(low <= y <= high for y in years):
+            width = max(1, high - low + 1)
+            best = max(best, 5000 - width)
+
+    return best
+
+
 def extract_matched_alternative(alternatives: str, text_tokens: list[str], years: list[int]) -> str:
+    """لا نُرجع نصًا من عمود آخر؛ إذا خانة المتشابهات فاضية يبقى الفراغ."""
+    if not (alternatives or "").strip():
+        return ""
     segments = split_alternative_segments(alternatives)
     if not segments:
         return ""
 
     normalized_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t)]
     for segment in segments:
-        for chunk in split_year_chunks(segment):
-            nseg = normalize_text(chunk)
-            has_text = (not normalized_tokens) or all(tok in nseg for tok in normalized_tokens)
-            has_year = (not years) or any(year_in_range_text(y, chunk) for y in years)
-            if has_text and has_year:
-                return chunk
+        nseg = normalize_text(segment)
+        has_text = (not normalized_tokens) or all(tok in nseg for tok in normalized_tokens)
+        has_year = (not years) or any(year_in_range_text(y, segment) for y in years)
+        if has_text and has_year:
+            return segment
 
-    # Fallback: return the first segment that contains at least one text token.
     if normalized_tokens:
         for segment in segments:
-            for chunk in split_year_chunks(segment):
-                nseg = normalize_text(chunk)
-                if any(tok in nseg for tok in normalized_tokens):
-                    return chunk
+            nseg = normalize_text(segment)
+            if any(tok in nseg for tok in normalized_tokens):
+                return segment
+        return ""
+
+    if years:
+        for segment in segments:
+            nseg = normalize_text(segment)
+            if any(year_in_range_text(y, segment) for y in years):
+                return segment
+        return ""
+
     return segments[0]
 
 
 def row_matches_query(row: sqlite3.Row, text_tokens: list[str], years: list[int]) -> bool:
     item_name = row["item_name"] or ""
     alternatives = row["alternatives"] or ""
-    combined = normalize_text(f"{item_name} {alternatives}")
+    source_file = row["source_file"] or ""
+    item_norm = normalize_text(item_name)
+    alt_norm = normalize_text(alternatives)
+    file_norm = normalize_text(source_file)
+    combined = normalize_text(f"{item_name} {alternatives} {source_file}")
+    combined_compact = normalize_text_compact(f"{item_name} {alternatives} {source_file}")
 
     for token in text_tokens:
-        if normalize_text(token) not in combined:
+        nt = normalize_text(token)
+        nct = normalize_text_compact(token)
+        if nt not in combined and (nct and nct not in combined_compact):
             return False
 
     if years:
+        item_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t) in item_norm]
+        alt_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t) in alt_norm]
+        file_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t) in file_norm]
+        item_year_ok = bool(item_tokens) and any(year_in_range_text(y, item_name) for y in years)
+
         segments = split_alternative_segments(alternatives)
+        alt_year_ok = False
         if segments:
-            alt_tokens = [normalize_text(t) for t in text_tokens if normalize_text(t) in normalize_text(alternatives)]
-            segment_ok = False
             for segment in segments:
-                for chunk in split_year_chunks(segment):
-                    nseg = normalize_text(chunk)
-                    has_alt_tokens = (not alt_tokens) or all(t in nseg for t in alt_tokens)
-                    has_year = any(year_in_range_text(y, chunk) for y in years)
-                    if has_alt_tokens and has_year:
-                        segment_ok = True
-                        break
-                if segment_ok:
+                nseg = normalize_text(segment)
+                has_alt_tokens = (not alt_tokens) or all(t in nseg for t in alt_tokens)
+                has_year = any(year_in_range_text(y, segment) for y in years)
+                if has_alt_tokens and has_year:
+                    alt_year_ok = True
                     break
-            if not segment_ok:
+
+        # If query tokens are present in alternatives, year must match alternatives context.
+        if alt_tokens:
+            if not alt_year_ok:
                 return False
-        else:
-            # Fallback if alternatives empty: check item name only.
-            if not any(year_in_range_text(y, item_name) for y in years):
-                return False
+        # If tokens are only in source_file context, do not force year match.
+        elif file_tokens and not item_tokens:
+            pass
+        # Otherwise, rely on item-name year context (or alternative year if available).
+        elif not (item_year_ok or alt_year_ok):
+            return False
 
     return True
 
 
-def process_excel_file(file_bytes: bytes, file_name: str) -> int:
+def row_matches_number_query(row: sqlite3.Row, number_tokens: list[str]) -> bool:
+    if not number_tokens:
+        return True
+
+    number_space = normalize_text(
+        f"{row['company_number'] or ''} {row['original_numbers'] or ''} {row['notes'] or ''}"
+    )
+    return all(normalize_text(t) in number_space for t in number_tokens)
+
+
+def _numbers_in_normalized_text(text: str) -> list[float]:
+    """Extract numeric literals from normalized size text (handles 'قطر 98 مم', '29 x 98', etc.)."""
+    out: list[float] = []
+    for m in re.finditer(r"\d+(?:\.\d+)?", text or ""):
+        try:
+            out.append(float(m.group(0)))
+        except Exception:
+            continue
+    return out
+
+
+def match_size_value(cell_value: str, query_value: str) -> bool:
+    q = normalize_text(query_value).replace(",", ".")
+    if not q:
+        return True
+    c = normalize_text(cell_value).replace(",", ".")
+    if c == q:
+        return True
+    # Tolerate different formatting such as "10.0" vs "10"
+    try:
+        if float(c) == float(q):
+            return True
+    except Exception:
+        pass
+    # Query is a plain number but cell has extra text (units, labels, etc.)
+    try:
+        qf = float(q)
+    except Exception:
+        return q in c
+    for n in _numbers_in_normalized_text(c):
+        if n == qf:
+            return True
+    return False
+
+
+def match_size_value_driveshaft(cell_value: str, query_value: str) -> bool:
+    """
+    مطابقة قياسات مصلب الدراي شفط؛ إذا كتب المستخدم رقمًا من رقم واحد (مثل 9 بدل 98)
+    يُقبل إذا كان أي رقم في الخلية يبدأ بهذا الرقم (98 تطابق استعلام 9).
+    """
+    if match_size_value(cell_value, query_value):
+        return True
+    q = normalize_text(query_value).replace(",", ".")
+    if not re.fullmatch(r"\d", q):
+        return False
+    t = normalize_text(cell_value).replace(",", ".")
+    for m in re.finditer(r"\d+(?:\.\d+)?", t):
+        s = m.group(0)
+        sn = s.lstrip("0") or "0"
+        if s.startswith(q) or sn.startswith(q):
+            return True
+    return False
+
+
+def normalized_path_matches_driveshaft(sf: str) -> bool:
+    """
+    True if source_file path looks like a drive-shaft (مصلبات) Excel source.
+    Accepts spelling/layout variants often seen in Drive folder names.
+    """
+    if not sf:
+        return False
+    if "مصلبة دراي شفط" in sf or "مصلبات دراي شفط" in sf or "مصلب دراي شفط" in sf:
+        return True
+    # ة -> ه in normalize_text، «مصلب» يغطي مصلبات/مصلبه؛ قد يُكتب «مصلب» بدون تاء
+    if "مصلب" not in sf:
+        return False
+    has_shaft = ("شفط" in sf) or ("shaft" in sf)
+    has_drive = any(k in sf for k in ("دراي", "دري", "dry", "drive"))
+    # مجلدات باسم «مصلب دراي» بدون «شفط» أو العكس
+    return bool(has_shaft or has_drive)
+
+
+def is_driveshaft_size_query(size_type: str) -> bool:
+    st = normalize_text(size_type)
+    if not st:
+        return False
+    if st in (
+        "مصلبات دراي شفط",
+        "مصلبه دراي شفط",
+        "مصلبات",
+        "مصلب دراي شفط",
+        "مصلب دراي",
+    ):
+        return True
+    if "مصلب" in st and any(x in st for x in ("شفط", "دراي", "دري", "dry", "drive", "shaft")):
+        return True
+    return False
+
+
+def file_matches_size_type(source_file: str, size_type: str) -> bool:
+    st = normalize_text(size_type)
+    if not st:
+        return True
+    sf = normalize_text(source_file)
+
+    if st == "لبادات":
+        return "لبادات" in sf
+
+    if st in ["بيلية", "بيل", "بلي"]:
+        return any(key in sf for key in ["نابات + بيل عجل", "بيل مشكلة", "بيـل مشكلة"])
+
+    if is_driveshaft_size_query(size_type):
+        return normalized_path_matches_driveshaft(sf)
+
+    return True
+
+
+def file_matches_size_type_with_fallback(row: Any, source_file: str, size_type: str, sw: str, sd: str) -> bool:
+    """مسار الملف أو (مصلبات + قياسان في الاستعلام يطابقان B/C مع تجاهل مسار عند غيبته في source_file)."""
+    if not normalize_text(size_type):
+        return True
+    if file_matches_size_type(source_file, size_type):
+        return True
+    if not is_driveshaft_size_query(size_type):
+        return False
+    sf = normalize_text(source_file)
+    if "لبادات" in sf:
+        return False
+    if "بيل مشكلة" in sf or "بيـل مشكلة" in sf or normalize_text("نابات + بيل عجل") in sf:
+        return False
+    if not (normalize_text(sw) and normalize_text(sd)):
+        return False
+    rw = (row["size_width"] or "").strip()
+    rd = (row["size_diameter"] or "").strip()
+    if not rw or not rd:
+        return False
+    return (match_size_value_driveshaft(rw, sw) and match_size_value_driveshaft(rd, sd)) or (
+        match_size_value_driveshaft(rw, sd) and match_size_value_driveshaft(rd, sw)
+    )
+
+
+def row_matches_size_filters(size_type: str, row: Any, sw: str, sd: str, sh: str) -> bool:
+    """مطابقة أبعاد البحث؛ لمصلبات الدراي شفط: تبديل B/C مسموح ورقم واحد يطابق بادئة (9≈98)."""
+    if is_driveshaft_size_query(size_type):
+        wv = row["size_width"] or ""
+        dv = row["size_diameter"] or ""
+        hv = row["size_height"] or ""
+        swq, sdq = normalize_text(sw), normalize_text(sd)
+        if swq and sdq:
+            dim_ok = (match_size_value_driveshaft(wv, sw) and match_size_value_driveshaft(dv, sd)) or (
+                match_size_value_driveshaft(wv, sd) and match_size_value_driveshaft(dv, sw)
+            )
+        elif swq:
+            dim_ok = match_size_value_driveshaft(wv, sw) or match_size_value_driveshaft(dv, sw)
+        elif sdq:
+            dim_ok = match_size_value_driveshaft(wv, sd) or match_size_value_driveshaft(dv, sd)
+        else:
+            dim_ok = True
+        return dim_ok and match_size_value(hv, sh)
+    return (
+        match_size_value(row["size_width"] or "", sw)
+        and match_size_value(row["size_diameter"] or "", sd)
+        and match_size_value(row["size_height"] or "", sh)
+    )
+
+
+def is_size_file(source_file: str) -> bool:
+    sf = normalize_text(source_file)
+    return (
+        ("لبادات" in sf)
+        or ("بيل" in sf)
+        or ("بيلية" in sf)
+        or ("نابات" in sf)
+        or normalized_path_matches_driveshaft(sf)
+    )
+
+
+def extract_file_search_hints(query: str, tokens: list[str]) -> tuple[list[str], list[str]]:
+    qn = normalize_text(query)
+    hints: list[str] = []
+    consumed_tokens: set[str] = set()
+
+    def consume(*parts: str) -> None:
+        for p in parts:
+            consumed_tokens.add(normalize_text(p))
+
+    if ("فلتر" in qn or "فلاتر" in qn) and "هواء" in qn:
+        hints.extend(["فلتر هواء", "فلاتر هواء"])
+        consume("فلتر", "فلاتر", "هواء")
+    if ("فلتر" in qn or "فلاتر" in qn) and "زيت" in qn:
+        hints.extend(["فلتر زيت", "فلاتر زيت"])
+        consume("فلتر", "فلاتر", "زيت")
+    if ("فلتر" in qn or "فلاتر" in qn) and ("سولار" in qn or "ديزل" in qn):
+        hints.extend(["فلتر سولار", "فلاتر السولار", "فلاتر سولار", "فلتر ديزل", "فلاتر ديزل"])
+        consume("فلتر", "فلاتر", "سولار", "ديزل", "السولار")
+
+    cleaned_tokens = [t for t in tokens if normalize_text(t) not in consumed_tokens]
+    dedup_hints = list(dict.fromkeys(hints))
+    return dedup_hints, cleaned_tokens
+
+
+def get_header_index(header_cells: list[str], keywords: list[str]) -> int | None:
+    normalized_headers = [normalize_text(h) for h in header_cells]
+    normalized_keywords = [normalize_text(k) for k in keywords]
+
+    for idx, h in enumerate(normalized_headers):
+        if h in normalized_keywords:
+            return idx
+    for idx, h in enumerate(normalized_headers):
+        if any(k in h for k in normalized_keywords):
+            return idx
+    return None
+
+
+# عمود «رقم الصنف» في الواجهة = رقم الشركات في الملف — يُفصل عن «رقم الصنف» الداخلي في الإكسل
+HEADER_COMPANY_NUMBER = [
+    "رقم الشركات",
+    "رقم الشركة",
+    "رقم شركة",
+    "ارقام الشركات",
+    "أرقام الشركات",
+    "ارقام شركات",
+    "أرقام شركات",
+    "company number",
+    "رقم الشركات الموحد",
+]
+HEADER_ORIGINAL_NUMBERS = [
+    "الرقم الاصلي",
+    "الرقم الأصلي",
+    "رقم اصلي",
+    "رقم أصلي",
+    "ارقام اصلية",
+    "أرقام أصلية",
+    "ارقام أصلية",
+    "أرقام اصلية",
+    "original number",
+    "الرقم الاصلي للقطعة",
+    "الرقم الأصلي للقطعة",
+]
+HEADER_ALTERNATIVES = [
+    "متشابهات",
+    "متشابهاب",
+    "المتشابهات",
+    "التشابهات",
+    "المشابهات",
+    "المشابهين",
+    "البدائل",
+    "بدائل",
+    "البديلة",
+    "السيارات البديلة",
+    "السيارة البديلة",
+    "سيارات مشابهة",
+    "سيارة مشابهة",
+    "alternatives",
+    "alternative",
+    "سيارات بديلة",
+    "السيارات المعادلة",
+]
+HEADER_ITEM_NAME = [
+    "اسم السيارة",
+    "اسم الصنف",
+    "اسم السيارة/الصنف",
+    "النوع",
+    "نوع",
+    "نوع السيارة",
+    "نوع المركبة",
+    "نوع المركبه",
+    "الصنف",
+    "item name",
+    "name",
+]
+# أرقام داخلية / قطعة — بدون رقم الشركات حتى لا يُلتقط عمود الشركات قبل تعيينه صراحة
+HEADER_ITEM_NUMBER = [
+    "رقم الصنف",
+    "رقم القطعة",
+    "رقم الصنف الدولي",
+    "item number",
+    "part number",
+]
+HEADER_NOTES = ["ملاحظات", "ملاحظة", "notes"]
+
+
+def _header_has_original_marker(h: str) -> bool:
+    return ("اصلي" in h) or ("أصلي" in h) or ("اصليه" in h)
+
+
+def _header_bad_for_original(h: str) -> bool:
+    """لا نعتبر عمود «متشابهات/بدائل» عمودًا للرقم الأصلي إلا إذا ذُكر الأصلي في نفس العنوان."""
+    if "متشابه" in h or "تشابه" in h:
+        return not _header_has_original_marker(h)
+    if "البدائل" in h or "بدائل" in h:
+        return not _header_has_original_marker(h)
+    return False
+
+
+def _header_bad_for_alt(h: str) -> bool:
+    """لا نلتقط عمود رقم الشركات أو الرقم الأصلي كعمود للبدائل."""
+    if "رقم الشركات" in h or "رقم الشركة" in h:
+        return True
+    if "رقم شركة" in h and "بديل" not in h and "متشابه" not in h and "بدائل" not in h:
+        return True
+    if _header_has_original_marker(h) and "متشابه" not in h and "بديل" not in h and "بدائل" not in h and "تشابه" not in h:
+        return True
+    return False
+
+
+def _header_bad_for_company(h: str) -> bool:
+    """رقم الصنف (الواجهة) من عمود رقم الشركات فقط — لا نلتقط عمود النوع/الصنف."""
+    if not h:
+        return False
+    if "رقم الشركات" in h or "رقم الشركة" in h:
+        return False
+    if "شركات" in h and "رقم" in h:
+        return False
+    if "شركة" in h and "رقم" in h and "نوع" not in h:
+        return False
+    if "نوع" in h and "شركة" not in h and "شركات" not in h:
+        return True
+    if h in ("الصنف", "صنف") or (len(h) <= 12 and "صنف" in h and "رقم" not in h and "شرك" not in h):
+        return True
+    return False
+
+
+def find_header_column(
+    header_cells: list[str],
+    keywords: list[str],
+    *,
+    used: set[int] | None = None,
+    min_substring_len: int = 6,
+    reject: Callable[[str], bool] | None = None,
+) -> int | None:
+    """
+    يختار عمودًا واحدًا: مطابقة كاملة للعنوان أولًا، ثم جزئية بشرط طول الكلمة لتفادي أخطاء (مثل احتواء «رقم الصنف» على عنوان طويل خاطئ).
+    عند عدة مطابقات: أطول كلمة مفتاحية ثم أقرب عمود لليسار.
+    """
+    if used is None:
+        used = set()
+    norm_headers = [normalize_text(h) for h in header_cells]
+    sorted_kw = sorted({normalize_text(k) for k in keywords if normalize_text(k)}, key=len, reverse=True)
+    if not sorted_kw:
+        return None
+
+    for idx, h in enumerate(norm_headers):
+        if idx in used or not h:
+            continue
+        if reject and reject(h):
+            continue
+        if h in sorted_kw:
+            return idx
+
+    best_idx: int | None = None
+    best_key: tuple[int, int] | None = None  # (-len(kw), col_index) minimal = longer kw, then left column
+    for idx, h in enumerate(norm_headers):
+        if idx in used or not h:
+            continue
+        if reject and reject(h):
+            continue
+        for kw in sorted_kw:
+            if len(kw) < min_substring_len:
+                continue
+            if kw in h:
+                key = (-len(kw), idx)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_idx = idx
+    return best_idx
+
+
+def resolve_product_column_indices(header_cells: list[str], use_h_for_alternatives: bool) -> dict[str, int | None]:
+    used: set[int] = set()
+
+    def assign(
+        keywords: list[str],
+        min_sub: int,
+        reject: Callable[[str], bool] | None = None,
+    ) -> int | None:
+        idx = find_header_column(
+            header_cells, keywords, used=used, min_substring_len=min_sub, reject=reject
+        )
+        if idx is not None:
+            used.add(idx)
+        return idx
+
+    company_index = assign(HEADER_COMPANY_NUMBER, 6, reject=_header_bad_for_company)
+    original_index = assign(HEADER_ORIGINAL_NUMBERS, 6, reject=_header_bad_for_original)
+    alt_index = assign(HEADER_ALTERNATIVES, 5, reject=_header_bad_for_alt)
+    if alt_index is None and use_h_for_alternatives:
+        for c in (7, 6):
+            if c not in used:
+                alt_index = c
+                break
+
+    item_name_index = assign(HEADER_ITEM_NAME, 4)
+    notes_index = assign(HEADER_NOTES, 4)
+
+    item_number_index = find_header_column(
+        header_cells, HEADER_ITEM_NUMBER, used=used, min_substring_len=6
+    )
+    if item_number_index is not None:
+        used.add(item_number_index)
+    elif company_index is not None:
+        item_number_index = company_index
+    else:
+        item_number_index = 4 if 4 not in used else None
+        if item_number_index is None:
+            item_number_index = 4
+
+    return {
+        "company_index": company_index,
+        "original_index": original_index,
+        "alt_index": alt_index,
+        "item_name_index": item_name_index,
+        "item_number_index": item_number_index,
+        "notes_index": notes_index,
+    }
+
+
+def clean_cell(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "none" else text
+
+
+def pick_item_name(values: list[str], preferred_idx: int | None) -> str:
+    def val(i: int) -> str:
+        return values[i].strip() if 0 <= i < len(values) and values[i] else ""
+
+    primary = val(preferred_idx if preferred_idx is not None else -1)
+    if primary:
+        return primary
+
+    # Prefer early text-like columns if explicit header is missing.
+    for i in [1, 0, 2, 3, 4, 5]:
+        v = val(i)
+        if not v:
+            continue
+        if re.search(r"[A-Za-z\u0600-\u06FF]", v):
+            return v
+
+    # Last fallback: first non-empty cell in early columns.
+    for i in range(0, min(10, len(values))):
+        v = val(i)
+        if v:
+            return v
+    return ""
+
+
+def normalize_source_file_name(file_name: str) -> str:
+    value = str(file_name or "").strip().replace("\\", "/")
+    value = re.sub(r"/+", "/", value).lstrip("./")
+    return value or "unnamed.xlsx"
+
+
+def load_gdrive_service_account_info() -> dict:
+    raw_json = (os.getenv("GDRIVE_SERVICE_ACCOUNT_JSON") or "").strip()
+    raw_json_b64 = (os.getenv("GDRIVE_SERVICE_ACCOUNT_JSON_B64") or "").strip()
+    if raw_json:
+        return json.loads(raw_json)
+    if raw_json_b64:
+        return json.loads(base64.b64decode(raw_json_b64).decode("utf-8"))
+    raise RuntimeError("Missing Google service account credentials")
+
+
+def get_gdrive_service():
+    if service_account is None or build is None:
+        raise RuntimeError("Google Drive dependencies are not installed")
+    info = load_gdrive_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def is_openpyxl_supported_file_name(file_name: str) -> bool:
+    lower = str(file_name or "").lower()
+    return lower.endswith(".xlsx") or lower.endswith(".xlsm")
+
+
+def list_gdrive_excel_files(service, folder_id: str) -> list[dict]:
+    excel_mime_types = {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+        "application/vnd.ms-excel",
+    }
+    found_files: list[dict] = []
+    stack: list[tuple[str, str]] = [(folder_id, "")]
+    while stack:
+        current_folder_id, current_path = stack.pop()
+        page_token = None
+        while True:
+            resp = (
+                service.files()
+                .list(
+                    q=f"'{current_folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
+                    pageToken=page_token,
+                    pageSize=1000,
+                )
+                .execute()
+            )
+            for f in resp.get("files", []):
+                name = str(f.get("name") or "").strip()
+                if not name:
+                    continue
+                relative_name = f"{current_path}/{name}" if current_path else name
+                mime = str(f.get("mimeType") or "")
+                if mime == "application/vnd.google-apps.folder":
+                    stack.append((str(f.get("id")), relative_name))
+                    continue
+                is_excel = mime in excel_mime_types or re.search(r"\.(xlsx|xlsm|xlsb|xls)$", name, re.I)
+                if not is_excel:
+                    continue
+                found_files.append(
+                    {
+                        "id": str(f.get("id") or ""),
+                        "name": name,
+                        "relative_name": relative_name,
+                        "mimeType": mime,
+                        "modifiedTime": str(f.get("modifiedTime") or ""),
+                        "size": int(f.get("size") or 0),
+                    }
+                )
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    return found_files
+
+
+def download_gdrive_file_bytes(service, file_id: str) -> bytes:
+    if MediaIoBaseDownload is None:
+        raise RuntimeError("Google Drive download helper is unavailable")
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request, chunksize=2 * 1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buffer.getvalue()
+
+
+def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, file_size: int) -> tuple[int, int]:
     conn = get_db()
     inserted_rows = 0
+    unique_item_names: set[str] = set()
+    source_key = normalize_source_file_name(file_name)
 
     try:
-        conn.execute("DELETE FROM products WHERE source_file = ?", (file_name,))
+        conn.execute("DELETE FROM products WHERE source_file = ?", (source_key,))
         wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
         use_h_for_alternatives = is_brakes_file(file_name)
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
                 rows_to_insert = []
+                preview_rows = list(ws.iter_rows(min_row=1, max_row=30, min_col=1, max_col=40, values_only=True))
+                header_candidates = [
+                    "اسم الصنف",
+                    "اسم السيارة",
+                    "رقم الصنف",
+                    "رقم الشركة",
+                    "رقم الشركات",
+                    "الرقم الاصلي",
+                    "البدائل",
+                    "متشابهات",
+                ]
+                best_idx = 0
+                best_score = -1
+                for idx, prow in enumerate(preview_rows):
+                    cells = [clean_cell(v) for v in (prow or ())]
+                    score = sum(1 for k in header_candidates if get_header_index(cells, [k]) is not None)
+                    if score > best_score:
+                        best_score = score
+                        best_idx = idx
+                header_row = preview_rows[best_idx] if preview_rows else ()
+                header_cells = [clean_cell(v) for v in (header_row or ())]
+                data_start_row = best_idx + 2
 
-                for row in ws.iter_rows(min_col=1, max_col=8, values_only=True):
-                    # Fixed mapping by Excel column letters:
-                    # A => item_name, E => item_number, alternatives => G (default) or H for brakes files
-                    item_name = str(row[0]).strip() if row[0] is not None else ""
-                    item_number = str(row[4]).strip() if row[4] is not None else ""
-                    original_numbers = ""
-                    alt_index = 7 if use_h_for_alternatives else 6
-                    alternatives = str(row[alt_index]).strip() if row[alt_index] is not None else ""
+                cols = resolve_product_column_indices(header_cells, use_h_for_alternatives)
+                company_index = cols["company_index"]
+                original_index = cols["original_index"]
+                alt_index = cols["alt_index"]
+                item_name_index = cols["item_name_index"]
+                item_number_index = cols["item_number_index"]
+                notes_index = cols["notes_index"]
+                if item_name_index is None:
+                    item_name_index = 0
 
-                    if not any([item_name, item_number, original_numbers, alternatives]):
-                        continue
+                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=40, values_only=True):
+                    values = [clean_cell(v) for v in row]
 
-                    # Skip typical header row.
-                    joined = normalize_text(" ".join([item_name, item_number, original_numbers, alternatives]))
-                    if "اسم الصنف" in joined and "رقم الصنف" in joined:
+                    def by_idx(idx: int | None, default: str = "") -> str:
+                        if idx is None:
+                            return default
+                        if idx < 0 or idx >= len(values):
+                            return default
+                        return values[idx]
+
+                    item_name = pick_item_name(values, item_name_index)
+                    item_number = by_idx(item_number_index)
+                    # رقم الصنف في الواجهة = عمود رقم الشركات فقط (لا نسخ من أعمدة أخرى)
+                    company_number = by_idx(company_index)
+                    original_numbers = by_idx(original_index)
+                    notes = by_idx(notes_index)
+                    alternatives = by_idx(alt_index) if alt_index is not None else ""
+                    if use_h_for_alternatives and not (alternatives or "").strip():
+                        g_alt = by_idx(6)
+                        h_alt = by_idx(7)
+                        alternatives = (h_alt or g_alt)
+                    size_width = by_idx(1)
+                    size_diameter = by_idx(2)
+                    size_height = by_idx(3)
+
+                    if not any(
+                        [
+                            item_name,
+                            item_number,
+                            company_number,
+                            original_numbers,
+                            notes,
+                            alternatives,
+                            size_width,
+                            size_diameter,
+                            size_height,
+                        ]
+                    ):
                         continue
 
                     rows_to_insert.append(
                         (
                             item_name,
                             item_number,
+                            company_number,
                             original_numbers,
+                            notes,
                             alternatives,
-                            file_name,
+                            size_width,
+                            size_diameter,
+                            size_height,
+                            source_key,
                             str(sheet_name),
                         )
                     )
+                    if item_name:
+                        unique_item_names.add(item_name)
 
                 if rows_to_insert:
                     conn.executemany(
                         """
                         INSERT INTO products (
-                            item_name, item_number, original_numbers, alternatives, source_file, source_sheet
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            item_name, item_number, company_number, original_numbers, notes, alternatives,
+                            size_width, size_diameter, size_height, source_file, source_sheet
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows_to_insert,
                     )
@@ -253,18 +1347,9 @@ def process_excel_file(file_bytes: bytes, file_name: str) -> int:
         finally:
             wb.close()
 
-        conn.execute(
-            """
-            INSERT INTO uploaded_files (file_name, rows_count)
-            VALUES (?, ?)
-            ON CONFLICT(file_name) DO UPDATE SET
-                uploaded_at = CURRENT_TIMESTAMP,
-                rows_count = excluded.rows_count
-            """,
-            (file_name, inserted_rows),
-        )
         conn.commit()
-        return inserted_rows
+        upsert_uploaded_file_meta(source_key, inserted_rows, content_hash, file_size)
+        return inserted_rows, len(unique_item_names)
     finally:
         conn.close()
 
@@ -281,12 +1366,17 @@ def home() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b66ff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="بحث البدائل" />
+  <link rel="manifest" href="/manifest.webmanifest" />
   <title>بحث البدائل</title>
   <style>
     body { font-family: Arial, sans-serif; background: #f6f7fb; margin: 0; }
     .wrap { max-width: 760px; margin: 18px auto; padding: 0 12px; }
     .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-bottom: 16px; }
-    input, button { width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+    input, select, button { width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
     button { background: #0b66ff; color: #fff; border: none; cursor: pointer; }
     button:hover { opacity: 0.95; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; table-layout: fixed; }
@@ -297,6 +1387,7 @@ def home() -> str:
     .pill-btn { border: none; cursor: pointer; min-width: 180px; }
     .quick-name { display: block; font-weight: 700; }
     .quick-alt { display: block; margin-top: 3px; color: #4e5f8f; }
+    .quick-size { display: block; margin-top: 3px; color: #3e4d76; font-size: 12px; }
     .row-focus { background: #fff7d6; transition: background-color 0.25s ease; }
     .upload-label { display: block; margin-top: 8px; font-size: 12px; color: #334; font-weight: 700; }
     .upload-actions { display: flex; gap: 8px; margin-top: 8px; }
@@ -304,6 +1395,13 @@ def home() -> str:
     .btn-secondary { background: #edf0f8; color: #223; }
     .drop-zone { margin-top: 8px; border: 2px dashed #b8c4e6; border-radius: 10px; padding: 12px; text-align: center; color: #445; background: #f8faff; }
     .drop-zone.active { border-color: #2d5fff; background: #eef3ff; }
+    .progress-wrap { margin-top: 8px; height: 10px; background: #e8ecf5; border-radius: 999px; overflow: hidden; }
+    .progress-bar { height: 100%; width: 0%; background: #2d5fff; transition: width 0.2s ease; }
+    .tabs { display: flex; gap: 8px; margin: 8px 0 10px; }
+    .tab-btn { flex: 1; background: #edf0f8; color: #223; }
+    .tab-btn.active { background: #0b66ff; color: #fff; }
+    .search-panel { display: none; }
+    .search-panel.active { display: block; }
   </style>
 </head>
 <body>
@@ -311,24 +1409,50 @@ def home() -> str:
     <div class="card">
       <h2>رفع ملفات Excel</h2>
       <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة.</p>
-      <label class="upload-label" for="filesInput">اختيار ملفات Excel (ملفات فقط)</label>
-      <input id="filesInput" type="file" multiple accept=".xls,.xlsx,.xlsm" />
-      <label class="upload-label" for="folderInput">اختيار فولدرات فيها ملفات Excel</label>
-      <input id="folderInput" type="file" webkitdirectory directory multiple />
-      <div id="dropZone" class="drop-zone">اسحب كل الفولدرات/الملفات هون دفعة واحدة ثم ارفع</div>
+      <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
-        <button type="button" onclick="uploadFiles()">رفع الملفات</button>
+        <button id="uploadBtn" type="button" onclick="uploadFiles()">رفع الملفات</button>
       </div>
       <div id="selectionInfo" class="muted">الملفات المحددة: 0</div>
+      <div id="progressInfo" class="muted"></div>
+      <div class="progress-wrap"><div id="progressBar" class="progress-bar"></div></div>
       <div id="uploadResult" class="muted"></div>
+      <div class="upload-actions">
+        <button type="button" onclick="syncSnapshotFromServer()">مزامنة للهاتف (Offline)</button>
+        <button type="button" class="btn-secondary" onclick="checkSnapshotUpdate(true, true)">فحص تحديث البيانات</button>
+      </div>
+      <div id="syncInfo" class="muted"></div>
     </div>
 
     <div class="card">
       <h2>البحث</h2>
-      <p class="muted">مثال: اكتب <b>رينج liana</b> أو <b>liana</b></p>
-      <input id="queryInput" placeholder="اكتب كلمة البحث..." />
-      <button onclick="searchNow()">بحث</button>
+      <div class="tabs">
+        <button id="tabMainBtn" type="button" class="tab-btn active" onclick="setSearchTab('main')">البحث الرئيسي</button>
+        <button id="tabSizeBtn" type="button" class="tab-btn" onclick="setSearchTab('size')">بحث القياسات</button>
+      </div>
+
+      <div id="mainSearchPanel" class="search-panel active">
+        <p class="muted">البحث الرئيسي داخل: اسم الصنف + المتشابهات (البدائل)</p>
+        <input id="queryInput" placeholder="بحث رئيسي (اسم الصنف / المتشابهات)..." />
+        <input id="numberQueryInput" placeholder="بحث الأرقام (الملاحظات / الرقم الأصلي / رقم الشركة)..." />
+        <button onclick="searchNow('main')">بحث</button>
+      </div>
+
+      <div id="sizeSearchPanel" class="search-panel">
+        <p class="muted" style="margin-top:10px;">بحث القياسات (لبادات / بيل / مصلبات دراي شفط)</p>
+        <select id="sizeTypeInput">
+          <option value="">اختر النوع (اختياري)</option>
+          <option value="لبادات">لبادات</option>
+          <option value="بيل">بيل</option>
+          <option value="مصلبات دراي شفط">مصلبات دراي شفط</option>
+        </select>
+        <input id="sizeWidthInput" placeholder="العرض (B)" />
+        <input id="sizeDiameterInput" placeholder="القطر (C)" />
+        <input id="sizeHeightInput" placeholder="الارتفاع (D)" />
+        <button onclick="searchNow('size')">بحث القياسات</button>
+      </div>
+
       <div id="stats" class="muted"></div>
       <div id="names"></div>
       <div style="overflow:auto;">
@@ -338,8 +1462,8 @@ def home() -> str:
               <th>الملف</th>
               <th>اسم الصنف</th>
               <th>رقم الصنف</th>
-              <th>التعريف المطابق</th>
-              <th>البدائل</th>
+              <th>الرقم الاصلي</th>
+              <th>السيارات البديلة</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -348,17 +1472,152 @@ def home() -> str:
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     let autoRefreshTimer = null;
     let searchDebounceTimer = null;
     const selectedFilesMap = new Map();
+    let selectedFileSerial = 0;
+    const CLIENT_APP_VERSION = '{APP_VERSION}';
+    let activeSearchTab = 'main';
+    const OFFLINE_DB_NAME = 'badail_offline_db';
+    const OFFLINE_DB_STORE = 'snapshots';
+    const OFFLINE_DB_KEY = 'latest';
+    let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
+    let lastNotifiedVersion = '';
+
+    function setSyncInfo(message) {
+      document.getElementById('syncInfo').innerText = message || '';
+    }
+
+    function setSearchTab(tab) {
+      activeSearchTab = (tab === 'size') ? 'size' : 'main';
+      localStorage.setItem('activeSearchTab', activeSearchTab);
+      document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
+      document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
+      document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
+      document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
+    }
+
+    function registerServiceWorker() {
+      if (!('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        reg.update().catch(() => {});
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if (!newWorker) return;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              setSyncInfo('يوجد تحديث للتطبيق. أغلقه وافتحه من جديد عند رغبتك.');
+            }
+          });
+        });
+      }).catch(() => {
+        // ignore service-worker registration errors
+      });
+    }
+
+    async function ensureLatestClientVersion() {
+      try {
+        const res = await fetch(`/health?ts=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverVersion = String(data.app_version || '').trim();
+        if (!serverVersion) return;
+
+        const localVersion = localStorage.getItem('app_version') || '';
+        if (!localVersion) {
+          localStorage.setItem('app_version', serverVersion);
+          return;
+        }
+
+        if (localVersion !== serverVersion) {
+          localStorage.setItem('app_version', serverVersion);
+          if ('serviceWorker' in navigator) {
+            try {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map(r => r.update()));
+            } catch (_) {}
+          }
+          if (!window.location.search.includes(`av=${encodeURIComponent(serverVersion)}`)) {
+            const next = `/?av=${encodeURIComponent(serverVersion)}&ts=${Date.now()}`;
+            window.location.replace(next);
+          }
+        }
+      } catch (_) {
+        // ignore version-check errors
+      }
+    }
+
+    function openOfflineDb() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(OFFLINE_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(OFFLINE_DB_STORE)) {
+            db.createObjectStore(OFFLINE_DB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function loadLocalSnapshot() {
+      try {
+        const db = await openOfflineDb();
+        const snapshot = await new Promise((resolve, reject) => {
+          const tx = db.transaction(OFFLINE_DB_STORE, 'readonly');
+          const req = tx.objectStore(OFFLINE_DB_STORE).get(OFFLINE_DB_KEY);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        if (snapshot && Array.isArray(snapshot.rows)) {
+          localSnapshot = snapshot;
+          setSyncInfo(`نسخة محلية متوفرة: ${snapshot.total_rows || snapshot.rows.length} صف (إصدار ${snapshot.version || '-'})`);
+        } else {
+          setSyncInfo('لا توجد نسخة محلية بعد. اعمل مزامنة للهاتف.');
+        }
+      } catch (_) {
+        setSyncInfo('تعذر تحميل النسخة المحلية من الجهاز.');
+      }
+    }
+
+    async function saveLocalSnapshot(snapshot) {
+      const payload = {
+        version: snapshot.version || '',
+        updated_at: snapshot.updated_at || '',
+        total_rows: Number(snapshot.total_rows || (snapshot.rows || []).length),
+        rows: Array.isArray(snapshot.rows) ? snapshot.rows : []
+      };
+      const db = await openOfflineDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_DB_STORE, 'readwrite');
+        tx.objectStore(OFFLINE_DB_STORE).put(payload, OFFLINE_DB_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+      localSnapshot = payload;
+      setSyncInfo(`تمت مزامنة النسخة المحلية: ${payload.total_rows} صف (إصدار ${payload.version || '-'})`);
+    }
 
     function excelOnly(files) {
-      return Array.from(files).filter(f => /\\.(xlsx|xlsm|xls)$/i.test(f.name));
+      return Array.from(files).filter(f => /\\.(xlsx|xlsm|xls|xlsb)$/i.test(f.name));
+    }
+
+    function sourceKeyForFile(file) {
+      return String(file.webkitRelativePath || file.relativePath || file.name || '')
+        .replace(/\\\\/g, '/')
+        .replace(/^\\/+/, '')
+        .trim() || String(file.name || 'unnamed.xlsx');
     }
 
     function fileKey(file) {
-      return `${file.webkitRelativePath || file.name}::${file.size}::${file.lastModified}`;
+      // Keep every file entry unique to avoid accidental overwrite
+      // when different files share same name/size/date metadata.
+      return `${sourceKeyForFile(file)}::${file.size}::${file.lastModified}::${selectedFileSerial++}`;
     }
 
     function updateSelectionInfo() {
@@ -375,15 +1634,25 @@ def home() -> str:
 
     function clearSelectedFiles() {
       selectedFilesMap.clear();
-      document.getElementById('filesInput').value = '';
-      document.getElementById('folderInput').value = '';
       updateSelectionInfo();
+      setUploadProgress(0, '');
       document.getElementById('uploadResult').innerText = 'تم تفريغ الاختيارات.';
+    }
+
+    function setUploadProgress(percent, message) {
+      const p = Math.max(0, Math.min(100, percent));
+      document.getElementById('progressBar').style.width = `${p}%`;
+      document.getElementById('progressInfo').innerText = message || '';
     }
 
     function readFileFromEntry(entry) {
       return new Promise((resolve) => {
-        entry.file((file) => resolve([file]), () => resolve([]));
+        entry.file((file) => {
+          try {
+            file.relativePath = String(entry.fullPath || file.webkitRelativePath || file.name || '').replace(/^\\/+/, '');
+          } catch (_) {}
+          resolve([file]);
+        }, () => resolve([]));
       });
     }
 
@@ -416,10 +1685,41 @@ def home() -> str:
       return collected;
     }
 
+    async function collectFilesFromDirectoryHandle(handle, parentPath = '') {
+      const files = [];
+      for await (const [name, child] of handle.entries()) {
+        const nextPath = parentPath ? `${parentPath}/${name}` : name;
+        if (child.kind === 'file') {
+          const file = await child.getFile();
+          try { file.relativePath = nextPath; } catch (_) {}
+          files.push(file);
+        } else if (child.kind === 'directory') {
+          const nested = await collectFilesFromDirectoryHandle(child, nextPath);
+          files.push(...nested);
+        }
+      }
+      return files;
+    }
+
+    async function pickFolderDeep() {
+      if (!window.showDirectoryPicker) {
+        document.getElementById('uploadResult').innerText = 'متصفحك لا يدعم اختيار المجلد العميق. استخدم السحب والإفلات.';
+        return;
+      }
+      try {
+        const root = await window.showDirectoryPicker();
+        const allFiles = await collectFilesFromDirectoryHandle(root);
+        appendFilesToSelection(allFiles);
+        document.getElementById('uploadResult').innerText = `تمت إضافة ${allFiles.length} ملف من المجلد الرئيسي وكل المجلدات الفرعية.`;
+      } catch (_) {
+        // User canceled picker or permission denied.
+      }
+    }
+
     async function handleDrop(e) {
       e.preventDefault();
       const dropZone = document.getElementById('dropZone');
-      dropZone.classList.remove('active');
+      if (dropZone) dropZone.classList.remove('active');
 
       const dt = e.dataTransfer;
       if (!dt) return;
@@ -441,6 +1741,901 @@ def home() -> str:
       document.getElementById('uploadResult').innerText = 'تمت إضافة العناصر المسحوبة. اضغط رفع الملفات.';
     }
 
+    function isBrakesFileNameJs(fileName) {
+      const n = normalizeTextForSearch(fileName || '');
+      return n.includes('بريك') || n.includes('بريكات') || n.includes('brake') || n.includes('brakes');
+    }
+
+    function getHeaderIndexJs(headers, keywords) {
+      const hs = (headers || []).map(h => normalizeTextForSearch(h));
+      const ks = keywords.map(k => normalizeTextForSearch(k));
+      for (let i = 0; i < hs.length; i++) {
+        if (ks.includes(hs[i])) return i;
+      }
+      for (let i = 0; i < hs.length; i++) {
+        if (ks.some(k => hs[i].includes(k))) return i;
+      }
+      return null;
+    }
+
+    function headerHasOriginalMarkerJs(h) {
+      return h.includes('اصلي') || h.includes('أصلي') || h.includes('اصليه');
+    }
+    function headerBadForOriginalJs(h) {
+      if (!h) return false;
+      if (h.includes('متشابه') || h.includes('تشابه')) return !headerHasOriginalMarkerJs(h);
+      if (h.includes('البدائل') || h.includes('بدائل')) return !headerHasOriginalMarkerJs(h);
+      return false;
+    }
+    function headerBadForAltJs(h) {
+      if (!h) return false;
+      if (h.includes('رقم الشركات') || h.includes('رقم الشركة')) return true;
+      if (h.includes('رقم شركة') && !h.includes('بديل') && !h.includes('متشابه') && !h.includes('بدائل') && !h.includes('تشابه')) return true;
+      if (headerHasOriginalMarkerJs(h) && !h.includes('متشابه') && !h.includes('بديل') && !h.includes('بدائل') && !h.includes('تشابه')) return true;
+      return false;
+    }
+    function headerBadForCompanyJs(h) {
+      if (!h) return false;
+      if (h.includes('رقم الشركات') || h.includes('رقم الشركة')) return false;
+      if (h.includes('شركات') && h.includes('رقم')) return false;
+      if (h.includes('شركة') && h.includes('رقم') && !h.includes('نوع')) return false;
+      if (h.includes('نوع') && !h.includes('شركة') && !h.includes('شركات')) return true;
+      if (h === 'الصنف' || h === 'صنف' || (h.length <= 12 && h.includes('صنف') && !h.includes('رقم') && !h.includes('شرك'))) return true;
+      return false;
+    }
+
+    function findHeaderColumnJs(headers, keywords, usedSet, minSubstringLen, rejectFn) {
+      const hs = (headers || []).map(h => normalizeTextForSearch(h));
+      const ks = [...new Set(keywords.map(k => normalizeTextForSearch(k)).filter(Boolean))]
+        .sort((a, b) => b.length - a.length);
+      const used = usedSet || new Set();
+      for (let i = 0; i < hs.length; i++) {
+        if (used.has(i) || !hs[i]) continue;
+        if (rejectFn && rejectFn(hs[i])) continue;
+        if (ks.includes(hs[i])) return i;
+      }
+      let bestIdx = null;
+      let bestLen = -1;
+      let bestI = 9999;
+      for (let i = 0; i < hs.length; i++) {
+        if (used.has(i) || !hs[i]) continue;
+        const h = hs[i];
+        if (rejectFn && rejectFn(h)) continue;
+        for (const kw of ks) {
+          if (kw.length < minSubstringLen) continue;
+          if (h.includes(kw)) {
+            if (kw.length > bestLen || (kw.length === bestLen && i < bestI)) {
+              bestLen = kw.length;
+              bestI = i;
+              bestIdx = i;
+            }
+          }
+        }
+      }
+      return bestIdx;
+    }
+
+    const HEADER_COMPANY_JS = ['رقم الشركات', 'رقم الشركة', 'رقم شركة', 'ارقام الشركات', 'أرقام الشركات', 'ارقام شركات', 'أرقام شركات', 'company number', 'رقم الشركات الموحد'];
+    const HEADER_ORIGINAL_JS = ['الرقم الاصلي', 'الرقم الأصلي', 'رقم اصلي', 'رقم أصلي', 'ارقام اصلية', 'أرقام أصلية', 'ارقام أصلية', 'أرقام اصلية', 'original number', 'الرقم الاصلي للقطعة', 'الرقم الأصلي للقطعة'];
+    const HEADER_ALT_JS = ['متشابهات', 'متشابهاب', 'المتشابهات', 'التشابهات', 'المشابهات', 'المشابهين', 'البدائل', 'بدائل', 'البديلة', 'السيارات البديلة', 'السيارة البديلة', 'سيارات مشابهة', 'سيارة مشابهة', 'alternatives', 'alternative', 'سيارات بديلة', 'السيارات المعادلة'];
+    const HEADER_ITEM_NAME_JS = ['اسم السيارة', 'اسم الصنف', 'اسم السيارة/الصنف', 'النوع', 'نوع', 'نوع السيارة', 'نوع المركبة', 'نوع المركبه', 'الصنف', 'item name', 'name'];
+    const HEADER_ITEM_NUMBER_JS = ['رقم الصنف', 'رقم القطعة', 'رقم الصنف الدولي', 'item number', 'part number'];
+    const HEADER_NOTES_JS = ['ملاحظات', 'ملاحظة', 'notes'];
+
+    function resolveProductColumnIndicesJs(header, useHForAlt) {
+      const used = new Set();
+      function assign(kws, minSub, rejectFn) {
+        const idx = findHeaderColumnJs(header, kws, used, minSub, rejectFn);
+        if (idx !== null && idx !== undefined) used.add(idx);
+        return idx;
+      }
+      const companyIdx = assign(HEADER_COMPANY_JS, 6, headerBadForCompanyJs);
+      const originalIdx = assign(HEADER_ORIGINAL_JS, 6, headerBadForOriginalJs);
+      let altIdx = assign(HEADER_ALT_JS, 5, headerBadForAltJs);
+      if ((altIdx === null || altIdx === undefined) && useHForAlt) {
+        for (const c of [7, 6]) {
+          if (!used.has(c)) {
+            altIdx = c;
+            break;
+          }
+        }
+      }
+      const itemNameIdx = assign(HEADER_ITEM_NAME_JS, 4);
+      const notesIdx = assign(HEADER_NOTES_JS, 4);
+      let itemNumIdx = findHeaderColumnJs(header, HEADER_ITEM_NUMBER_JS, used, 6);
+      if (itemNumIdx !== null && itemNumIdx !== undefined) used.add(itemNumIdx);
+      else if (companyIdx !== null && companyIdx !== undefined) itemNumIdx = companyIdx;
+      else itemNumIdx = 4;
+      return { companyIdx, originalIdx, altIdx, itemNameIdx, itemNumIdx, notesIdx };
+    }
+
+    function pickItemNameJs(row, preferredIdx) {
+      const val = (i) => (i !== null && i !== undefined && i >= 0 ? String(row[i] || '').trim() : '');
+      const primary = val(preferredIdx);
+      if (primary) return primary;
+
+      for (const i of [1, 0, 2, 3, 4, 5]) {
+        const v = val(i);
+        if (!v) continue;
+        if (/[A-Za-z\u0600-\u06FF]/.test(v)) return v;
+      }
+      for (let i = 0; i < Math.min(10, row.length || 0); i++) {
+        const v = val(i);
+        if (v) return v;
+      }
+      return '';
+    }
+
+    async function sha256Hex(arrayBuffer) {
+      const hash = await crypto.subtle.digest('SHA-256', arrayBuffer);
+      const bytes = Array.from(new Uint8Array(hash));
+      return bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function readJsonSafe(res) {
+      const raw = await res.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        data = { detail: raw || `HTTP ${res.status}` };
+      }
+      return data;
+    }
+
+    async function parseExcelRowsForChunkUpload(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const useHForAlt = isBrakesFileNameJs(file.name);
+      const sourceKey = sourceKeyForFile(file);
+      const rows = [];
+      const itemNamesSet = new Set();
+
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        const headerCandidates = ['اسم الصنف', 'اسم السيارة', 'رقم الصنف', 'رقم الشركة', 'رقم الشركات', 'الرقم الاصلي', 'البدائل', 'متشابهات'];
+        let headerRowIndex = 0;
+        let bestScore = -1;
+        for (let i = 0; i < Math.min(30, grid.length); i++) {
+          const rowCells = (grid[i] || []).map(v => String(v || '').trim());
+          let score = 0;
+          for (const k of headerCandidates) {
+            if (getHeaderIndexJs(rowCells, [k]) !== null) score += 1;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            headerRowIndex = i;
+          }
+        }
+        const header = (grid[headerRowIndex] || []).map(v => String(v || '').trim());
+        const colMap = resolveProductColumnIndicesJs(header, useHForAlt);
+        const itemNameIdx = colMap.itemNameIdx != null ? colMap.itemNameIdx : 0;
+        const itemNumberIdx = colMap.itemNumIdx != null ? colMap.itemNumIdx : 4;
+        const companyIdx = colMap.companyIdx;
+        const originalIdx = colMap.originalIdx;
+        const notesIdx = colMap.notesIdx;
+        const altIdx = colMap.altIdx != null && colMap.altIdx !== undefined ? colMap.altIdx : null;
+
+        for (const r of grid.slice(headerRowIndex + 1)) {
+          const itemName = pickItemNameJs(r, itemNameIdx);
+          const itemNumber = String(r[itemNumberIdx] || '').trim();
+          const companyNumber = String((companyIdx != null && companyIdx >= 0) ? r[companyIdx] || '' : '').trim();
+          const originalNumbers = String((originalIdx != null && originalIdx >= 0) ? r[originalIdx] || '' : '').trim();
+          const notes = String((notesIdx != null && notesIdx >= 0) ? r[notesIdx] || '' : '').trim();
+          let alternatives = String((altIdx != null && altIdx >= 0) ? r[altIdx] || '' : '').trim();
+          if (useHForAlt && !alternatives) {
+            const gAlt = String(r[6] || '').trim();
+            const hAlt = String(r[7] || '').trim();
+            alternatives = hAlt || gAlt;
+          }
+          const sizeWidth = String(r[1] || '').trim();
+          const sizeDiameter = String(r[2] || '').trim();
+          const sizeHeight = String(r[3] || '').trim();
+
+          if (!itemName && !itemNumber && !companyNumber && !originalNumbers && !notes && !alternatives && !sizeWidth && !sizeDiameter && !sizeHeight) continue;
+
+          rows.push({
+            item_name: itemName,
+            item_number: itemNumber,
+            company_number: companyNumber,
+            original_numbers: originalNumbers,
+            notes: notes,
+            alternatives: alternatives,
+            size_width: sizeWidth,
+            size_diameter: sizeDiameter,
+            size_height: sizeHeight,
+            source_sheet: String(sheetName)
+          });
+          if (itemName) itemNamesSet.add(itemName);
+        }
+      }
+
+      return {
+        file_name: sourceKey,
+        file_size: arrayBuffer.byteLength,
+        content_hash: await sha256Hex(arrayBuffer),
+        rows,
+        item_names_count: itemNamesSet.size
+      };
+    }
+
+    async function uploadLargeFileChunked(file) {
+      const parsed = await parseExcelRowsForChunkUpload(file);
+      try {
+        const startRes = await fetch('/upload_rows/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: parsed.file_name,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size
+          })
+        });
+        const startData = await readJsonSafe(startRes);
+        if (!startRes.ok) throw new Error(startData.detail || 'start-failed');
+        if (startData.skip) return { files_count: 0, skipped_files: 1, inserted_rows: 0, inserted_items: 0 };
+
+        const chunkSize = 1200;
+        let inserted = 0;
+        for (let i = 0; i < parsed.rows.length; i += chunkSize) {
+          const chunk = parsed.rows.slice(i, i + chunkSize);
+          const chunkRes = await fetch('/upload_rows/chunk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: parsed.file_name, rows: chunk })
+          });
+          const chunkData = await readJsonSafe(chunkRes);
+          if (!chunkRes.ok) throw new Error(chunkData.detail || 'chunk-failed');
+          inserted += Number(chunkData.inserted_rows || 0);
+        }
+
+        const finishRes = await fetch('/upload_rows/finish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: parsed.file_name,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size
+          })
+        });
+        const finishData = await readJsonSafe(finishRes);
+        if (!finishRes.ok) throw new Error(finishData.detail || 'finish-failed');
+
+        return {
+          files_count: 1,
+          skipped_files: 0,
+          inserted_rows: Number(finishData.rows_count || inserted),
+          inserted_items: Number(parsed.item_names_count || 0)
+        };
+      } catch (err) {
+        // Prevent partial file data if a chunk fails mid-upload.
+        try {
+          await fetch('/upload_rows/abort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: parsed.file_name })
+          });
+        } catch (_) {}
+        throw err;
+      }
+    }
+
+    function normalizeTextForSearch(text) {
+      return String(text || '')
+        .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .replace(/[أإآٱ]/g, 'ا')
+        .replace(/ى/g, 'ي')
+        .replace(/ؤ/g, 'و')
+        .replace(/ئ/g, 'ي')
+        .replace(/ة/g, 'ه')
+        .replace(/ء/g, '')
+        .replace(/ـ/g, '')
+        .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\\s\\-_]+/g, ' ');
+    }
+
+    function normalizeTextCompactJs(text) {
+      return normalizeTextForSearch(text).replace(/[\\s\\-_/]+/g, '');
+    }
+
+    function tokenizeQueryForSearch(text) {
+      return normalizeTextForSearch(text)
+        .replace(/[،,;/|]+/g, ' ')
+        .split(' ')
+        .filter(Boolean)
+        .filter(t => !['+', '-', '–', '—'].includes(t));
+    }
+
+    function formatSizeOutInsideHeight(width, diameter, height) {
+      const out = String(width || '').trim();
+      const inside = String(diameter || '').trim();
+      const h = String(height || '').trim();
+      if (!out && !inside && !h) return '';
+      return `${out || '-'} x ${inside || '-'} x ${h || '-'}`;
+    }
+
+    function normalizedPathMatchesDriveshaftJs(sf) {
+      if (!sf) return false;
+      const t = normalizeTextForSearch;
+      if (sf.includes(t('مصلبة دراي شفط')) || sf.includes(t('مصلبات دراي شفط')) || sf.includes(t('مصلب دراي شفط'))) return true;
+      if (!sf.includes('مصلب')) return false;
+      const hasShaft = sf.includes('شفط') || sf.includes('shaft');
+      const hasDrive = sf.includes('دراي') || sf.includes('دري') || sf.includes('dry') || sf.includes('drive');
+      return hasShaft || hasDrive;
+    }
+
+    function isDriveshaftSizeTypeJs(st) {
+      if (!st) return false;
+      const t = normalizeTextForSearch;
+      const keys = [t('مصلبات دراي شفط'), t('مصلبه دراي شفط'), t('مصلبات'), t('مصلب دراي شفط'), t('مصلب دراي')];
+      if (keys.includes(st)) return true;
+      return st.includes('مصلب') && (st.includes('شفط') || st.includes('دراي') || st.includes('دري') || st.includes('dry') || st.includes('drive') || st.includes('shaft'));
+    }
+
+    function isSizeFileNameJs(sourceFile) {
+      const sf = normalizeTextForSearch(sourceFile || '');
+      return sf.includes('لبادات')
+        || sf.includes('بيل')
+        || sf.includes('بيلية')
+        || sf.includes('نابات')
+        || normalizedPathMatchesDriveshaftJs(sf);
+    }
+
+    function fileMatchesSizeTypeJs(sourceFile, sizeType) {
+      const st = normalizeTextForSearch(sizeType || '');
+      if (!st) return true;
+      const sf = normalizeTextForSearch(sourceFile || '');
+      if (st === 'لبادات') return sf.includes('لبادات');
+      if (['بيلية', 'بيل', 'بلي'].includes(st)) {
+        return sf.includes(normalizeTextForSearch('نابات + بيل عجل'))
+          || sf.includes('بيل مشكلة')
+          || sf.includes(normalizeTextForSearch('بيـل مشكلة'));
+      }
+      if (isDriveshaftSizeTypeJs(st)) return normalizedPathMatchesDriveshaftJs(sf);
+      return true;
+    }
+
+    function fileMatchesSizeTypeWithFallbackJs(r, sizeType, sw, sd) {
+      const st = normalizeTextForSearch(sizeType || '');
+      if (!st) return true;
+      if (fileMatchesSizeTypeJs(r.source_file || '', sizeType)) return true;
+      if (!isDriveshaftSizeTypeJs(st)) return false;
+      const sf = normalizeTextForSearch(r.source_file || '');
+      if (sf.includes('لبادات')) return false;
+      if (sf.includes('بيل مشكلة') || sf.includes(normalizeTextForSearch('بيـل مشكلة')) || sf.includes(normalizeTextForSearch('نابات + بيل عجل'))) return false;
+      const swq = normalizeTextForSearch(sw || '').trim();
+      const sdq = normalizeTextForSearch(sd || '').trim();
+      if (!swq || !sdq) return false;
+      const rw = String(r.size_width || '').trim();
+      const rd = String(r.size_diameter || '').trim();
+      if (!rw || !rd) return false;
+      return (cellMatchesSizeQueryDriveshaftJs(rw, sw) && cellMatchesSizeQueryDriveshaftJs(rd, sd))
+        || (cellMatchesSizeQueryDriveshaftJs(rw, sd) && cellMatchesSizeQueryDriveshaftJs(rd, sw));
+    }
+
+    function rowMatchesSizeFiltersJs(r, sizeType, sw, sd, sh) {
+      const st = normalizeTextForSearch(sizeType || '');
+      const wv = r.size_width || '';
+      const dv = r.size_diameter || '';
+      const hv = r.size_height || '';
+      const swq = normalizeTextForSearch(sw || '').trim();
+      const sdq = normalizeTextForSearch(sd || '').trim();
+      if (isDriveshaftSizeTypeJs(st)) {
+        let dimOk;
+        if (swq && sdq) {
+          dimOk = (cellMatchesSizeQueryDriveshaftJs(wv, sw) && cellMatchesSizeQueryDriveshaftJs(dv, sd))
+            || (cellMatchesSizeQueryDriveshaftJs(wv, sd) && cellMatchesSizeQueryDriveshaftJs(dv, sw));
+        } else if (swq) {
+          dimOk = cellMatchesSizeQueryDriveshaftJs(wv, sw) || cellMatchesSizeQueryDriveshaftJs(dv, sw);
+        } else if (sdq) {
+          dimOk = cellMatchesSizeQueryDriveshaftJs(wv, sd) || cellMatchesSizeQueryDriveshaftJs(dv, sd);
+        } else {
+          dimOk = true;
+        }
+        return dimOk && cellMatchesSizeQueryJs(hv, sh);
+      }
+      return cellMatchesSizeQueryJs(wv, sw) && cellMatchesSizeQueryJs(dv, sd) && cellMatchesSizeQueryJs(hv, sh);
+    }
+
+    function cellMatchesSizeQueryJs(cellVal, queryVal) {
+      if (!String(queryVal || '').trim()) return true;
+      const q = normalizeTextForSearch(queryVal).replace(',', '.').trim();
+      const c = normalizeTextForSearch(cellVal).replace(',', '.').trim();
+      if (c === q) return true;
+      const nq = Number(q);
+      const nc = Number(c);
+      if (!Number.isNaN(nq) && !Number.isNaN(nc) && nq === nc) return true;
+      if (Number.isNaN(nq)) return c.includes(q);
+      const nums = [];
+      const re = /\\d+(?:\\.\\d+)?/g;
+      let m;
+      while ((m = re.exec(c)) !== null) {
+        const v = Number(m[0]);
+        if (!Number.isNaN(v)) nums.push(v);
+      }
+      return nums.some(v => v === nq);
+    }
+
+    function cellMatchesSizeQueryDriveshaftJs(cellVal, queryVal) {
+      if (cellMatchesSizeQueryJs(cellVal, queryVal)) return true;
+      const q = normalizeTextForSearch(queryVal || '').replace(',', '.').trim();
+      if (!/^\\d$/.test(q)) return false;
+      const t = normalizeTextForSearch(cellVal || '').replace(',', '.');
+      const re = /\\d+(?:\\.\\d+)?/g;
+      let m;
+      while ((m = re.exec(t)) !== null) {
+        const s = m[0];
+        const sn = s.replace(/^0+/, '') || '0';
+        if (s.startsWith(q) || sn.startsWith(q)) return true;
+      }
+      return false;
+    }
+
+    function updateSizeInputsLayout() {
+      const type = (document.getElementById('sizeTypeInput').value || '').trim();
+      const width = document.getElementById('sizeWidthInput');
+      const diameter = document.getElementById('sizeDiameterInput');
+      const height = document.getElementById('sizeHeightInput');
+      if (isDriveshaftSizeTypeJs(normalizeTextForSearch(type))) {
+        width.placeholder = 'الراسية (B)';
+        diameter.placeholder = 'طول المصلبة (C)';
+        height.style.display = 'none';
+        height.value = '';
+      } else {
+        width.placeholder = 'العرض (B)';
+        diameter.placeholder = 'القطر (C)';
+        height.style.display = '';
+        height.placeholder = 'الارتفاع (D)';
+      }
+    }
+
+    function extractFileSearchHintsJs(query, tokens) {
+      const qn = normalizeTextForSearch(query);
+      const hints = [];
+      const consumed = new Set();
+      const consume = (...parts) => parts.forEach(p => consumed.add(normalizeTextForSearch(p)));
+
+      if ((qn.includes('فلتر') || qn.includes('فلاتر')) && qn.includes('هواء')) {
+        hints.push('فلتر هواء', 'فلاتر هواء');
+        consume('فلتر', 'فلاتر', 'هواء');
+      }
+      if ((qn.includes('فلتر') || qn.includes('فلاتر')) && qn.includes('زيت')) {
+        hints.push('فلتر زيت', 'فلاتر زيت');
+        consume('فلتر', 'فلاتر', 'زيت');
+      }
+      if ((qn.includes('فلتر') || qn.includes('فلاتر')) && (qn.includes('سولار') || qn.includes('ديزل'))) {
+        hints.push('فلتر سولار', 'فلاتر السولار', 'فلاتر سولار', 'فلتر ديزل', 'فلاتر ديزل');
+        consume('فلتر', 'فلاتر', 'سولار', 'ديزل', 'السولار');
+      }
+
+      const cleanedTokens = (tokens || []).filter(t => !consumed.has(normalizeTextForSearch(t)));
+      const uniqueHints = Array.from(new Set(hints.map(normalizeTextForSearch))).filter(Boolean);
+      return { fileHints: uniqueHints, textTokens: cleanedTokens };
+    }
+
+    function parseYearTokenJs(token) {
+      const cleaned = String(token || '').replace(/[^\\d]/g, '');
+      if (!(cleaned.length === 2 || cleaned.length === 4)) return null;
+      const year = Number(cleaned);
+      if (cleaned.length === 2) return year <= 30 ? 2000 + year : 1900 + year;
+      return year;
+    }
+
+    function parseQueryYearTokenJs(token) {
+      const raw = normalizeTextForSearch(token);
+      const currentYear = new Date().getFullYear();
+
+      if (/^(?:\+\d{2,4}|\d{2,4}\+)$/.test(raw)) {
+        const start = parseYearTokenJs(raw.startsWith('+') ? raw.slice(1) : raw.slice(0, -1));
+        if (!start) return null;
+        return Array.from({ length: currentYear - start + 1 }, (_, i) => start + i);
+      }
+      const rangeMatch = raw.match(/^(\d{2,4})\s*[-–—]\s*(\d{2,4})$/);
+      if (rangeMatch) {
+        const start = parseYearTokenJs(rangeMatch[1]);
+        const end = parseYearTokenJs(rangeMatch[2]);
+        if (!start || !end) return null;
+        const low = Math.min(start, end);
+        const high = Math.max(start, end);
+        return Array.from({ length: high - low + 1 }, (_, i) => low + i);
+      }
+      if (/^(?:-\d{2,4}|\d{2,4}-)$/.test(raw)) {
+        const end = parseYearTokenJs(raw.startsWith('-') ? raw.slice(1) : raw.slice(0, -1));
+        if (!end) return null;
+        return Array.from({ length: end - 1900 + 1 }, (_, i) => 1900 + i);
+      }
+      if (/^\d{2,4}$/.test(raw)) {
+        const y = parseYearTokenJs(raw);
+        return y ? [y] : null;
+      }
+      return null;
+    }
+
+    function isExplicitYearOperatorTokenJs(token) {
+      const raw = normalizeTextForSearch(token);
+      return /^(?:\+\d{2,4}|\d{2,4}\+)$/.test(raw)
+        || /^(\d{2,4})\s*[-–—]\s*(\d{2,4})$/.test(raw)
+        || /^(?:-\d{2,4}|\d{2,4}-)$/.test(raw);
+    }
+
+    function yearInRangeTextJs(year, text) {
+      const normalized = normalizeTextForSearch(text);
+      if (!normalized) return false;
+
+      const currentYear = new Date().getFullYear();
+      for (const m of normalized.matchAll(/(?:^|[^\d])(\d{4})(?!\d)/g)) {
+        if (Number(m[1]) === year) return true;
+      }
+      for (const m of normalized.matchAll(/(?:^|[^\d])(\d{2})(?!\d)/g)) {
+        if (parseYearTokenJs(m[1]) === year) return true;
+      }
+
+      // Chained plus markers: +03,+08 => 03-07 and +08.
+      const plusMarks = [];
+      for (const m of normalized.matchAll(/(?:\+\s*(\d{2,4})(?!\d)|(?:^|[^\d])(\d{2,4})\s*\+(?!\d))/g)) {
+        const token = m[1] || m[2];
+        const start = parseYearTokenJs(token);
+        if (start) plusMarks.push({ idx: m.index ?? 0, start });
+      }
+      if (plusMarks.length) {
+        plusMarks.sort((a, b) => a.idx - b.idx);
+        for (let i = 0; i < plusMarks.length; i++) {
+          const start = plusMarks[i].start;
+          const end = i + 1 < plusMarks.length ? plusMarks[i + 1].start - 1 : currentYear;
+          if (start <= year && year <= end) return true;
+        }
+      }
+
+      for (const m of normalized.matchAll(/\+\s*(\d{2,4})(?!\d)/g)) {
+        const start = parseYearTokenJs(m[1]);
+        if (start && start <= year && year <= currentYear) return true;
+      }
+      for (const m of normalized.matchAll(/(?:^|[^\d])(\d{2,4})\s*\+(?!\d)/g)) {
+        const start = parseYearTokenJs(m[1]);
+        if (start && start <= year && year <= currentYear) return true;
+      }
+      for (const m of normalized.matchAll(/(?:^|[^\d])(\d{2,4})\s*[-–—]\s*(\d{2,4})(?!\d)/g)) {
+        const start = parseYearTokenJs(m[1]);
+        const end = parseYearTokenJs(m[2]);
+        if (!start || !end) continue;
+        const low = Math.min(start, end);
+        const high = Math.max(start, end);
+        if (low <= year && year <= high) return true;
+      }
+
+      // Chained minus markers: -03,-08 => <=03 and 04-08.
+      const minusMarks = [];
+      for (const m of normalized.matchAll(/(?:[-–—]\s*(\d{2,4})(?!\d)|(?:^|[^\d])(\d{2,4})\s*[-–—](?!\s*\d))/g)) {
+        const token = m[1] || m[2];
+        const end = parseYearTokenJs(token);
+        if (end) minusMarks.push({ idx: m.index ?? 0, end });
+      }
+      if (minusMarks.length) {
+        minusMarks.sort((a, b) => a.idx - b.idx);
+        if (year <= minusMarks[0].end) return true;
+        for (let i = 1; i < minusMarks.length; i++) {
+          const low = minusMarks[i - 1].end + 1;
+          const high = minusMarks[i].end;
+          if (low <= high && low <= year && year <= high) return true;
+        }
+      }
+
+      for (const m of normalized.matchAll(/[-–—]\s*(\d{2,4})(?!\d)/g)) {
+        const end = parseYearTokenJs(m[1]);
+        if (end && year <= end) return true;
+      }
+      for (const m of normalized.matchAll(/(?:^|[^\d])(\d{2,4})\s*[-–—](?!\s*\d)/g)) {
+        const end = parseYearTokenJs(m[1]);
+        if (end && year <= end) return true;
+      }
+      return false;
+    }
+
+    function splitAlternativeSegmentsJs(alternatives) {
+      return String(alternatives || '').split(/[\\/|,\\n;]+/).map(s => s.trim()).filter(Boolean);
+    }
+
+    function extractMatchedAlternativeJs(alternatives, textTokens, years) {
+      if (!String(alternatives || '').trim()) return '';
+      const segments = splitAlternativeSegmentsJs(alternatives);
+      if (!segments.length) return '';
+      const normalizedTokens = textTokens.map(normalizeTextForSearch).filter(Boolean);
+      for (const segment of segments) {
+        const n = normalizeTextForSearch(segment);
+        const hasText = !normalizedTokens.length || normalizedTokens.every(t => n.includes(t));
+        const hasYear = !years.length || years.some(y => yearInRangeTextJs(y, segment));
+        if (hasText && hasYear) return segment;
+      }
+      if (normalizedTokens.length) {
+        for (const segment of segments) {
+          const n = normalizeTextForSearch(segment);
+          if (normalizedTokens.some(t => n.includes(t))) return segment;
+        }
+        return '';
+      }
+      if (years.length) {
+        for (const segment of segments) {
+          if (years.some(y => yearInRangeTextJs(y, segment))) return segment;
+        }
+        return '';
+      }
+      return segments[0];
+    }
+
+    function yearMatchScoreJs(segment, years) {
+      if (!segment || !years.length) return 0;
+      const n = normalizeTextForSearch(segment);
+      let best = 0;
+      for (const y of years) {
+        if ((new RegExp(`(^|\\\\D)${y}(\\\\D|$)`)).test(n)) best = Math.max(best, 6000);
+      }
+      for (const m of n.matchAll(/\+\s*(\d{2,4})(?!\d)/g)) {
+        const start = parseYearTokenJs(m[1]);
+        if (start && years.every(y => start <= y)) best = Math.max(best, 4000 + start);
+      }
+      for (const m of n.matchAll(/(?:^|[^\d])(\d{2,4})\s*\+(?!\d)/g)) {
+        const start = parseYearTokenJs(m[1]);
+        if (start && years.every(y => start <= y)) best = Math.max(best, 4000 + start);
+      }
+      for (const m of n.matchAll(/(?:^|[^\d])(\d{2,4})\s*[-–—]\s*(\d{2,4})(?!\d)/g)) {
+        const a = parseYearTokenJs(m[1]); const b = parseYearTokenJs(m[2]);
+        if (!a || !b) continue;
+        const low = Math.min(a, b), high = Math.max(a, b);
+        if (years.every(y => low <= y && y <= high)) best = Math.max(best, 5000 - (high - low));
+      }
+      return best;
+    }
+
+    function rowMatchesQueryJs(row, textTokens, years) {
+      const itemName = row.item_name || '';
+      const alternatives = row.alternatives || '';
+      const sourceFile = row.source_file || '';
+      const itemNorm = normalizeTextForSearch(itemName);
+      const altNorm = normalizeTextForSearch(alternatives);
+      const fileNorm = normalizeTextForSearch(sourceFile);
+      const combined = `${itemNorm} ${altNorm} ${fileNorm}`;
+      const combinedCompact = normalizeTextCompactJs(`${itemName} ${alternatives} ${sourceFile}`);
+      for (const token of textTokens) {
+        const nt = normalizeTextForSearch(token);
+        const nct = normalizeTextCompactJs(token);
+        if (!combined.includes(nt) && !(nct && combinedCompact.includes(nct))) return false;
+      }
+      if (years.length) {
+        const itemTokens = textTokens.map(normalizeTextForSearch).filter(t => itemNorm.includes(t));
+        const altTokens = textTokens.map(normalizeTextForSearch).filter(t => altNorm.includes(t));
+        const fileTokens = textTokens.map(normalizeTextForSearch).filter(t => fileNorm.includes(t));
+        const itemYearOk = itemTokens.length > 0 && years.some(y => yearInRangeTextJs(y, itemName));
+        let altYearOk = false;
+        for (const seg of splitAlternativeSegmentsJs(alternatives)) {
+          const n = normalizeTextForSearch(seg);
+          const hasAltTokens = !altTokens.length || altTokens.every(t => n.includes(t));
+          const hasYear = years.some(y => yearInRangeTextJs(y, seg));
+          if (hasAltTokens && hasYear) { altYearOk = true; break; }
+        }
+        if (altTokens.length ? !altYearOk : !(itemYearOk || altYearOk)) return false;
+        if (!altTokens.length && fileTokens.length && !itemTokens.length) {
+          // File-context token match: don't require year context in row text.
+        } else if (altTokens.length ? !altYearOk : !(itemYearOk || altYearOk)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function searchOfflineSnapshot(query, numberQuery = '', sizeType = '', sizeWidth = '', sizeDiameter = '', sizeHeight = '') {
+      const tokens = tokenizeQueryForSearch(query);
+      const numberTokens = tokenizeQueryForSearch(numberQuery);
+      const hintData = extractFileSearchHintsJs(query, tokens);
+      const fileHints = hintData.fileHints;
+      if (!tokens.length && !numberTokens.length && !sizeType && !sizeWidth && !sizeDiameter && !sizeHeight && !fileHints.length) {
+        return { total_rows: 0, matching_item_names: [], matching_items: [], rows: [] };
+      }
+      const parsedYears = hintData.textTokens.map(parseQueryYearTokenJs);
+      const years = Array.from(new Set(parsedYears.filter(Boolean).flat()));
+      const explicitYearOps = hintData.textTokens.some(isExplicitYearOperatorTokenJs);
+      const textTokens = hintData.textTokens.filter((_, idx) => !parsedYears[idx]);
+
+      let rows = (localSnapshot.rows || []).filter(r => {
+        if (!rowMatchesQueryJs(r, textTokens, years)) return false;
+        if (fileHints.length) {
+          const sf = normalizeTextForSearch(r.source_file || '');
+          if (!fileHints.some(h => sf.includes(h))) return false;
+        }
+        const numberSpace = normalizeTextForSearch(`${r.company_number || ''} ${r.original_numbers || ''} ${r.notes || ''}`);
+        if (!numberTokens.every(t => numberSpace.includes(normalizeTextForSearch(t)))) return false;
+        if (!fileMatchesSizeTypeWithFallbackJs(r, sizeType, sizeWidth, sizeDiameter)) return false;
+        if (!rowMatchesSizeFiltersJs(r, sizeType, sizeWidth, sizeDiameter, sizeHeight)) return false;
+        return true;
+      }).slice(0, 300);
+      rows = rows.map((r, i) => {
+        const altRaw = String(r.alternatives || '').trim();
+        let matched = extractMatchedAlternativeJs(altRaw, textTokens, years);
+        if (!altRaw) matched = '';
+        return {
+          ...r,
+          item_number: String(r.company_number || ''),
+          alternatives: altRaw,
+          size_label: isSizeFileNameJs(r.source_file) ? formatSizeOutInsideHeight(r.size_width, r.size_diameter, r.size_height) : '',
+          matched_alternative: matched,
+          match_score: yearMatchScoreJs(matched, years),
+          row_key: `${r.source_file || ''}|${r.source_sheet || ''}|${r.company_number || r.item_number || ''}|${i}`
+        };
+      });
+      if (explicitYearOps && years.length && rows.length) {
+        const maxScore = Math.max(...rows.map(r => Number(r.match_score || 0)));
+        if (maxScore > 0) rows = rows.filter(r => Number(r.match_score || 0) === maxScore);
+      }
+      const names = Array.from(new Set(rows.map(r => r.item_name).filter(Boolean))).slice(0, 100);
+      const matchingItems = [];
+      const seen = new Set();
+      for (const r of rows) {
+        const key = `${r.item_name}|${r.matched_alternative || ''}`;
+        if (!r.item_name || seen.has(key)) continue;
+        seen.add(key);
+        matchingItems.push({
+          item_name: r.item_name,
+          matched_alternative: r.matched_alternative || '',
+          size_label: r.size_label || '',
+          row_key: r.row_key
+        });
+        if (matchingItems.length >= 100) break;
+      }
+      return { total_rows: rows.length, matching_item_names: names, matching_items: matchingItems, rows };
+    }
+
+    async function syncSnapshotFromServer() {
+      try {
+        setSyncInfo('جاري تنزيل نسخة البيانات للهاتف...');
+        const res = await fetch('/sync/data', { cache: 'no-store' });
+        if (!res.ok) throw new Error('sync-data-failed');
+        const data = await res.json();
+        await saveLocalSnapshot(data);
+      } catch (_) {
+        setSyncInfo('فشل تنزيل نسخة الهاتف. تأكد أن السيرفر شغال ثم أعد المحاولة.');
+      }
+    }
+
+    async function syncFromGoogleDrive() {
+      const uploadResult = document.getElementById('uploadResult');
+      try {
+        uploadResult.innerText = 'جاري المزامنة من Google Drive...';
+        const res = await fetch('/google_drive/sync', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'google-drive-sync-failed');
+
+        const unsupportedCount = Array.isArray(data.unsupported_files) ? data.unsupported_files.length : 0;
+        const failedCount = Array.isArray(data.failed_files) ? data.failed_files.length : 0;
+        uploadResult.innerText =
+          `اكتملت مزامنة Google Drive: تم فحص ${Number(data.scanned_files || 0)} ملف، معالجة ${Number(data.files_count || 0)}، تخطي ${Number(data.skipped_files || 0)}، إدخال ${Number(data.inserted_rows || 0)} صف، غير مدعوم ${unsupportedCount}، فشل ${failedCount}.`;
+
+        await loadStats();
+        await searchNow();
+      } catch (err) {
+        uploadResult.innerText = `فشلت مزامنة Google Drive: ${(err && err.message) ? err.message : 'error'}`;
+      }
+    }
+
+    async function autoSyncGoogleDriveIfServerEmpty() {
+      try {
+        const doneKey = 'gdrive_auto_sync_done';
+        if (sessionStorage.getItem(doneKey) === '1') return;
+        const res = await fetch('/stats', { cache: 'no-store' });
+        if (!res.ok) return;
+        const stats = await res.json();
+        if (Number(stats.total_rows || 0) > 0) {
+          sessionStorage.setItem(doneKey, '1');
+          return;
+        }
+        // If server is empty, try to restore from Drive automatically.
+        await syncFromGoogleDrive();
+        sessionStorage.setItem(doneKey, '1');
+      } catch (_) {}
+    }
+
+    function groupRowsBySourceFile(rows) {
+      const groups = new Map();
+      for (const row of rows || []) {
+        const fileName = String(row.source_file || 'restored-data.xlsx').trim() || 'restored-data.xlsx';
+        if (!groups.has(fileName)) groups.set(fileName, []);
+        groups.get(fileName).push({
+          item_name: String(row.item_name || ''),
+          item_number: String(row.item_number || ''),
+          company_number: String(row.company_number || ''),
+          original_numbers: String(row.original_numbers || ''),
+          notes: String(row.notes || ''),
+          alternatives: String(row.alternatives || ''),
+          size_width: String(row.size_width || ''),
+          size_diameter: String(row.size_diameter || ''),
+          size_height: String(row.size_height || ''),
+          source_sheet: String(row.source_sheet || 'Sheet1')
+        });
+      }
+      return groups;
+    }
+
+    async function restoreServerFromLocalSnapshotIfEmpty() {
+      try {
+        if (!localSnapshot || !Array.isArray(localSnapshot.rows) || !localSnapshot.rows.length) return;
+
+        const statsRes = await fetch('/stats', { cache: 'no-store' });
+        if (!statsRes.ok) return;
+        const stats = await statsRes.json();
+        if (Number(stats.total_rows || 0) > 0) return;
+
+        setSyncInfo('تم اكتشاف سيرفر بدون بيانات. جاري استرجاع الأصناف من النسخة المحلية...');
+        const groups = groupRowsBySourceFile(localSnapshot.rows);
+        let restoredRows = 0;
+
+        for (const [fileName, rows] of groups.entries()) {
+          const pseudoHash = await sha256Hex(new TextEncoder().encode(`${localSnapshot.version || ''}:${fileName}:${rows.length}`));
+          const startRes = await fetch('/upload_rows/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: fileName, content_hash: pseudoHash, file_size: rows.length })
+          });
+          if (!startRes.ok) continue;
+          const startData = await startRes.json();
+          if (startData.skip) continue;
+
+          const chunkSize = 1200;
+          for (let i = 0; i < rows.length; i += chunkSize) {
+            const chunk = rows.slice(i, i + chunkSize);
+            const cRes = await fetch('/upload_rows/chunk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ file_name: fileName, rows: chunk })
+            });
+            if (!cRes.ok) continue;
+          }
+
+          const finishRes = await fetch('/upload_rows/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: fileName, content_hash: pseudoHash, file_size: rows.length })
+          });
+          if (finishRes.ok) restoredRows += rows.length;
+        }
+
+        setSyncInfo(`اكتمل استرجاع البيانات من النسخة المحلية: ${restoredRows} صف.`);
+        await loadStats();
+      } catch (_) {
+        setSyncInfo('تعذر الاسترجاع التلقائي من النسخة المحلية.');
+      }
+    }
+
+    async function checkSnapshotUpdate(showNoUpdate, askUser = false) {
+      try {
+        const res = await fetch('/sync/meta', { cache: 'no-store' });
+        if (!res.ok) throw new Error('sync-meta-failed');
+        const meta = await res.json();  
+        if (!localSnapshot.version) {
+          setSyncInfo(`متاح تحميل نسخة بيانات (${meta.total_rows} صف).`);
+          if (askUser) {
+            await syncSnapshotFromServer();
+          }
+          return;
+        }
+        if (meta.version !== localSnapshot.version) {
+          setSyncInfo('يوجد تحديث جديد للبيانات. اضغط "فحص تحديث البيانات" أو "مزامنة للهاتف".');
+          if (askUser && meta.version !== lastNotifiedVersion) {
+            await syncSnapshotFromServer();
+            lastNotifiedVersion = '';
+          } else if (askUser) {
+            lastNotifiedVersion = meta.version;
+          }
+        } else if (showNoUpdate) {
+          lastNotifiedVersion = '';
+          setSyncInfo('النسخة المحلية محدثة.');
+        }
+      } catch (_) {
+        if (showNoUpdate) setSyncInfo('تعذر فحص التحديث الآن. قد تكون غير متصل بالسيرفر.');
+      }
+    }
+
     async function uploadFiles() {
       const selectedFiles = Array.from(selectedFilesMap.values());
       if (!selectedFiles.length) {
@@ -448,37 +2643,187 @@ def home() -> str:
         return;
       }
 
-      const formData = new FormData();
-      selectedFiles.forEach(file => formData.append('files', file, file.name));
-      document.getElementById('uploadResult').innerText = 'جاري الرفع والمعالجة...';
+      const uploadBtn = document.getElementById('uploadBtn');
+      uploadBtn.disabled = true;
+      let done = 0;
+      let processed = 0;
+      let skipped = 0;
+      let inserted = 0;
+      let insertedItems = 0;
+      const failed = [];
+      const tooLarge = [];
+      const isVercel = window.location.hostname.includes('vercel.app');
+      const vercelMaxBytes = 4_200_000;
 
-      const res = await fetch('/upload', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok) {
-        document.getElementById('uploadResult').innerText = data.detail || 'حصل خطأ';
-        return;
+      document.getElementById('uploadResult').innerText = 'جاري الرفع والمعالجة...';
+      setUploadProgress(0, `بدء الرفع... 0/${selectedFiles.length}`);
+
+      for (const file of selectedFiles) {
+        try {
+          let data = null;
+          const ext = String(file.name || '').toLowerCase().split('.').pop() || '';
+          const forceChunked = (ext === 'xlsb' || ext === 'xls');
+          if ((isVercel && file.size > vercelMaxBytes) || forceChunked) {
+            tooLarge.push(file.name);
+            setUploadProgress(
+              Math.round((done / selectedFiles.length) * 100),
+              forceChunked ? `جاري معالجة ملف بصيغة قديمة: ${file.name}` : `جاري معالجة ملف كبير: ${file.name}`
+            );
+            data = await uploadLargeFileChunked(file);
+          } else {
+            const formData = new FormData();
+            formData.append('files', file, sourceKeyForFile(file));
+            const res = await fetch('/upload', { method: 'POST', body: formData });
+            data = await readJsonSafe(res);
+            if (!res.ok) {
+              if (res.status === 413 || ext === 'xls' || ext === 'xlsb') {
+                // fallback to chunked mode automatically
+                data = await uploadLargeFileChunked(file);
+              } else {
+                throw new Error(data.detail || 'upload-failed');
+              }
+            }
+          }
+          processed += Number(data.files_count || 0);
+          skipped += Number(data.skipped_files || 0);
+          inserted += Number(data.inserted_rows || 0);
+          insertedItems += Number(data.inserted_items || 0);
+        } catch (err) {
+          failed.push(`${file.name} (${(err && err.message) ? err.message : 'upload-failed'})`);
+        }
+
+        done += 1;
+        const percent = Math.round((done / selectedFiles.length) * 100);
+        setUploadProgress(percent, `جاري الرفع: ${done}/${selectedFiles.length} - الملف الحالي: ${file.name}`);
       }
+
+      uploadBtn.disabled = false;
+      const failText = failed.length ? ` | فشل ${failed.length} ملف` : '';
+      const largeText = tooLarge.length ? ` | ملفات تمت معالجتها بنمط مجزأ: ${tooLarge.length}` : '';
       document.getElementById('uploadResult').innerText =
-        `تم رفع ${data.files_count} ملفات، وإدخال ${data.inserted_rows} صف.`;
+        `اكتمل الرفع ${Math.round((done / selectedFiles.length) * 100)}%: تم معالجة ${processed} ملفات، تخطي ${skipped} ملفات غير معدلة، وإدخال ${inserted} صف، وإضافة ${insertedItems} صنف${largeText}${failText}${failed.length ? ` | أمثلة فشل: ${failed.slice(0, 3).join(' | ')}` : ''}.`;
       await loadStats();
       await searchNow();
     }
 
-    async function searchNow() {
-      const q = document.getElementById('queryInput').value.trim();
-      localStorage.setItem('lastSearchQuery', q);
-      const res = await fetch(`/search?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
+    async function searchNow(mode = 'auto') {
+      const effectiveMode = mode === 'auto' ? activeSearchTab : mode;
 
-      document.getElementById('stats').innerText = `عدد النتائج: ${data.total_rows}`;
+      const qRaw = document.getElementById('queryInput').value.trim();
+      const qNumbersRaw = document.getElementById('numberQueryInput').value.trim();
+      const sizeTypeRaw = document.getElementById('sizeTypeInput').value.trim();
+      const sizeWidthRaw = document.getElementById('sizeWidthInput').value.trim();
+      const sizeDiameterRaw = document.getElementById('sizeDiameterInput').value.trim();
+      const sizeHeightRaw = document.getElementById('sizeHeightInput').value.trim();
+
+      const q = effectiveMode === 'main' ? qRaw : '';
+      const qNumbers = effectiveMode === 'main' ? qNumbersRaw : '';
+      const sizeType = effectiveMode === 'size' ? sizeTypeRaw : '';
+      const sizeWidth = effectiveMode === 'size' ? sizeWidthRaw : '';
+      const sizeDiameter = effectiveMode === 'size' ? sizeDiameterRaw : '';
+      const sizeHeight = effectiveMode === 'size' ? sizeHeightRaw : '';
+
+      localStorage.setItem('lastSearchQuery', q);
+      localStorage.setItem('lastNumberQuery', qNumbers);
+      localStorage.setItem('lastSizeType', sizeType);
+      localStorage.setItem('lastSizeWidth', sizeWidth);
+      localStorage.setItem('lastSizeDiameter', sizeDiameter);
+      localStorage.setItem('lastSizeHeight', sizeHeight);
+
+      if (!q && !qNumbers && !sizeType && !sizeWidth && !sizeDiameter && !sizeHeight) {
+        const namesDiv = document.getElementById('names');
+        namesDiv.innerHTML = '';
+        const table = document.getElementById('resultsTable');
+        table.style.display = 'none';
+        document.getElementById('stats').innerText = effectiveMode === 'main'
+          ? 'لا توجد نتائج. اكتب كلمة بحث.'
+          : 'لا توجد نتائج. اكتب القياسات أو اختر النوع.';
+        return;
+      }
+
+      const params = new URLSearchParams({
+        q: q,
+        q_numbers: qNumbers,
+        size_type: sizeType,
+        size_width: sizeWidth,
+        size_diameter: sizeDiameter,
+        size_height: sizeHeight
+      });
+
+      let data = null;
+      let sourceLabel = 'الخادم';
+      try {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 90000);
+        const res = await fetch(`/search?${params.toString()}`, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: ctrl.signal,
+          headers: { Accept: 'application/json' }
+        });
+        clearTimeout(to);
+        const parsed = await readJsonSafe(res);
+        if (!res.ok) throw new Error(parsed.detail || `search-http-${res.status}`);
+        if (!parsed || typeof parsed !== 'object') throw new Error('search-bad-json');
+        data = parsed;
+      } catch (_) {
+        data = searchOfflineSnapshot(q, qNumbers, sizeType, sizeWidth, sizeDiameter, sizeHeight);
+        sourceLabel = 'النسخة المحلية';
+
+        // Mobile fallback: if local data is empty but internet exists,
+        // pull a snapshot once and retry to avoid "no data" confusion.
+        if (!(localSnapshot.rows || []).length && navigator.onLine) {
+          try {
+            await syncSnapshotFromServer();
+            data = searchOfflineSnapshot(q, qNumbers, sizeType, sizeWidth, sizeDiameter, sizeHeight);
+            if (data.total_rows > 0) {
+              sourceLabel = 'النسخة المحلية (بعد تنزيل البيانات)';
+            } else {
+              const ctrl2 = new AbortController();
+              const to2 = setTimeout(() => ctrl2.abort(), 90000);
+              const retry = await fetch(`/search?${params.toString()}`, {
+                method: 'GET',
+                cache: 'no-store',
+                signal: ctrl2.signal,
+                headers: { Accept: 'application/json' }
+              });
+              clearTimeout(to2);
+              const parsed2 = await readJsonSafe(retry);
+              if (retry.ok && parsed2 && typeof parsed2 === 'object') {
+                data = parsed2;
+                sourceLabel = 'الخادم';
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      const safeRows = Array.isArray(data && data.rows) ? data.rows : [];
+      const safeTotal = Number((data && data.total_rows) || safeRows.length || 0);
+      document.getElementById('stats').innerText = `عدد النتائج: ${safeTotal} | المصدر: ${sourceLabel}`;
+      if (!safeTotal && sourceLabel.includes('النسخة المحلية') && !(localSnapshot.rows || []).length) {
+        setSyncInfo('لا توجد بيانات محفوظة محلياً بعد. استخدم "مزامنة للهاتف (Offline)" مرة واحدة وأعد البحث.');
+      }
 
       const namesDiv = document.getElementById('names');
       namesDiv.innerHTML = '';
-      const quickItems = data.matching_items || (data.matching_item_names || []).map(name => ({
-        item_name: name,
-        matched_alternative: '',
-        row_key: name
-      }));
+      const quickItemsRaw = Array.isArray(data && data.matching_items)
+        ? data.matching_items
+        : (Array.isArray(data && data.matching_item_names) ? data.matching_item_names.map(name => ({
+            item_name: name,
+            matched_alternative: '',
+            size_label: '',
+            row_key: name
+          })) : []);
+      const quickItems = quickItemsRaw.map((entry) => {
+        if (entry && typeof entry === 'object') return entry;
+        return {
+          item_name: String(entry || ''),
+          matched_alternative: '',
+          size_label: '',
+          row_key: String(entry || '')
+        };
+      }).filter((entry) => String(entry.item_name || '').trim());
 
       quickItems.forEach(entry => {
         const btn = document.createElement('button');
@@ -494,6 +2839,12 @@ def home() -> str:
           quickAlt.textContent = entry.matched_alternative;
           btn.appendChild(quickAlt);
         }
+        if (entry.size_label) {
+          const quickSize = document.createElement('span');
+          quickSize.className = 'quick-size';
+          quickSize.textContent = `Out x Inside x Height: ${entry.size_label}`;
+          btn.appendChild(quickSize);
+        }
         btn.onclick = () => focusRowByKey(entry.row_key);
         namesDiv.appendChild(btn);
       });
@@ -501,34 +2852,65 @@ def home() -> str:
       const table = document.getElementById('resultsTable');
       const body = table.querySelector('tbody');
       body.innerHTML = '';
-      data.rows.forEach(r => {
+      safeRows.forEach(r => {
+        const sizeLabel = String(r.size_label || '');
+        const nameCell = `${escapeHtml(r.item_name)}${sizeLabel ? `<div class="quick-size">Out x Inside x Height: ${escapeHtml(sizeLabel)}</div>` : ''}`;
+        const itemNumberDisplay = String(r.company_number || '');
         const tr = document.createElement('tr');
         tr.dataset.rowKey = String(r.row_key || '');
         tr.innerHTML = `<td>${escapeHtml(r.source_file)}</td>
-                        <td>${escapeHtml(r.item_name)}</td>
-                        <td>${escapeHtml(r.item_number)}</td>
-                        <td>${escapeHtml(r.matched_alternative || '')}</td>
-                        <td>${escapeHtml(r.alternatives)}</td>`;
+                        <td>${nameCell}</td>
+                        <td>${escapeHtml(itemNumberDisplay)}</td>
+                        <td>${escapeHtml(r.original_numbers || '')}</td>
+                        <td>${escapeHtml(String(r.alternatives ?? ''))}</td>`;
         body.appendChild(tr);
       });
-      table.style.display = data.rows.length ? 'table' : 'none';
+      table.style.display = safeRows.length ? 'table' : 'none';
     }
 
     function initAutoSearch() {
       const queryInput = document.getElementById('queryInput');
       const savedQuery = localStorage.getItem('lastSearchQuery') || '';
       queryInput.value = savedQuery;
+      document.getElementById('numberQueryInput').value = localStorage.getItem('lastNumberQuery') || '';
+      document.getElementById('sizeTypeInput').value = localStorage.getItem('lastSizeType') || '';
+      document.getElementById('sizeWidthInput').value = localStorage.getItem('lastSizeWidth') || '';
+      document.getElementById('sizeDiameterInput').value = localStorage.getItem('lastSizeDiameter') || '';
+      document.getElementById('sizeHeightInput').value = localStorage.getItem('lastSizeHeight') || '';
+      setSearchTab(localStorage.getItem('activeSearchTab') || 'main');
+      updateSizeInputsLayout();
 
       queryInput.addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
         searchDebounceTimer = setTimeout(() => {
-          searchNow();
+          searchNow('main');
         }, 250);
+      });
+      document.getElementById('numberQueryInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          searchNow('main');
+        }, 250);
+      });
+      document.getElementById('sizeTypeInput').addEventListener('change', () => {
+        updateSizeInputsLayout();
+        searchNow('size');
+      });
+      document.getElementById('sizeWidthInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => searchNow('size'), 250);
+      });
+      document.getElementById('sizeDiameterInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => searchNow('size'), 250);
+      });
+      document.getElementById('sizeHeightInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => searchNow('size'), 250);
       });
 
       clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(() => {
-        searchNow();
         loadStats();
       }, 10000);
     }
@@ -553,34 +2935,49 @@ def home() -> str:
     }
 
     async function loadStats() {
-      const res = await fetch('/stats');
-      const data = await res.json();
-      document.getElementById('stats').innerText =
-        `إجمالي الصفوف: ${data.total_rows} | عدد الملفات: ${data.total_files}`;
+      try {
+        const res = await fetch('/stats', { cache: 'no-store' });
+        const data = await res.json();
+        const backendKey = String(data.db_backend || 'sqlite').toLowerCase();
+        const backend = backendKey === 'supabase'
+          ? 'Supabase/Postgres'
+          : backendKey === 'neon'
+            ? 'Neon/Postgres'
+            : backendKey === 'postgres'
+              ? 'Postgres'
+              : 'SQLite';
+        document.getElementById('stats').innerText =
+          `إجمالي الصفوف: ${data.total_rows} | عدد الأصناف: ${data.total_items || 0} | عدد الملفات: ${data.total_files} | المصدر: الخادم | قاعدة البيانات: ${backend}`;
+      } catch (_) {
+        document.getElementById('stats').innerText =
+          `إجمالي الصفوف (محلي): ${localSnapshot.total_rows || (localSnapshot.rows || []).length}`;
+      }
     }
-    document.getElementById('filesInput').addEventListener('change', (e) => {
-      appendFilesToSelection(e.target.files);
-      e.target.value = '';
-    });
-    document.getElementById('folderInput').addEventListener('change', (e) => {
-      appendFilesToSelection(e.target.files);
-      e.target.value = '';
-    });
     const dropZone = document.getElementById('dropZone');
-    dropZone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      dropZone.classList.add('active');
-    });
-    dropZone.addEventListener('dragleave', () => {
-      dropZone.classList.remove('active');
-    });
-    dropZone.addEventListener('drop', (e) => {
-      handleDrop(e);
-    });
+    if (dropZone) {
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('active');
+      });
+      dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('active');
+      });
+      dropZone.addEventListener('drop', (e) => {
+        handleDrop(e);
+      });
+    }
     updateSelectionInfo();
-    initAutoSearch();
-    loadStats();
-    searchNow();
+    setUploadProgress(0, '');
+    registerServiceWorker();
+    (async () => {
+      await ensureLatestClientVersion();
+      await loadLocalSnapshot();
+      initAutoSearch();
+      loadStats();
+      searchNow();
+      restoreServerFromLocalSnapshotIfEmpty();
+      autoSyncGoogleDriveIfServerEmpty();
+    })();
   </script>
 </body>
 </html>
@@ -593,7 +2990,9 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
     inserted_total = 0
+    inserted_items_total = 0
     processed_files = 0
+    skipped_files = 0
 
     for file in files:
         lower = file.filename.lower() if file.filename else ""
@@ -601,8 +3000,14 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
             continue
 
         content = await file.read()
+        content_hash, file_size = file_fingerprint(content)
+        if is_same_uploaded_file(file.filename, content_hash, file_size):
+            skipped_files += 1
+            continue
         try:
-            inserted_total += process_excel_file(content, file.filename)
+            inserted_rows, inserted_items = process_excel_file(content, file.filename, content_hash, file_size)
+            inserted_total += inserted_rows
+            inserted_items_total += inserted_items
             processed_files += 1
         except Exception as exc:
             raise HTTPException(
@@ -610,57 +3015,238 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
                 detail=f"Could not process file '{file.filename}': {exc}",
             ) from exc
 
-    return {"files_count": processed_files, "inserted_rows": inserted_total}
+    return {
+        "files_count": processed_files,
+        "inserted_rows": inserted_total,
+        "inserted_items": inserted_items_total,
+        "skipped_files": skipped_files,
+    }
 
 
-@app.get("/search")
-def search(q: str = "") -> dict:
-    tokens = [t for t in normalize_text(q).split(" ") if t]
-    if not tokens:
-        return {"total_rows": 0, "matching_item_names": [], "matching_items": [], "rows": []}
+@app.post("/google_drive/sync")
+def google_drive_sync() -> dict:
+    folder_id = (os.getenv("GDRIVE_FOLDER_ID") or "").strip()
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="Missing GDRIVE_FOLDER_ID")
 
-    query_years = [y for y in (parse_query_year_token(t) for t in tokens) if y is not None]
-    text_tokens = [t for t in tokens if parse_query_year_token(t) is None]
+    try:
+        service = get_gdrive_service()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Google Drive setup error: {exc}") from exc
+
+    files = list_gdrive_excel_files(service, folder_id)
+    processed = 0
+    skipped = 0
+    inserted_rows_total = 0
+    inserted_items_total = 0
+    failed: list[str] = []
+    unsupported: list[str] = []
+
+    for f in files:
+        file_name = normalize_source_file_name(f.get("relative_name") or f.get("name") or "")
+        if not file_name:
+            continue
+        if not is_openpyxl_supported_file_name(file_name):
+            unsupported.append(file_name)
+            continue
+
+        try:
+            content = download_gdrive_file_bytes(service, f["id"])
+            content_hash, file_size = file_fingerprint(content)
+            if is_same_uploaded_file(file_name, content_hash, file_size):
+                skipped += 1
+                continue
+            rows, items = process_excel_file(content, file_name, content_hash, file_size)
+            processed += 1
+            inserted_rows_total += rows
+            inserted_items_total += items
+        except Exception as exc:
+            failed.append(f"{file_name}: {exc}")
+
+    return {
+        "scanned_files": len(files),
+        "files_count": processed,
+        "skipped_files": skipped,
+        "inserted_rows": inserted_rows_total,
+        "inserted_items": inserted_items_total,
+        "unsupported_files": unsupported[:100],
+        "failed_files": failed[:100],
+    }
+
+
+@app.post("/upload_rows/start")
+def upload_rows_start(payload: UploadRowsStartIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    if is_same_uploaded_file(source_key, payload.content_hash, payload.file_size):
+        return {"skip": True}
 
     conn = get_db()
     try:
-        if text_tokens:
-            where_parts = []
-            params: list[str] = []
-            for token in text_tokens:
-                like = f"%{token}%"
-                where_parts.append(
-                    """
-                    (
-                        lower(item_name) LIKE ?
-                        OR lower(alternatives) LIKE ?
-                    )
-                    """
-                )
-                params.extend([like, like])
-            where_clause = " OR ".join(where_parts)
-            candidate_rows = conn.execute(
-                f"""
-                SELECT item_name, item_number, alternatives, source_file, source_sheet
-                FROM products
-                WHERE {where_clause}
-                ORDER BY item_name
-                LIMIT 4000
-                """,
-                params,
-            ).fetchall()
-        else:
-            candidate_rows = conn.execute(
-                """
-                SELECT item_name, item_number, alternatives, source_file, source_sheet
-                FROM products
-                ORDER BY id DESC
-                LIMIT 4000
-                """
-            ).fetchall()
+        conn.execute("DELETE FROM products WHERE source_file = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"skip": False}
 
-        filtered_rows = [r for r in candidate_rows if row_matches_query(r, text_tokens, query_years)]
-        rows = filtered_rows[:300]
+
+@app.post("/upload_rows/chunk")
+def upload_rows_chunk(payload: UploadRowsChunkIn) -> dict:
+    if not payload.rows:
+        return {"inserted_rows": 0}
+
+    source_key = normalize_source_file_name(payload.file_name)
+    rows_to_insert = []
+    for row in payload.rows:
+        if not any(
+            [
+                row.item_name,
+                row.item_number,
+                row.company_number,
+                row.original_numbers,
+                row.notes,
+                row.alternatives,
+                row.size_width,
+                row.size_diameter,
+                row.size_height,
+            ]
+        ):
+            continue
+        rows_to_insert.append(
+            (
+                row.item_name.strip(),
+                row.item_number.strip(),
+                row.company_number.strip(),
+                row.original_numbers.strip(),
+                row.notes.strip(),
+                row.alternatives.strip(),
+                row.size_width.strip(),
+                row.size_diameter.strip(),
+                row.size_height.strip(),
+                source_key,
+                (row.source_sheet or "Sheet1").strip(),
+            )
+        )
+
+    if not rows_to_insert:
+        return {"inserted_rows": 0}
+
+    conn = get_db()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO products (
+                item_name, item_number, company_number, original_numbers, notes, alternatives,
+                size_width, size_diameter, size_height, source_file, source_sheet
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"inserted_rows": len(rows_to_insert)}
+
+
+@app.post("/upload_rows/finish")
+def upload_rows_finish(payload: UploadRowsFinishIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        rows_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM products WHERE source_file = ?",
+            (source_key,),
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+
+    upsert_uploaded_file_meta(source_key, rows_count, payload.content_hash, payload.file_size)
+    return {"rows_count": rows_count}
+
+
+@app.post("/upload_rows/abort")
+def upload_rows_abort(payload: UploadRowsAbortIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM products WHERE source_file = ?", (source_key,))
+        conn.execute("DELETE FROM uploaded_files WHERE file_name = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.get("/search")
+def search(
+    q: str = "",
+    q_numbers: str = "",
+    size_type: str = "",
+    size_width: str = "",
+    size_diameter: str = "",
+    size_height: str = "",
+) -> dict:
+    tokens = tokenize_query(q)
+    number_tokens = tokenize_query(q_numbers)
+    file_hints, tokens = extract_file_search_hints(q, tokens)
+    size_active = any([size_type.strip(), size_width.strip(), size_diameter.strip(), size_height.strip()])
+    if not tokens and not number_tokens and not size_active and not file_hints:
+        return {"total_rows": 0, "matching_item_names": [], "matching_items": [], "rows": []}
+
+    parsed_year_tokens = [parse_query_year_token(t) for t in tokens]
+    query_years = sorted({y for ys in parsed_year_tokens if ys for y in ys})
+    explicit_year_ops = any(is_explicit_year_operator_token(t) for t in tokens)
+    text_tokens = [t for t, ys in zip(tokens, parsed_year_tokens) if ys is None]
+
+    conn = get_db()
+    try:
+        where_parts = []
+        params: list[str] = []
+
+        for token in text_tokens:
+            # Digits can appear in Arabic/Persian forms inside Excel text.
+            # Keep final matching in Python (normalized) to avoid false misses.
+            if any(ch.isdigit() for ch in token):
+                continue
+            like = f"%{token}%"
+            where_parts.append("(lower(item_name) LIKE ? OR lower(alternatives) LIKE ? OR lower(source_file) LIKE ?)")
+            params.extend([like, like, like])
+
+        for token in number_tokens:
+            if any(ch.isdigit() for ch in token):
+                continue
+            like = f"%{token}%"
+            where_parts.append("(lower(company_number) LIKE ? OR lower(original_numbers) LIKE ? OR lower(notes) LIKE ?)")
+            params.extend([like, like, like])
+
+        if file_hints:
+            where_parts.append("(" + " OR ".join(["lower(source_file) LIKE ?" for _ in file_hints]) + ")")
+            params.extend([f"%{normalize_text(h)}%" for h in file_hints])
+
+        # Size/type filtering is applied in Python for better tolerance.
+
+        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
+        candidate_rows = conn.execute(
+            f"""
+            SELECT item_name, item_number, company_number, original_numbers, notes, alternatives,
+                   size_width, size_diameter, size_height, source_file, source_sheet
+            FROM products
+            WHERE {where_clause}
+            ORDER BY item_name
+            LIMIT 100000
+            """,
+            params,
+        ).fetchall()
+
+        filtered_rows = [
+            r
+            for r in candidate_rows
+            if row_matches_query(r, text_tokens, query_years)
+            and row_matches_number_query(r, number_tokens)
+            and (not file_hints or any(normalize_text(h) in normalize_text(r["source_file"] or "") for h in file_hints))
+            and file_matches_size_type_with_fallback(r, r["source_file"] or "", size_type, size_width, size_diameter)
+            and row_matches_size_filters(size_type, r, size_width, size_diameter, size_height)
+        ]
+        rows = filtered_rows[:500]
     finally:
         conn.close()
 
@@ -670,8 +3256,22 @@ def search(q: str = "") -> dict:
     for index, row in enumerate(rows):
         row_dict = dict(row)
         matched_alt = extract_matched_alternative(row_dict.get("alternatives", ""), text_tokens, query_years)
-        row_key = f"{row_dict.get('source_file', '')}|{row_dict.get('source_sheet', '')}|{row_dict.get('item_number', '')}|{index}"
+        if not (row_dict.get("alternatives") or "").strip():
+            matched_alt = ""
+        row_key = f"{row_dict.get('source_file', '')}|{row_dict.get('source_sheet', '')}|{row_dict.get('company_number') or row_dict.get('item_number', '')}|{index}"
+        size_label = " x ".join(
+            [
+                (row_dict.get("size_width") or "").strip() or "-",
+                (row_dict.get("size_diameter") or "").strip() or "-",
+                (row_dict.get("size_height") or "").strip() or "-",
+            ]
+        )
+        item_number_display = (row_dict.get("company_number") or "").strip()
+        row_dict["item_number"] = item_number_display
+        row_dict["size_label"] = "" if (size_label == "- x - x -" or not is_size_file(row_dict.get("source_file", ""))) else size_label
         row_dict["matched_alternative"] = matched_alt
+        row_dict["alternatives"] = (row_dict.get("alternatives") or "").strip()
+        row_dict["match_score"] = year_match_score(matched_alt, query_years)
         row_dict["row_key"] = row_key
         prepared_rows.append(row_dict)
 
@@ -682,11 +3282,38 @@ def search(q: str = "") -> dict:
                 {
                     "item_name": row_dict["item_name"],
                     "matched_alternative": matched_alt,
+                    "size_label": row_dict.get("size_label", ""),
                     "row_key": row_key,
                 }
             )
         if len(quick_items) >= 100:
             break
+
+    # Keep "most precise only" behavior for explicit year operators (+YY, YY-, YY-YY),
+    # but keep all valid matches for plain year tokens like "20".
+    if explicit_year_ops and query_years and prepared_rows:
+        max_score = max(r.get("match_score", 0) for r in prepared_rows)
+        if max_score > 0:
+            prepared_rows = [r for r in prepared_rows if r.get("match_score", 0) == max_score]
+
+            # Rebuild quick items after precision filtering.
+            quick_items = []
+            seen_quick = set()
+            for r in prepared_rows:
+                quick_key = (r.get("item_name", ""), r.get("matched_alternative", ""))
+                if quick_key in seen_quick or not r.get("item_name"):
+                    continue
+                seen_quick.add(quick_key)
+                quick_items.append(
+                    {
+                        "item_name": r["item_name"],
+                        "matched_alternative": r.get("matched_alternative", ""),
+                        "size_label": r.get("size_label", ""),
+                        "row_key": r.get("row_key", ""),
+                    }
+                )
+                if len(quick_items) >= 100:
+                    break
 
     names = sorted({r["item_name"] for r in prepared_rows if r["item_name"]})[:100]
     return {
@@ -703,11 +3330,99 @@ def stats() -> dict:
     try:
         total_rows = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
         total_files = conn.execute("SELECT COUNT(*) AS c FROM uploaded_files").fetchone()["c"]
+        total_items = conn.execute(
+            "SELECT COUNT(DISTINCT item_name) AS c FROM products WHERE COALESCE(TRIM(item_name), '') <> ''"
+        ).fetchone()["c"]
     finally:
         conn.close()
-    return {"total_rows": total_rows, "total_files": total_files}
+    return {
+        "total_rows": total_rows,
+        "total_files": total_files,
+        "total_items": total_items,
+        "db_backend": DB_BACKEND,
+    }
+
+
+@app.get("/sync/meta")
+def sync_meta() -> dict:
+    return get_sync_meta()
+
+
+@app.get("/sync/data")
+def sync_data() -> dict:
+    meta = get_sync_meta()
+    return {
+        "version": meta["version"],
+        "updated_at": meta["updated_at"],
+        "total_rows": meta["total_rows"],
+        "rows": get_sync_rows(),
+    }
+
+
+@app.get("/manifest.webmanifest")
+def manifest() -> HTMLResponse:
+    payload = {
+        "name": "بحث البدائل",
+        "short_name": "بدائل",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#f6f7fb",
+        "theme_color": "#0b66ff",
+        "lang": "ar",
+    }
+    return HTMLResponse(content=json.dumps(payload, ensure_ascii=False), media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker() -> HTMLResponse:
+    js = f"""
+const CACHE_NAME = 'badail-shell-{APP_VERSION}';
+const APP_SHELL = ['/', '/manifest.webmanifest'];
+
+self.addEventListener('install', (event) => {{
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  self.skipWaiting();
+}});
+
+self.addEventListener('activate', (event) => {{
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith('badail-shell-') && k !== CACHE_NAME).map((k) => caches.delete(k))))
+  );
+  self.clients.claim();
+}});
+
+self.addEventListener('fetch', (event) => {{
+  const req = event.request;
+  if (req.method !== 'GET') return;
+
+  if (req.mode === 'navigate') {{
+    event.respondWith(
+      fetch(req).then((res) => {{
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+        return res;
+      }}).catch(() => caches.match('/'))
+    );
+    return;
+  }}
+
+  if (req.url.includes('/sync/') || req.url.includes('/search') || req.url.includes('/stats') || req.url.includes('/upload')) {{
+    event.respondWith(fetch(req).catch(() => caches.match(req)));
+    return;
+  }}
+
+  event.respondWith(
+    caches.match(req).then((cached) => cached || fetch(req).then((res) => {{
+      const copy = res.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+      return res;
+    }}).catch(() => caches.match('/')))
+  );
+}});
+"""
+    return HTMLResponse(content=js, media_type="application/javascript")
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "app_version": APP_VERSION, "db_backend": DB_BACKEND}

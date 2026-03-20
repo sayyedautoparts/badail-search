@@ -98,3 +98,22 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 - إذا ما أضفت Volume، ممكن تضيع البيانات بعد إعادة النشر.
 - بعد أي تعديل جديد في الكود: اعمل Push على GitHub وRailway يعيد النشر تلقائياً.
+
+## تشغيل على Vercel
+
+تم تجهيز ملفات Vercel:
+- `vercel.json`
+- `api/index.py`
+
+### الخطوات:
+
+1. ادخل إلى [Vercel](https://vercel.com) وسجل دخول بحساب GitHub.
+2. اختر **Add New...** ثم **Project**.
+3. اختر الريبو: `sayyedautoparts/badail-search`.
+4. اضغط **Deploy**.
+
+### ملاحظة مهمة جداً:
+
+- على Vercel، SQLite المحلي ليس تخزين دائم (يكون مؤقت).
+- يعني البيانات المرفوعة قد تختفي بعد إعادة تشغيل/نشر.
+- إذا بدك حفظ دائم 100%، استخدم Railway/Render مع Volume أو قاعدة بيانات خارجية.

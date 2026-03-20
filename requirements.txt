@@ -3,3 +3,6 @@ uvicorn
 pandas
 openpyxl
 python-multipart
+psycopg[binary]
+google-api-python-client
+google-auth
