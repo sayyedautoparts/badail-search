@@ -2,6 +2,7 @@ import io
 import os
 import re
 import sqlite3
+import unicodedata
 import hashlib
 import json
 import base64
@@ -76,6 +77,25 @@ ARABIC_LETTER_TRANS = str.maketrans(
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 APP_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = APP_DIR / "static" / "app-icon.png"
+APPLE_TOUCH_ICON_PATH = APP_DIR / "static" / "apple-touch-icon.png"
+
+
+def app_icon_cache_query() -> str:
+    """بصمة قصيرة لملف الأيقونة — تُستخدم في ?v= لإجبار المتصفح على جلب شعار جديد."""
+    try:
+        return hashlib.sha256(APP_ICON_PATH.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return "0"
+
+
+def apple_touch_icon_cache_query() -> str:
+    """بصمة لأيقونة «إضافة للشاشة الرئيسية» على iOS (منفصلة عن favicon التبويب)."""
+    try:
+        return hashlib.sha256(APPLE_TOUCH_ICON_PATH.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return app_icon_cache_query()
+
+
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
 
@@ -422,16 +442,61 @@ def upsert_wiper_file_meta(file_name: str, rows_count: int, content_hash: str, f
 
 
 def is_wiper_spreadsheet_filename(file_name: str) -> bool:
-    """يُعرَف ملف القشطان بالاسم (قشط/قشاط/wiper) حتى يُستورد في جدول منفصل."""
+    """يُعرَف ملف القشطان بالاسم (قشط/قشاط/wiper) مع دعم يونيكود NFC/NFD وأسماء ملفات عربية."""
     if not file_name:
         return False
-    low = file_name.lower()
+    low = str(file_name).lower()
     if "wiper" in low or "wipers" in low:
         return True
-    for frag in ("قشط", "قشاط", "قشطان"):
-        if frag in file_name:
+    base = Path(str(file_name)).name
+    variants = [
+        base,
+        unicodedata.normalize("NFC", base),
+        unicodedata.normalize("NFD", base),
+        str(file_name),
+        unicodedata.normalize("NFC", str(file_name)),
+    ]
+    arabic_frags = ("قشط", "قشاط", "قشطان")
+    for form in variants:
+        for frag in arabic_frags:
+            if frag in form:
+                return True
+    nb = normalize_text(unicodedata.normalize("NFC", base))
+    for frag in arabic_frags:
+        if normalize_text(frag) in nb:
             return True
     return False
+
+
+def excel_bytes_looks_like_wiper_table(file_bytes: bytes) -> bool:
+    """
+    إن وُجد في الصف الأول إشارة لأعمدة القشط/المساحات يُعامل الملف كقشطان
+    حتى لو تعذّر إرسال الاسم العربي من المتصفح بشكل صحيح.
+    """
+    try:
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        try:
+            if not wb.sheetnames:
+                return False
+            ws = wb[wb.sheetnames[0]]
+            preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=6, values_only=True))
+            if not preview:
+                return False
+            cells = [clean_cell(v) for v in preview[0]]
+            joined = normalize_text(" ".join(cells))
+            if any(k in joined for k in ("قشاط", "قشط", "مساح", "ماسحه", "ماسحة")):
+                return True
+            if "wiper" in joined:
+                return True
+            return False
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
+def should_process_as_wiper_spreadsheet(file_name: str, file_bytes: bytes) -> bool:
+    return is_wiper_spreadsheet_filename(file_name) or excel_bytes_looks_like_wiper_table(file_bytes)
 
 
 def is_same_wiper_upload(file_name: str, content_hash: str, file_size: int) -> bool:
@@ -2040,13 +2105,24 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
 
 
 def _wiper_row_looks_like_header(cells: list[str]) -> bool:
+    """
+    تمييز سطر العناوين دون الخلط مع صف بيانات قد يحتوي كلمات مثل «موديل» أو «رقم» كجزء من النص.
+    """
     samples = [clean_cell(x) for x in (cells[:5] if cells else [])]
+    if samples and len(samples[0]) > 48:
+        return False
     joined = normalize_text(" ".join(samples))
     hits = 0
     for kw in ("اسم", "سياره", "سيارة", "موديل", "ماتور", "محرك", "موقع", "قشاط", "قشط", "رقم"):
         if kw in joined:
             hits += 1
-    return hits >= 2
+    if hits >= 3:
+        return True
+    if "اسم" in joined and "موديل" in joined:
+        return True
+    if any(k in joined for k in ("قشاط", "قشط", "مساح", "ماسحه")) and ("موقع" in joined or "رقم" in joined):
+        return True
+    return False
 
 
 def process_wiper_excel_file(file_bytes: bytes, file_name: str, content_hash: str, file_size: int) -> int:
@@ -2125,9 +2201,20 @@ def favicon_ico() -> FileResponse:
     return FileResponse(APP_ICON_PATH, media_type="image/png")
 
 
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon_png() -> FileResponse:
+    """أيقونة 180×180 لـ Safari: إضافة إلى الشاشة الرئيسية فقط (ليست favicon التبويب)."""
+    if not APPLE_TOUCH_ICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Apple touch icon missing")
+    return FileResponse(APPLE_TOUCH_ICON_PATH, media_type="image/png")
+
+
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
-    return """
+    _icon_q = app_icon_cache_query()
+    _at_q = apple_touch_icon_cache_query()
+    return (
+        """
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -2138,7 +2225,7 @@ def home() -> str:
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="تبديل الأصناف" />
   <link rel="icon" type="image/png" href="/app-icon.png" />
-  <link rel="apple-touch-icon" href="/app-icon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>بحث البدائل</title>
   <style>
@@ -2179,7 +2266,7 @@ def home() -> str:
   <div class="wrap">
     <div class="card">
       <h2>رفع ملفات Excel</h2>
-      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملفات القشطان (أعمدة A–E) تُستورد تلقائياً إذا كان اسم الملف يحتوي «قشط» أو «wiper».</p>
+      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسم الملف فيه «قشط» / «قشاط» / «قشطان» أو «wiper»، أو إذا كان الصف الأول فيه كلمات مثل «موقع القشاط» / «رقم القشاط».</p>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -4278,6 +4365,9 @@ def home() -> str:
 </body>
 </html>
 """
+    ).replace('href="/app-icon.png"', f'href="/app-icon.png?v={_icon_q}"', 1).replace(
+        'href="/apple-touch-icon.png"', f'href="/apple-touch-icon.png?v={_at_q}"', 1
+    )
 
 
 @app.post("/upload")
@@ -4299,7 +4389,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         content = await file.read()
         content_hash, file_size = file_fingerprint(content)
         fname = file.filename or ""
-        if is_wiper_spreadsheet_filename(fname):
+        if should_process_as_wiper_spreadsheet(fname, content):
             if is_same_wiper_upload(fname, content_hash, file_size):
                 skipped_files += 1
                 continue
@@ -4367,7 +4457,7 @@ def google_drive_sync() -> dict:
         try:
             content = download_gdrive_file_bytes(service, f["id"])
             content_hash, file_size = file_fingerprint(content)
-            if is_wiper_spreadsheet_filename(file_name):
+            if should_process_as_wiper_spreadsheet(file_name, content):
                 if is_same_wiper_upload(file_name, content_hash, file_size):
                     skipped += 1
                     continue
@@ -4765,23 +4855,25 @@ def sync_data() -> dict:
 
 @app.get("/manifest.webmanifest")
 def manifest() -> HTMLResponse:
+    _iq = app_icon_cache_query()
+    _icon_url = f"/app-icon.png?v={_iq}"
     payload = {
         "name": "تبديل الأصناف",
         "short_name": "تبديل الأصناف",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#000000",
+        "background_color": "#ffffff",
         "theme_color": "#1a2744",
         "lang": "ar",
         "icons": [
             {
-                "src": "/app-icon.png",
+                "src": _icon_url,
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
-                "src": "/app-icon.png",
+                "src": _icon_url,
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "maskable",
@@ -4793,9 +4885,11 @@ def manifest() -> HTMLResponse:
 
 @app.get("/sw.js")
 def service_worker() -> HTMLResponse:
+    _iq = app_icon_cache_query()
+    _atq = apple_touch_icon_cache_query()
     js = f"""
 const CACHE_NAME = 'badail-shell-{APP_VERSION}';
-const APP_SHELL = ['/', '/manifest.webmanifest', '/app-icon.png'];
+const APP_SHELL = ['/', '/manifest.webmanifest', '/app-icon.png?v={_iq}', '/apple-touch-icon.png?v={_atq}'];
 
 self.addEventListener('install', (event) => {{
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
