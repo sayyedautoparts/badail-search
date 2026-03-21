@@ -2,7 +2,6 @@ fastapi
 uvicorn
 pandas
 openpyxl
-Pillow
 python-multipart
 psycopg[binary]
 google-api-python-client
