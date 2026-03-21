@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel
 
@@ -74,7 +74,10 @@ ARABIC_LETTER_TRANS = str.maketrans(
     }
 )
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+APP_DIR = Path(__file__).resolve().parent
+APP_ICON_PATH = APP_DIR / "static" / "app-icon.png"
 INGEST_PARSER_VERSION = "5"
+WIPER_PARSER_VERSION = "wiper-1"
 
 
 class DBConnection:
@@ -234,6 +237,38 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_products_alternatives ON products(alternatives)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_products_source_file ON products(source_file)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_products_company_number ON products(company_number)")
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wiper_rows (
+                    id BIGSERIAL PRIMARY KEY,
+                    car_name TEXT,
+                    car_model TEXT,
+                    engine TEXT,
+                    wiper_location TEXT,
+                    wiper_number TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wiper_rows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    car_name TEXT,
+                    car_model TEXT,
+                    engine TEXT,
+                    wiper_location TEXT,
+                    wiper_number TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wiper_car_name ON wiper_rows(car_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wiper_source_file ON wiper_rows(source_file)")
         conn.commit()
     finally:
         conn.close()
@@ -364,6 +399,64 @@ def upsert_uploaded_file_meta(file_name: str, rows_count: int, content_hash: str
         conn.close()
 
 
+def upsert_wiper_file_meta(file_name: str, rows_count: int, content_hash: str, file_size: int) -> None:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (file_name, rows_count, content_hash, file_size, parser_version)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(file_name) DO UPDATE SET
+                uploaded_at = CURRENT_TIMESTAMP,
+                rows_count = excluded.rows_count,
+                content_hash = excluded.content_hash,
+                file_size = excluded.file_size,
+                parser_version = excluded.parser_version
+            """,
+            (source_key, rows_count, content_hash, file_size, WIPER_PARSER_VERSION),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_wiper_spreadsheet_filename(file_name: str) -> bool:
+    """يُعرَف ملف القشطان بالاسم (قشط/قشاط/wiper) حتى يُستورد في جدول منفصل."""
+    if not file_name:
+        return False
+    low = file_name.lower()
+    if "wiper" in low or "wipers" in low:
+        return True
+    for frag in ("قشط", "قشاط", "قشطان"):
+        if frag in file_name:
+            return True
+    return False
+
+
+def is_same_wiper_upload(file_name: str, content_hash: str, file_size: int) -> bool:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT content_hash, file_size, COALESCE(parser_version, '') AS parser_version
+            FROM uploaded_files
+            WHERE file_name = ?
+            """,
+            (source_key,),
+        ).fetchone()
+        if not row:
+            return False
+        return (
+            (row["content_hash"] == content_hash)
+            and (int(row["file_size"] or 0) == int(file_size))
+            and (str(row["parser_version"] or "") == WIPER_PARSER_VERSION)
+        )
+    finally:
+        conn.close()
+
+
 def normalize_text(text: str) -> str:
     text = str(text).translate(DIGIT_TRANS).translate(ARABIC_LETTER_TRANS).strip().lower()
     text = re.sub(r"[\u064B-\u065F\u0670\u06D6-\u06ED]", "", text)
@@ -449,28 +542,45 @@ def _find_whole_word_span(haystack: str, needle: str) -> tuple[int, int] | None:
         pos = idx + 1
 
 
-def _earliest_token_match_span(alternatives: str, tokens: list[str]) -> tuple[int, int] | None:
-    """أبكر موضع بين التوكنات (أول كلمة تُرى في الخانة)."""
-    best: tuple[int, int] | None = None
-    for tok in tokens:
+def _anchor_priority_for_slice_token(t: str) -> tuple[int, int]:
+    """
+    ترتيب أصغر = مرساة أفضل لبداية المقطع المعروض.
+    نفضّل طرازاً/اسماً (fabia، octavia، عربي) على رقم سعة مكرر (1.9 يظهر في أكثر من مقطع).
+    """
+    nt = normalize_text(t)
+    if not nt:
+        return (99, 0)
+    if re.fullmatch(r"\d{1,2}\.\d{1,3}", nt):
+        return (4, -len(nt))
+    if re.fullmatch(r"\d{1,2}", nt):
+        return (3, -len(nt))
+    if re.search(r"[a-z\u0600-\u06ff]", nt):
+        return (0, -len(nt))
+    return (2, -len(nt))
+
+
+def _best_anchor_span_for_slice(alternatives: str, tokens: list[str]) -> tuple[int, int] | None:
+    """موضع بداية المقطع: مرساة من التوكن الأنسب لا أبكر رقم في النص."""
+    if not tokens:
+        return None
+    ordered = sorted(tokens, key=_anchor_priority_for_slice_token)
+    for tok in ordered:
         span = _find_whole_word_span(alternatives, tok)
-        if span is None:
-            continue
-        if best is None or span[0] < best[0]:
-            best = span
-    return best
+        if span is not None:
+            return span
+    return None
 
 
 def _slice_alternatives_from_first_match_to_slash(alternatives: str, tokens: list[str]) -> str | None:
     """
-    من أول ظهور لأحد التوكنات في خانة البدائل حتى أول «/» بعده،
-    أو حتى نهاية الخانة إن لم يوجد / (مثل آخر مقطع في الخانة).
+    من مرساة أنسب (طراز/نص قبل 1.9 إن وُجد) حتى أول «/» بعدها،
+    أو حتى نهاية الخانة إن لم يوجد /.
     """
-    span = _earliest_token_match_span(alternatives, tokens)
+    span = _best_anchor_span_for_slice(alternatives, tokens)
     if span is None:
         return None
     st, _ = span
-    slash_at = alternatives.find("/", st)
+    slash_at = _next_segment_slash(alternatives, st)
     if slash_at < 0:
         return alternatives[st:].strip()
     return alternatives[st:slash_at].strip()
@@ -670,11 +780,53 @@ def year_in_range_text(year: int, text: str) -> bool:
     return False
 
 
+_AT_MT_SPLIT_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9/])(?:at\s*/\s*mt|mt\s*/\s*at)(?![A-Za-z0-9/])"
+)
+
+
+def _at_mt_protected_ranges(text: str) -> list[tuple[int, int]]:
+    """نطاقات at/mt و mt/at (أي حالة أحرف) — لا نعتبر / داخلها فاصلاً بين السيارات."""
+    return [(m.start(), m.end()) for m in _AT_MT_SPLIT_PATTERN.finditer(text or "")]
+
+
+def _char_in_any_range(idx: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(a <= idx < b for a, b in ranges)
+
+
+def _next_segment_slash(alternatives: str, start: int) -> int:
+    """أول / بعد start يكون فاصلاً بين مقطعين وليس جزءاً من at/mt."""
+    ranges = _at_mt_protected_ranges(alternatives)
+    i = start
+    n = len(alternatives)
+    while i < n:
+        if alternatives[i] != "/":
+            i += 1
+            continue
+        if _char_in_any_range(i, ranges):
+            i += 1
+            continue
+        return i
+    return -1
+
+
 def split_alternative_segments(alternatives: str) -> list[str]:
     if not alternatives:
         return []
-    parts = re.split(r"[\/|,\n;]+", alternatives)
-    return [p.strip() for p in parts if p and p.strip()]
+    ranges = _at_mt_protected_ranges(alternatives)
+    parts: list[str] = []
+    cur_start = 0
+    for i, ch in enumerate(alternatives):
+        is_delim = ch in "|,\n;" or (ch == "/" and not _char_in_any_range(i, ranges))
+        if is_delim:
+            piece = alternatives[cur_start:i].strip()
+            if piece:
+                parts.append(piece)
+            cur_start = i + 1
+    tail = alternatives[cur_start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def split_year_chunks(text: str) -> list[str]:
@@ -869,6 +1021,31 @@ def row_matches_number_query(row: sqlite3.Row, number_tokens: list[str]) -> bool
         f"{row['company_number'] or ''} {row['original_numbers'] or ''} {row['notes'] or ''}"
     )
     return all(normalize_text(t) in number_space for t in number_tokens)
+
+
+def wiper_tokens_and_years(q: str) -> tuple[list[str], list[int]]:
+    tokens = tokenize_query(q or "")
+    parsed = [parse_query_year_token(t) for t in tokens]
+    text_tokens = [t for t, ys in zip(tokens, parsed) if ys is None]
+    years = sorted({y for ys in parsed if ys for y in ys})
+    return text_tokens, years
+
+
+def wiper_field_matches_tokens_and_years(field_val: str, text_tokens: list[str], years: list[int]) -> bool:
+    """نفس منطق تطابق الكلمات المطبّعة (مع النسخة المدمجة) + السنوات داخل خانة واحدة."""
+    fv = field_val or ""
+    if text_tokens:
+        combined = normalize_text(fv)
+        combined_compact = normalize_text_compact(fv)
+        for token in text_tokens:
+            nt = normalize_text(token)
+            nct = normalize_text_compact(token)
+            if nt not in combined and (nct and nct not in combined_compact):
+                return False
+    if years:
+        if not any(year_in_range_text(y, fv) for y in years):
+            return False
+    return True
 
 
 def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
@@ -1862,8 +2039,90 @@ def process_excel_file(file_bytes: bytes, file_name: str, content_hash: str, fil
         conn.close()
 
 
+def _wiper_row_looks_like_header(cells: list[str]) -> bool:
+    samples = [clean_cell(x) for x in (cells[:5] if cells else [])]
+    joined = normalize_text(" ".join(samples))
+    hits = 0
+    for kw in ("اسم", "سياره", "سيارة", "موديل", "ماتور", "محرك", "موقع", "قشاط", "قشط", "رقم"):
+        if kw in joined:
+            hits += 1
+    return hits >= 2
+
+
+def process_wiper_excel_file(file_bytes: bytes, file_name: str, content_hash: str, file_size: int) -> int:
+    """أعمدة A–E: سيارة، موديل، ماتور، موقع القشاط، رقم القشاط."""
+    conn = get_db()
+    inserted_rows = 0
+    source_key = normalize_source_file_name(file_name)
+
+    try:
+        conn.execute("DELETE FROM wiper_rows WHERE source_file = ?", (source_key,))
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        try:
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=5, values_only=True))
+                first_row = preview[0] if preview else ()
+                first_cells = [clean_cell(v) for v in (first_row or ())]
+                data_start_row = 2 if _wiper_row_looks_like_header(first_cells) else 1
+
+                rows_to_insert: list[tuple[str, str, str, str, str, str, str]] = []
+                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=5, values_only=True):
+                    values = [clean_cell(v) for v in row]
+                    while len(values) < 5:
+                        values.append("")
+                    car_name, car_model, engine, wiper_location, wiper_number = values[:5]
+                    if not any([car_name, car_model, engine, wiper_location, wiper_number]):
+                        continue
+                    rows_to_insert.append(
+                        (
+                            car_name,
+                            car_model,
+                            engine,
+                            wiper_location,
+                            wiper_number,
+                            source_key,
+                            str(sheet_name),
+                        )
+                    )
+
+                if rows_to_insert:
+                    conn.executemany(
+                        """
+                        INSERT INTO wiper_rows (
+                            car_name, car_model, engine, wiper_location, wiper_number, source_file, source_sheet
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows_to_insert,
+                    )
+                    inserted_rows += len(rows_to_insert)
+        finally:
+            wb.close()
+
+        conn.commit()
+        upsert_wiper_file_meta(source_key, inserted_rows, content_hash, file_size)
+        return inserted_rows
+    finally:
+        conn.close()
+
+
 app = FastAPI(title="Advanced Excel Search")
 init_db()
+
+
+@app.get("/app-icon.png")
+def app_icon_png() -> FileResponse:
+    if not APP_ICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="App icon missing")
+    return FileResponse(APP_ICON_PATH, media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon_ico() -> FileResponse:
+    """متصفحات كثيرة تطلب /favicon.ico تلقائياً — نعيد نفس شعار PNG."""
+    if not APP_ICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="App icon missing")
+    return FileResponse(APP_ICON_PATH, media_type="image/png")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1874,10 +2133,12 @@ def home() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#0b66ff" />
+  <meta name="theme-color" content="#1a2744" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="بحث البدائل" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="تبديل الأصناف" />
+  <link rel="icon" type="image/png" href="/app-icon.png" />
+  <link rel="apple-touch-icon" href="/app-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>بحث البدائل</title>
   <style>
@@ -1890,6 +2151,7 @@ def home() -> str:
     table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; table-layout: fixed; }
     th, td { border: 1px solid #eee; padding: 6px; text-align: right; vertical-align: top; word-wrap: break-word; }
     #resultsTable th:first-child, #resultsTable td:first-child { width: 14%; font-size: 12px; color: #444; }
+    #wipersTable th:first-child, #wipersTable td:first-child { width: 12%; font-size: 12px; color: #444; }
     th { background: #fafafa; }
     .muted { color: #666; font-size: 13px; }
     .pill { display: inline-block; background: #eef4ff; color: #2d5fff; padding: 7px 10px; border-radius: 10px; margin: 4px 4px 0 0; font-size: 12px; text-align: right; }
@@ -1907,7 +2169,7 @@ def home() -> str:
     .progress-wrap { margin-top: 8px; height: 10px; background: #e8ecf5; border-radius: 999px; overflow: hidden; }
     .progress-bar { height: 100%; width: 0%; background: #2d5fff; transition: width 0.2s ease; }
     .tabs { display: flex; gap: 8px; margin: 8px 0 10px; }
-    .tab-btn { flex: 1; background: #edf0f8; color: #223; }
+    .tab-btn { flex: 1; background: #edf0f8; color: #223; font-size: 12px; padding: 8px 4px; }
     .tab-btn.active { background: #0b66ff; color: #fff; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
@@ -1917,7 +2179,7 @@ def home() -> str:
   <div class="wrap">
     <div class="card">
       <h2>رفع ملفات Excel</h2>
-      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة.</p>
+      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملفات القشطان (أعمدة A–E) تُستورد تلقائياً إذا كان اسم الملف يحتوي «قشط» أو «wiper».</p>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -1939,6 +2201,7 @@ def home() -> str:
       <div class="tabs">
         <button id="tabMainBtn" type="button" class="tab-btn active" onclick="setSearchTab('main')">البحث الرئيسي</button>
         <button id="tabSizeBtn" type="button" class="tab-btn" onclick="setSearchTab('size')">بحث القياسات</button>
+        <button id="tabWiperBtn" type="button" class="tab-btn" onclick="setSearchTab('wiper')">بحث قشطان</button>
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
@@ -1962,6 +2225,14 @@ def home() -> str:
         <button onclick="searchNow('size')">بحث القياسات</button>
       </div>
 
+      <div id="wiperSearchPanel" class="search-panel">
+        <p class="muted" style="margin-top:10px;">بحث جدول القشطان (العمود A = اسم السيارة؛ B = الموديل؛ C = الماتور). التطابق بنفس تطبيع كلمات البحث الرئيسي.</p>
+        <input id="wiperCarInput" placeholder="اسم السيارة (مثلاً Malibu)..." />
+        <input id="wiperModelInput" placeholder="الموديل (اختياري)..." />
+        <input id="wiperEngineInput" placeholder="الماتور / السعة (اختياري)..." />
+        <button onclick="searchNow('wiper')">بحث قشطان</button>
+      </div>
+
       <div id="stats" class="muted"></div>
       <div id="names"></div>
       <div style="overflow:auto;">
@@ -1972,6 +2243,21 @@ def home() -> str:
               <th>اسم الصنف</th>
               <th>رقم الصنف</th>
               <th>السيارات البديلة</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="wipersTableWrap" style="display:none; overflow:auto;">
+        <table id="wipersTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>اسم الملف</th>
+              <th>اسم السيارة</th>
+              <th>الموديل</th>
+              <th>الماتور</th>
+              <th>موقع القشاط</th>
+              <th>رقم القشاط</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -1999,12 +2285,17 @@ def home() -> str:
     }
 
     function setSearchTab(tab) {
-      activeSearchTab = (tab === 'size') ? 'size' : 'main';
+      if (tab === 'size') activeSearchTab = 'size';
+      else if (tab === 'wiper') activeSearchTab = 'wiper';
+      else activeSearchTab = 'main';
       localStorage.setItem('activeSearchTab', activeSearchTab);
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
+      document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
+      document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
+      searchNow('auto');
     }
 
     function registerServiceWorker() {
@@ -2982,8 +3273,48 @@ def home() -> str:
       return false;
     }
 
+    function atMtProtectedRangesJs(s) {
+      const str = String(s || '');
+      const ranges = [];
+      const re = /(?<![A-Za-z0-9/])(?:at\s*\/\s*mt|mt\s*\/\s*at)(?![A-Za-z0-9/])/gi;
+      let m;
+      while ((m = re.exec(str)) !== null) {
+        ranges.push([m.index, m.index + m[0].length]);
+      }
+      return ranges;
+    }
+
+    function charInAtMtRangeJs(idx, ranges) {
+      return ranges.some(([a, b]) => idx >= a && idx < b);
+    }
+
+    function nextSegmentSlashJs(str, start) {
+      const ranges = atMtProtectedRangesJs(str);
+      for (let i = start; i < str.length; i++) {
+        if (str[i] !== '/') continue;
+        if (charInAtMtRangeJs(i, ranges)) continue;
+        return i;
+      }
+      return -1;
+    }
+
     function splitAlternativeSegmentsJs(alternatives) {
-      return String(alternatives || '').split(/[\\/|,\\n;]+/).map(s => s.trim()).filter(Boolean);
+      const s = String(alternatives || '');
+      const ranges = atMtProtectedRangesJs(s);
+      const parts = [];
+      let curStart = 0;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        const delim = '|,;'.includes(ch) || ch.charCodeAt(0) === 10 || (ch === '/' && !charInAtMtRangeJs(i, ranges));
+        if (delim) {
+          const p = s.slice(curStart, i).trim();
+          if (p) parts.push(p);
+          curStart = i + 1;
+        }
+      }
+      const t = s.slice(curStart).trim();
+      if (t) parts.push(t);
+      return parts;
     }
 
     function normSegmentWordSetJs(nseg) {
@@ -3053,23 +3384,38 @@ def home() -> str:
       }
     }
 
-    function earliestTokenMatchSpanJs(alternatives, tokens) {
-      let best = null;
-      for (const tok of tokens) {
+    function anchorPriorityForSliceTokenJs(t) {
+      const nt = normalizeTextForSearch(t);
+      if (!nt) return [99, 0];
+      if (/^\d{1,2}\.\d{1,3}$/.test(nt)) return [4, -nt.length];
+      if (/^\d{1,2}$/.test(nt)) return [3, -nt.length];
+      if (/[a-z\u0600-\u06ff]/i.test(nt)) return [0, -nt.length];
+      return [2, -nt.length];
+    }
+
+    function bestAnchorSpanForSliceJs(alternatives, tokens) {
+      if (!tokens || !tokens.length) return null;
+      const ordered = tokens.slice().sort((a, b) => {
+        const pa = anchorPriorityForSliceTokenJs(a);
+        const pb = anchorPriorityForSliceTokenJs(b);
+        if (pa[0] !== pb[0]) return pa[0] - pb[0];
+        return pa[1] - pb[1];
+      });
+      for (const tok of ordered) {
         const sp = findWholeWordSpanJs(alternatives, tok);
-        if (!sp) continue;
-        if (!best || sp[0] < best[0]) best = sp;
+        if (sp) return sp;
       }
-      return best;
+      return null;
     }
 
     function sliceAlternativesFirstMatchToSlashJs(alternatives, tokens) {
-      const sp = earliestTokenMatchSpanJs(alternatives, tokens);
+      const s = String(alternatives || '');
+      const sp = bestAnchorSpanForSliceJs(s, tokens);
       if (!sp) return null;
       const st = sp[0];
-      const slashAt = alternatives.indexOf('/', st);
-      if (slashAt < 0) return alternatives.slice(st).trim();
-      return alternatives.slice(st, slashAt).trim();
+      const slashAt = nextSegmentSlashJs(s, st);
+      if (slashAt < 0) return s.slice(st).trim();
+      return s.slice(st, slashAt).trim();
     }
 
     function extractMatchedAlternativeJs(alternatives, textTokens, years, rawQuery = '') {
@@ -3493,6 +3839,7 @@ def home() -> str:
       let processed = 0;
       let skipped = 0;
       let inserted = 0;
+      let insertedWiper = 0;
       let insertedItems = 0;
       const failed = [];
       const tooLarge = [];
@@ -3531,6 +3878,7 @@ def home() -> str:
           processed += Number(data.files_count || 0);
           skipped += Number(data.skipped_files || 0);
           inserted += Number(data.inserted_rows || 0);
+          insertedWiper += Number(data.inserted_wiper_rows || 0);
           insertedItems += Number(data.inserted_items || 0);
         } catch (err) {
           failed.push(`${file.name} (${(err && err.message) ? err.message : 'upload-failed'})`);
@@ -3544,14 +3892,86 @@ def home() -> str:
       uploadBtn.disabled = false;
       const failText = failed.length ? ` | فشل ${failed.length} ملف` : '';
       const largeText = tooLarge.length ? ` | ملفات تمت معالجتها بنمط مجزأ: ${tooLarge.length}` : '';
+      const wiperPart = insertedWiper ? `، و${insertedWiper} صف قشطان` : '';
       document.getElementById('uploadResult').innerText =
-        `اكتمل الرفع ${Math.round((done / selectedFiles.length) * 100)}%: تم معالجة ${processed} ملفات، تخطي ${skipped} ملفات غير معدلة، وإدخال ${inserted} صف، وإضافة ${insertedItems} صنف${largeText}${failText}${failed.length ? ` | أمثلة فشل: ${failed.slice(0, 3).join(' | ')}` : ''}.`;
+        `اكتمل الرفع ${Math.round((done / selectedFiles.length) * 100)}%: تم معالجة ${processed} ملفات، تخطي ${skipped} ملفات غير معدلة، وإدخال ${inserted} صف منتجات${wiperPart}، وإضافة ${insertedItems} صنف${largeText}${failText}${failed.length ? ` | أمثلة فشل: ${failed.slice(0, 3).join(' | ')}` : ''}.`;
       await loadStats();
       await searchNow();
     }
 
     async function searchNow(mode = 'auto') {
       const effectiveMode = mode === 'auto' ? activeSearchTab : mode;
+
+      const wiperWrap = document.getElementById('wipersTableWrap');
+      const wipersTable = document.getElementById('wipersTable');
+
+      if (effectiveMode === 'wiper') {
+        const wCar = document.getElementById('wiperCarInput').value.trim();
+        const wModel = document.getElementById('wiperModelInput').value.trim();
+        const wEngine = document.getElementById('wiperEngineInput').value.trim();
+        localStorage.setItem('lastWiperCar', wCar);
+        localStorage.setItem('lastWiperModel', wModel);
+        localStorage.setItem('lastWiperEngine', wEngine);
+
+        document.getElementById('names').innerHTML = '';
+        document.getElementById('resultsTable').style.display = 'none';
+
+        if (!wCar && !wModel && !wEngine) {
+          wiperWrap.style.display = 'none';
+          wipersTable.style.display = 'none';
+          document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب اسم السيارة أو الموديل أو الماتور.';
+          return;
+        }
+
+        let data = null;
+        try {
+          const params = new URLSearchParams({ q_car: wCar, q_model: wModel, q_engine: wEngine });
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 90000);
+          const res = await fetch(`/search_wipers?${params.toString()}`, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: ctrl.signal,
+            headers: { Accept: 'application/json' }
+          });
+          clearTimeout(to);
+          const parsed = await readJsonSafe(res);
+          if (!res.ok) throw new Error(parsed.detail || `search-wipers-${res.status}`);
+          data = parsed;
+        } catch (_) {
+          document.getElementById('stats').innerText = 'تعذر البحث في القشطان. تأكد من الاتصال بالخادم.';
+          wiperWrap.style.display = 'none';
+          wipersTable.style.display = 'none';
+          return;
+        }
+
+        const safeRows = Array.isArray(data && data.rows) ? data.rows : [];
+        const safeTotal = Number((data && data.total_rows) || safeRows.length || 0);
+        document.getElementById('stats').innerText = `عدد نتائج القشطان: ${safeTotal} | المصدر: الخادم`;
+
+        const wBody = wipersTable.querySelector('tbody');
+        wBody.innerHTML = '';
+        safeRows.forEach((r) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${escapeHtml(String(r.source_file || '').trim())}</td>
+            <td>${escapeHtml(String(r.car_name ?? ''))}</td>
+            <td>${escapeHtml(String(r.car_model ?? ''))}</td>
+            <td>${escapeHtml(String(r.engine ?? ''))}</td>
+            <td>${escapeHtml(String(r.wiper_location ?? ''))}</td>
+            <td>${escapeHtml(String(r.wiper_number ?? ''))}</td>`;
+          wBody.appendChild(tr);
+        });
+        const showT = safeRows.length > 0;
+        wiperWrap.style.display = showT ? 'block' : 'none';
+        wipersTable.style.display = showT ? 'table' : 'none';
+        if (!showT) {
+          document.getElementById('stats').innerText = 'لا توجد نتائج للقشطان لهذا البحث.';
+        }
+        return;
+      }
+
+      wiperWrap.style.display = 'none';
+      wipersTable.style.display = 'none';
 
       const qRaw = document.getElementById('queryInput').value.trim();
       const qNumbersRaw = document.getElementById('numberQueryInput').value.trim();
@@ -3734,7 +4154,17 @@ def home() -> str:
       document.getElementById('sizeWidthInput').value = localStorage.getItem('lastSizeWidth') || '';
       document.getElementById('sizeDiameterInput').value = localStorage.getItem('lastSizeDiameter') || '';
       document.getElementById('sizeHeightInput').value = localStorage.getItem('lastSizeHeight') || '';
-      setSearchTab(localStorage.getItem('activeSearchTab') || 'main');
+      document.getElementById('wiperCarInput').value = localStorage.getItem('lastWiperCar') || '';
+      document.getElementById('wiperModelInput').value = localStorage.getItem('lastWiperModel') || '';
+      document.getElementById('wiperEngineInput').value = localStorage.getItem('lastWiperEngine') || '';
+      const savedTab = localStorage.getItem('activeSearchTab') || 'main';
+      activeSearchTab = (savedTab === 'size' || savedTab === 'wiper') ? savedTab : 'main';
+      document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
+      document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
+      document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
+      document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
+      document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
+      document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       updateSizeInputsLayout();
 
       queryInput.addEventListener('input', () => {
@@ -3764,6 +4194,14 @@ def home() -> str:
       document.getElementById('sizeHeightInput').addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
         searchDebounceTimer = setTimeout(() => searchNow('size'), 250);
+      });
+      ['wiperCarInput', 'wiperModelInput', 'wiperEngineInput'].forEach((id) => {
+        document.getElementById(id).addEventListener('input', () => {
+          clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            if (activeSearchTab === 'wiper') searchNow('wiper');
+          }, 250);
+        });
       });
 
       clearInterval(autoRefreshTimer);
@@ -3803,8 +4241,9 @@ def home() -> str:
             : backendKey === 'postgres'
               ? 'Postgres'
               : 'SQLite';
+        const wn = Number(data.total_wiper_rows || 0);
         document.getElementById('stats').innerText =
-          `إجمالي الصفوف: ${data.total_rows} | عدد الأصناف: ${data.total_items || 0} | عدد الملفات: ${data.total_files} | المصدر: الخادم | قاعدة البيانات: ${backend}`;
+          `إجمالي الصفوف: ${data.total_rows} | صفوف القشطان: ${wn} | عدد الأصناف: ${data.total_items || 0} | عدد الملفات: ${data.total_files} | المصدر: الخادم | قاعدة البيانات: ${backend}`;
       } catch (_) {
         document.getElementById('stats').innerText =
           `إجمالي الصفوف (محلي): ${localSnapshot.total_rows || (localSnapshot.rows || []).length}`;
@@ -3847,6 +4286,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
     inserted_total = 0
+    inserted_wiper_total = 0
     inserted_items_total = 0
     processed_files = 0
     skipped_files = 0
@@ -3858,6 +4298,21 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 
         content = await file.read()
         content_hash, file_size = file_fingerprint(content)
+        fname = file.filename or ""
+        if is_wiper_spreadsheet_filename(fname):
+            if is_same_wiper_upload(fname, content_hash, file_size):
+                skipped_files += 1
+                continue
+            try:
+                inserted_wiper_total += process_wiper_excel_file(content, fname, content_hash, file_size)
+                processed_files += 1
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not process wiper file '{file.filename}': {exc}",
+                ) from exc
+            continue
+
         if is_same_uploaded_file(file.filename, content_hash, file_size):
             skipped_files += 1
             continue
@@ -3875,6 +4330,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
     return {
         "files_count": processed_files,
         "inserted_rows": inserted_total,
+        "inserted_wiper_rows": inserted_wiper_total,
         "inserted_items": inserted_items_total,
         "skipped_files": skipped_files,
     }
@@ -3895,6 +4351,7 @@ def google_drive_sync() -> dict:
     processed = 0
     skipped = 0
     inserted_rows_total = 0
+    inserted_wiper_total = 0
     inserted_items_total = 0
     failed: list[str] = []
     unsupported: list[str] = []
@@ -3910,6 +4367,13 @@ def google_drive_sync() -> dict:
         try:
             content = download_gdrive_file_bytes(service, f["id"])
             content_hash, file_size = file_fingerprint(content)
+            if is_wiper_spreadsheet_filename(file_name):
+                if is_same_wiper_upload(file_name, content_hash, file_size):
+                    skipped += 1
+                    continue
+                inserted_wiper_total += process_wiper_excel_file(content, file_name, content_hash, file_size)
+                processed += 1
+                continue
             if is_same_uploaded_file(file_name, content_hash, file_size):
                 skipped += 1
                 continue
@@ -3925,6 +4389,7 @@ def google_drive_sync() -> dict:
         "files_count": processed,
         "skipped_files": skipped,
         "inserted_rows": inserted_rows_total,
+        "inserted_wiper_rows": inserted_wiper_total,
         "inserted_items": inserted_items_total,
         "unsupported_files": unsupported[:100],
         "failed_files": failed[:100],
@@ -4205,11 +4670,68 @@ def search(
     }
 
 
+@app.get("/search_wipers")
+def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dict:
+    car_tt, car_years = wiper_tokens_and_years(q_car)
+    model_tt, model_years = wiper_tokens_and_years(q_model)
+    engine_tt, engine_years = wiper_tokens_and_years(q_engine)
+    if not (car_tt or car_years or model_tt or model_years or engine_tt or engine_years):
+        return {"total_rows": 0, "rows": []}
+
+    conn = get_db()
+    try:
+        where_parts: list[str] = []
+        params: list[str] = []
+
+        def add_like_tokens(field_sql: str, toks: list[str]) -> None:
+            for token in toks:
+                if any(ch.isdigit() for ch in token):
+                    continue
+                like = f"%{token}%"
+                where_parts.append(f"lower(COALESCE({field_sql},'')) LIKE ?")
+                params.append(like)
+
+        add_like_tokens("car_name", car_tt)
+        add_like_tokens("car_model", model_tt)
+        add_like_tokens("engine", engine_tt)
+
+        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
+        candidate_rows = conn.execute(
+            f"""
+            SELECT car_name, car_model, engine, wiper_location, wiper_number, source_file, source_sheet
+            FROM wiper_rows
+            WHERE {where_clause}
+            ORDER BY car_name, car_model, source_file
+            LIMIT 40000
+            """,
+            params,
+        ).fetchall()
+
+        filtered = [
+            r
+            for r in candidate_rows
+            if wiper_field_matches_tokens_and_years(r["car_name"] or "", car_tt, car_years)
+            and wiper_field_matches_tokens_and_years(r["car_model"] or "", model_tt, model_years)
+            and wiper_field_matches_tokens_and_years(r["engine"] or "", engine_tt, engine_years)
+        ]
+        rows_out = filtered[:500]
+    finally:
+        conn.close()
+
+    prepared: list[dict[str, Any]] = []
+    for index, row in enumerate(rows_out):
+        d = dict(row)
+        d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{index}"
+        prepared.append(d)
+    return {"total_rows": len(prepared), "rows": prepared}
+
+
 @app.get("/stats")
 def stats() -> dict:
     conn = get_db()
     try:
         total_rows = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
+        total_wiper_rows = conn.execute("SELECT COUNT(*) AS c FROM wiper_rows").fetchone()["c"]
         total_files = conn.execute("SELECT COUNT(*) AS c FROM uploaded_files").fetchone()["c"]
         total_items = conn.execute(
             "SELECT COUNT(DISTINCT item_name) AS c FROM products WHERE COALESCE(TRIM(item_name), '') <> ''"
@@ -4218,6 +4740,7 @@ def stats() -> dict:
         conn.close()
     return {
         "total_rows": total_rows,
+        "total_wiper_rows": total_wiper_rows,
         "total_files": total_files,
         "total_items": total_items,
         "db_backend": DB_BACKEND,
@@ -4243,13 +4766,27 @@ def sync_data() -> dict:
 @app.get("/manifest.webmanifest")
 def manifest() -> HTMLResponse:
     payload = {
-        "name": "بحث البدائل",
-        "short_name": "بدائل",
+        "name": "تبديل الأصناف",
+        "short_name": "تبديل الأصناف",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#f6f7fb",
-        "theme_color": "#0b66ff",
+        "background_color": "#000000",
+        "theme_color": "#1a2744",
         "lang": "ar",
+        "icons": [
+            {
+                "src": "/app-icon.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any",
+            },
+            {
+                "src": "/app-icon.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+        ],
     }
     return HTMLResponse(content=json.dumps(payload, ensure_ascii=False), media_type="application/manifest+json")
 
@@ -4258,7 +4795,7 @@ def manifest() -> HTMLResponse:
 def service_worker() -> HTMLResponse:
     js = f"""
 const CACHE_NAME = 'badail-shell-{APP_VERSION}';
-const APP_SHELL = ['/', '/manifest.webmanifest'];
+const APP_SHELL = ['/', '/manifest.webmanifest', '/app-icon.png'];
 
 self.addEventListener('install', (event) => {{
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
