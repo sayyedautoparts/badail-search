@@ -2238,8 +2238,8 @@ def home() -> str:
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="تبديل الأصناف" />
-  <link rel="icon" type="image/png" sizes="32x32 48x48 256x256" href="/app-icon.png" />
-  <link rel="apple-touch-icon" sizes="192x192" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="16x16 32x32 48x48 96x96" href="/app-icon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>بحث البدائل</title>
   <style>
@@ -4883,13 +4883,13 @@ def manifest() -> HTMLResponse:
         "icons": [
             {
                 "src": _icon_url,
-                "sizes": "256x256",
+                "sizes": "96x96",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
                 "src": _icon_url,
-                "sizes": "256x256",
+                "sizes": "96x96",
                 "type": "image/png",
                 "purpose": "maskable",
             },
