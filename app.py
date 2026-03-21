@@ -1113,6 +1113,20 @@ def wiper_field_matches_tokens_and_years(field_val: str, text_tokens: list[str],
     return True
 
 
+def reverse_wiper_engine_display(engine: str | None) -> str:
+    """
+    عرض عمود الماتور في نتائج القشطان فقط: عكس ترتيب الأجزاء المفصولة بمسافات
+    (مثال: «D 1.6» → «1.6 D»). القيمة في قاعدة البيانات تبقى كما في Excel.
+    """
+    s = str(engine or "").strip()
+    if not s:
+        return ""
+    tokens = s.split()
+    if len(tokens) < 2:
+        return s
+    return " ".join(reversed(tokens))
+
+
 def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
     """
     إن تكرر نفس الرقم الأصلي (بعد التطبيع) لأكثر من صف — حتى من ملفات مختلفة —
@@ -2224,8 +2238,8 @@ def home() -> str:
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="تبديل الأصناف" />
-  <link rel="icon" type="image/png" href="/app-icon.png" />
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32 48x48 256x256" href="/app-icon.png" />
+  <link rel="apple-touch-icon" sizes="192x192" href="/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>بحث البدائل</title>
   <style>
@@ -4365,7 +4379,7 @@ def home() -> str:
 </body>
 </html>
 """
-    ).replace('href="/app-icon.png"', f'href="/app-icon.png?v={_icon_q}"', 1).replace(
+    ).replace('href="/app-icon.png"', f'href="/app-icon.png?v={_icon_q}"').replace(
         'href="/apple-touch-icon.png"', f'href="/apple-touch-icon.png?v={_at_q}"', 1
     )
 
@@ -4812,6 +4826,7 @@ def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dic
     for index, row in enumerate(rows_out):
         d = dict(row)
         d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{index}"
+        d["engine"] = reverse_wiper_engine_display(d.get("engine"))
         prepared.append(d)
     return {"total_rows": len(prepared), "rows": prepared}
 
@@ -4868,13 +4883,13 @@ def manifest() -> HTMLResponse:
         "icons": [
             {
                 "src": _icon_url,
-                "sizes": "512x512",
+                "sizes": "256x256",
                 "type": "image/png",
                 "purpose": "any",
             },
             {
                 "src": _icon_url,
-                "sizes": "512x512",
+                "sizes": "256x256",
                 "type": "image/png",
                 "purpose": "maskable",
             },
