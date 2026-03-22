@@ -98,6 +98,7 @@ def apple_touch_icon_cache_query() -> str:
 
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
+LOCATION_PARSER_VERSION = "location-1"
 
 
 class DBConnection:
@@ -289,6 +290,37 @@ def init_db() -> None:
             )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wiper_car_name ON wiper_rows(car_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wiper_source_file ON wiper_rows(source_file)")
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS location_rows (
+                    id BIGSERIAL PRIMARY KEY,
+                    item_name TEXT,
+                    location TEXT,
+                    company TEXT,
+                    barcode TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS location_rows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_name TEXT,
+                    location TEXT,
+                    company TEXT,
+                    barcode TEXT,
+                    source_file TEXT NOT NULL,
+                    source_sheet TEXT NOT NULL
+                )
+                """
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_location_item_name ON location_rows(item_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_location_barcode ON location_rows(barcode)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_location_source_file ON location_rows(source_file)")
         conn.commit()
     finally:
         conn.close()
@@ -517,6 +549,126 @@ def is_same_wiper_upload(file_name: str, content_hash: str, file_size: int) -> b
             (row["content_hash"] == content_hash)
             and (int(row["file_size"] or 0) == int(file_size))
             and (str(row["parser_version"] or "") == WIPER_PARSER_VERSION)
+        )
+    finally:
+        conn.close()
+
+
+def upsert_location_file_meta(file_name: str, rows_count: int, content_hash: str, file_size: int) -> None:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (file_name, rows_count, content_hash, file_size, parser_version)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(file_name) DO UPDATE SET
+                uploaded_at = CURRENT_TIMESTAMP,
+                rows_count = excluded.rows_count,
+                content_hash = excluded.content_hash,
+                file_size = excluded.file_size,
+                parser_version = excluded.parser_version
+            """,
+            (source_key, rows_count, content_hash, file_size, LOCATION_PARSER_VERSION),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_location_spreadsheet_filename(file_name: str) -> bool:
+    """ملف مواقع المخزن: من الاسم أو من صف العناوين."""
+    if not file_name:
+        return False
+    low = str(file_name).lower()
+    for frag in (
+        "location",
+        "warehouse",
+        "barcode",
+        "stock",
+        "shelf",
+        "bin",
+        "rack",
+    ):
+        if frag in low:
+            return True
+    base = Path(str(file_name)).name
+    variants = [
+        base,
+        unicodedata.normalize("NFC", base),
+        unicodedata.normalize("NFD", base),
+        str(file_name),
+    ]
+    for form in variants:
+        for frag in (
+            "موقع",
+            "مواقع",
+            "اكتشاف",
+            "مخزن",
+            "مستودع",
+            "رف",
+            "باركود",
+            "اماكن",
+            "أماكن",
+        ):
+            if frag in form:
+                return True
+    nb = normalize_text(unicodedata.normalize("NFC", base))
+    for frag in ("موقع", "باركود", "مخزن", "اكتشاف"):
+        if normalize_text(frag) in nb:
+            return True
+    return False
+
+
+def excel_bytes_looks_like_location_table(file_bytes: bytes) -> bool:
+    try:
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        try:
+            if not wb.sheetnames:
+                return False
+            ws = wb[wb.sheetnames[0]]
+            preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=7, values_only=True))
+            if not preview:
+                return False
+            cells = [clean_cell(v) for v in preview[0]]
+            joined = normalize_text(" ".join(cells))
+            has_loc = any(k in joined for k in ("موقع", "مكان", "رف", "location", "bin", "shelf"))
+            has_bc = any(k in joined for k in ("باركود", "barcode", "ean", "upc"))
+            has_item = any(k in joined for k in ("صنف", "اسم", "وصف", "item", "sku"))
+            if has_bc and (has_loc or has_item):
+                return True
+            if "شركة" in joined or "company" in joined:
+                if has_loc and has_item:
+                    return True
+            return False
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
+def should_process_as_location_spreadsheet(file_name: str, file_bytes: bytes) -> bool:
+    return is_location_spreadsheet_filename(file_name) or excel_bytes_looks_like_location_table(file_bytes)
+
+
+def is_same_location_upload(file_name: str, content_hash: str, file_size: int) -> bool:
+    source_key = normalize_source_file_name(file_name)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT content_hash, file_size, COALESCE(parser_version, '') AS parser_version
+            FROM uploaded_files
+            WHERE file_name = ?
+            """,
+            (source_key,),
+        ).fetchone()
+        if not row:
+            return False
+        return (
+            (row["content_hash"] == content_hash)
+            and (int(row["file_size"] or 0) == int(file_size))
+            and (str(row["parser_version"] or "") == LOCATION_PARSER_VERSION)
         )
     finally:
         conn.close()
@@ -1125,6 +1277,19 @@ def reverse_wiper_engine_display(engine: str | None) -> str:
     if len(tokens) < 2:
         return s
     return " ".join(reversed(tokens))
+
+
+def location_row_matches_combined_item_or_barcode(row: Any, text_tokens: list[str]) -> bool:
+    """كل توكنات البحث يجب أن تظهر في (اسم الصنف + الباركود) مجتمعين."""
+    fv = f"{row['item_name'] or ''} {row['barcode'] or ''}"
+    combined = normalize_text(fv)
+    combined_compact = normalize_text_compact(fv)
+    for token in text_tokens:
+        nt = normalize_text(token)
+        nct = normalize_text_compact(token)
+        if nt not in combined and (nct and nct not in combined_compact):
+            return False
+    return True
 
 
 def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
@@ -2196,6 +2361,79 @@ def process_wiper_excel_file(file_bytes: bytes, file_name: str, content_hash: st
         conn.close()
 
 
+def _location_row_looks_like_header(cells: list[str]) -> bool:
+    samples = [clean_cell(x) for x in (cells[:6] if cells else [])]
+    joined = normalize_text(" ".join(samples))
+    hits = 0
+    for kw in (
+        "صنف",
+        "اسم",
+        "موقع",
+        "باركود",
+        "شركة",
+        "منتج",
+        "مكان",
+        "location",
+        "barcode",
+        "company",
+    ):
+        if kw in joined:
+            hits += 1
+    return hits >= 2
+
+
+def process_location_excel_file(file_bytes: bytes, file_name: str, content_hash: str, file_size: int) -> int:
+    """أعمدة Excel: B = اسم الصنف، D = الموقع، E = الشركة المنتجة، F = الباركود."""
+    conn = get_db()
+    inserted_rows = 0
+    source_key = normalize_source_file_name(file_name)
+
+    try:
+        conn.execute("DELETE FROM location_rows WHERE source_file = ?", (source_key,))
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        try:
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=6, values_only=True))
+                first_row = preview[0] if preview else ()
+                first_cells = [clean_cell(v) for v in (first_row or ())]
+                data_start_row = 2 if _location_row_looks_like_header(first_cells) else 1
+
+                rows_to_insert: list[tuple[str, str, str, str, str, str]] = []
+                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=6, values_only=True):
+                    values = [clean_cell(v) for v in row]
+                    while len(values) < 6:
+                        values.append("")
+                    item_name = values[1]
+                    location = values[3]
+                    company = values[4]
+                    barcode = values[5]
+                    if not any([item_name, location, company, barcode]):
+                        continue
+                    rows_to_insert.append(
+                        (item_name, location, company, barcode, source_key, str(sheet_name))
+                    )
+
+                if rows_to_insert:
+                    conn.executemany(
+                        """
+                        INSERT INTO location_rows (
+                            item_name, location, company, barcode, source_file, source_sheet
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        rows_to_insert,
+                    )
+                    inserted_rows += len(rows_to_insert)
+        finally:
+            wb.close()
+
+        conn.commit()
+        upsert_location_file_meta(source_key, inserted_rows, content_hash, file_size)
+        return inserted_rows
+    finally:
+        conn.close()
+
+
 app = FastAPI(title="Advanced Excel Search")
 init_db()
 
@@ -2270,17 +2508,25 @@ def home() -> str:
     .progress-wrap { margin-top: 8px; height: 10px; background: #e8ecf5; border-radius: 999px; overflow: hidden; }
     .progress-bar { height: 100%; width: 0%; background: #2d5fff; transition: width 0.2s ease; }
     .tabs { display: flex; gap: 8px; margin: 8px 0 10px; }
-    .tab-btn { flex: 1; background: #edf0f8; color: #223; font-size: 12px; padding: 8px 4px; }
+    .tab-btn { flex: 1; background: #edf0f8; color: #223; font-size: 11px; padding: 8px 2px; }
     .tab-btn.active { background: #0b66ff; color: #fff; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
+    #locationsTable th:first-child, #locationsTable td:first-child { width: 12%; font-size: 12px; color: #444; }
+    .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
+    .barcode-modal-overlay.active { display: flex; }
+    .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
+    #barcodeScannerRegion { min-height: 220px; margin: 10px 0; border-radius: 10px; overflow: hidden; }
+    .btn-camera { background: #1a2744; color: #fff; }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn-row button { flex: 1; min-width: 120px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h2>رفع ملفات Excel</h2>
-      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسم الملف فيه «قشط» / «قشاط» / «قشطان» أو «wiper»، أو إذا كان الصف الأول فيه كلمات مثل «موقع القشاط» / «رقم القشاط».</p>
+      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسمه أو صف العناوين يدل على قشط/مساح. ملف <strong>اكتشاف الموقع</strong>: العمود B = اسم الصنف، D = الموقع، E = الشركة، F = الباركود — يُستورد إذا كان الاسم أو العناوين فيها «موقع» / «باركود» / «مخزن» إلخ.</p>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -2303,6 +2549,7 @@ def home() -> str:
         <button id="tabMainBtn" type="button" class="tab-btn active" onclick="setSearchTab('main')">البحث الرئيسي</button>
         <button id="tabSizeBtn" type="button" class="tab-btn" onclick="setSearchTab('size')">بحث القياسات</button>
         <button id="tabWiperBtn" type="button" class="tab-btn" onclick="setSearchTab('wiper')">بحث قشطان</button>
+        <button id="tabLocBtn" type="button" class="tab-btn" onclick="setSearchTab('location')">اكتشاف الموقع</button>
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
@@ -2332,6 +2579,16 @@ def home() -> str:
         <input id="wiperModelInput" placeholder="الموديل (اختياري)..." />
         <input id="wiperEngineInput" placeholder="الماتور / السعة (اختياري)..." />
         <button onclick="searchNow('wiper')">بحث قشطان</button>
+      </div>
+
+      <div id="locationSearchPanel" class="search-panel">
+        <p class="muted" style="margin-top:10px;">البحث في <strong>اسم الصنف</strong> أو <strong>الباركود</strong> (من ملف المواقع). النتائج تعرض <strong>مكان التخزين</strong> (عمود D في Excel).</p>
+        <input id="locationQueryInput" placeholder="اسم الصنف أو رقم الباركود..." inputmode="search" autocomplete="off" />
+        <div class="btn-row">
+          <button type="button" onclick="searchNow('location')">بحث الموقع</button>
+          <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">📷 كاميرا الباركود</button>
+        </div>
+        <p class="muted" style="font-size:12px;">على iPhone: Safari + HTTPS + السماح بالكاميرا. إن تعذّر الفتح، اكتب الباركود يدوياً.</p>
       </div>
 
       <div id="stats" class="muted"></div>
@@ -2364,9 +2621,33 @@ def home() -> str:
           <tbody></tbody>
         </table>
       </div>
+      <div id="locationsTableWrap" style="display:none; overflow:auto;">
+        <table id="locationsTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>اسم الملف</th>
+              <th>اسم الصنف</th>
+              <th>الموقع</th>
+              <th>الشركة المنتجة</th>
+              <th>الباركود</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
+  <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
+    <div class="barcode-modal-box">
+      <strong>قراءة الباركود</strong>
+      <p class="muted" style="margin:8px 0;">وجّه الكاميرا نحو الباركود</p>
+      <div id="barcodeScannerRegion"></div>
+      <button type="button" class="btn-secondary" onclick="closeBarcodeScanner()">إغلاق الكاميرا</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     let autoRefreshTimer = null;
@@ -2388,15 +2669,86 @@ def home() -> str:
     function setSearchTab(tab) {
       if (tab === 'size') activeSearchTab = 'size';
       else if (tab === 'wiper') activeSearchTab = 'wiper';
+      else if (tab === 'location') activeSearchTab = 'location';
       else activeSearchTab = 'main';
       localStorage.setItem('activeSearchTab', activeSearchTab);
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
+      document.getElementById('tabLocBtn').classList.toggle('active', activeSearchTab === 'location');
       document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
+      document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
       searchNow('auto');
+    }
+
+    let html5QrLocationScanner = null;
+    let locationBarcodeRunning = false;
+
+    async function openLocationBarcodeScanner() {
+      if (activeSearchTab !== 'location') setSearchTab('location');
+      const modal = document.getElementById('barcodeModal');
+      const regionId = 'barcodeScannerRegion';
+      if (typeof Html5Qrcode === 'undefined') {
+        alert('تعذر تحميل مكتبة قراءة الباركود. تحقق من الاتصال.');
+        return;
+      }
+      await closeBarcodeScanner();
+      modal.classList.add('active');
+      modal.setAttribute('aria-hidden', 'false');
+      document.getElementById(regionId).innerHTML = '';
+      const scanner = new Html5Qrcode(regionId);
+      html5QrLocationScanner = scanner;
+      const fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined')
+        ? [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.QR_CODE
+          ]
+        : null;
+      const cfg = { fps: 8, qrbox: { width: Math.min(300, window.innerWidth - 48), height: 200 }, aspectRatio: 1.333 };
+      if (fmt) cfg.formatsToSupport = fmt;
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          cfg,
+          (decodedText) => {
+            const t = String(decodedText || '').trim();
+            if (!t) return;
+            document.getElementById('locationQueryInput').value = t;
+            closeBarcodeScanner();
+            searchNow('location');
+          },
+          () => {}
+        );
+        locationBarcodeRunning = true;
+      } catch (e) {
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+        html5QrLocationScanner = null;
+        alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا في إعدادات المتصفح. ' + (e && e.message ? e.message : String(e)));
+      }
+    }
+
+    async function closeBarcodeScanner() {
+      const modal = document.getElementById('barcodeModal');
+      modal.classList.remove('active');
+      modal.setAttribute('aria-hidden', 'true');
+      if (html5QrLocationScanner && locationBarcodeRunning) {
+        try { await html5QrLocationScanner.stop(); } catch (_) {}
+        try { await html5QrLocationScanner.clear(); } catch (_) {}
+      }
+      locationBarcodeRunning = false;
+      html5QrLocationScanner = null;
+      const el = document.getElementById('barcodeScannerRegion');
+      if (el) el.innerHTML = '';
     }
 
     function registerServiceWorker() {
@@ -3941,6 +4293,7 @@ def home() -> str:
       let skipped = 0;
       let inserted = 0;
       let insertedWiper = 0;
+      let insertedLocation = 0;
       let insertedItems = 0;
       const failed = [];
       const tooLarge = [];
@@ -3980,6 +4333,7 @@ def home() -> str:
           skipped += Number(data.skipped_files || 0);
           inserted += Number(data.inserted_rows || 0);
           insertedWiper += Number(data.inserted_wiper_rows || 0);
+          insertedLocation += Number(data.inserted_location_rows || 0);
           insertedItems += Number(data.inserted_items || 0);
         } catch (err) {
           failed.push(`${file.name} (${(err && err.message) ? err.message : 'upload-failed'})`);
@@ -3994,8 +4348,9 @@ def home() -> str:
       const failText = failed.length ? ` | فشل ${failed.length} ملف` : '';
       const largeText = tooLarge.length ? ` | ملفات تمت معالجتها بنمط مجزأ: ${tooLarge.length}` : '';
       const wiperPart = insertedWiper ? `، و${insertedWiper} صف قشطان` : '';
+      const locPart = insertedLocation ? `، و${insertedLocation} صف مواقع` : '';
       document.getElementById('uploadResult').innerText =
-        `اكتمل الرفع ${Math.round((done / selectedFiles.length) * 100)}%: تم معالجة ${processed} ملفات، تخطي ${skipped} ملفات غير معدلة، وإدخال ${inserted} صف منتجات${wiperPart}، وإضافة ${insertedItems} صنف${largeText}${failText}${failed.length ? ` | أمثلة فشل: ${failed.slice(0, 3).join(' | ')}` : ''}.`;
+        `اكتمل الرفع ${Math.round((done / selectedFiles.length) * 100)}%: تم معالجة ${processed} ملفات، تخطي ${skipped} ملفات غير معدلة، وإدخال ${inserted} صف منتجات${wiperPart}${locPart}، وإضافة ${insertedItems} صنف${largeText}${failText}${failed.length ? ` | أمثلة فشل: ${failed.slice(0, 3).join(' | ')}` : ''}.`;
       await loadStats();
       await searchNow();
     }
@@ -4005,6 +4360,68 @@ def home() -> str:
 
       const wiperWrap = document.getElementById('wipersTableWrap');
       const wipersTable = document.getElementById('wipersTable');
+      const locWrap = document.getElementById('locationsTableWrap');
+      const locTable = document.getElementById('locationsTable');
+
+      if (effectiveMode === 'location') {
+        const lq = document.getElementById('locationQueryInput').value.trim();
+        localStorage.setItem('lastLocationQuery', lq);
+        document.getElementById('names').innerHTML = '';
+        document.getElementById('resultsTable').style.display = 'none';
+        wiperWrap.style.display = 'none';
+        wipersTable.style.display = 'none';
+        if (!lq) {
+          locWrap.style.display = 'none';
+          locTable.style.display = 'none';
+          document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب اسم الصنف أو الباركود أو استخدم الكاميرا.';
+          return;
+        }
+        let data = null;
+        try {
+          const params = new URLSearchParams({ q: lq });
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 90000);
+          const res = await fetch(`/search_locations?${params.toString()}`, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: ctrl.signal,
+            headers: { Accept: 'application/json' }
+          });
+          clearTimeout(to);
+          const parsed = await readJsonSafe(res);
+          if (!res.ok) throw new Error(parsed.detail || `search-locations-${res.status}`);
+          data = parsed;
+        } catch (_) {
+          document.getElementById('stats').innerText = 'تعذر البحث في المواقع. تأكد من الاتصال بالخادم.';
+          locWrap.style.display = 'none';
+          locTable.style.display = 'none';
+          return;
+        }
+        const safeRows = Array.isArray(data && data.rows) ? data.rows : [];
+        const safeTotal = Number((data && data.total_rows) || safeRows.length || 0);
+        document.getElementById('stats').innerText = `عدد نتائج المواقع: ${safeTotal} | المصدر: الخادم`;
+        const lBody = locTable.querySelector('tbody');
+        lBody.innerHTML = '';
+        safeRows.forEach((r) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${escapeHtml(String(r.source_file || '').trim())}</td>
+            <td>${escapeHtml(String(r.item_name ?? ''))}</td>
+            <td><strong>${escapeHtml(String(r.location ?? ''))}</strong></td>
+            <td>${escapeHtml(String(r.company ?? ''))}</td>
+            <td>${escapeHtml(String(r.barcode ?? ''))}</td>`;
+          lBody.appendChild(tr);
+        });
+        const showL = safeRows.length > 0;
+        locWrap.style.display = showL ? 'block' : 'none';
+        locTable.style.display = showL ? 'table' : 'none';
+        if (!showL) {
+          document.getElementById('stats').innerText = 'لا توجد نتيجة لهذا الاسم أو الباركود في ملف المواقع.';
+        }
+        return;
+      }
+
+      locWrap.style.display = 'none';
+      locTable.style.display = 'none';
 
       if (effectiveMode === 'wiper') {
         const wCar = document.getElementById('wiperCarInput').value.trim();
@@ -4259,13 +4676,16 @@ def home() -> str:
       document.getElementById('wiperModelInput').value = localStorage.getItem('lastWiperModel') || '';
       document.getElementById('wiperEngineInput').value = localStorage.getItem('lastWiperEngine') || '';
       const savedTab = localStorage.getItem('activeSearchTab') || 'main';
-      activeSearchTab = (savedTab === 'size' || savedTab === 'wiper') ? savedTab : 'main';
+      activeSearchTab = (savedTab === 'size' || savedTab === 'wiper' || savedTab === 'location') ? savedTab : 'main';
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
+      document.getElementById('tabLocBtn').classList.toggle('active', activeSearchTab === 'location');
       document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
+      document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
+      document.getElementById('locationQueryInput').value = localStorage.getItem('lastLocationQuery') || '';
       updateSizeInputsLayout();
 
       queryInput.addEventListener('input', () => {
@@ -4303,6 +4723,12 @@ def home() -> str:
             if (activeSearchTab === 'wiper') searchNow('wiper');
           }, 250);
         });
+      });
+      document.getElementById('locationQueryInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          if (activeSearchTab === 'location') searchNow('location');
+        }, 300);
       });
 
       clearInterval(autoRefreshTimer);
@@ -4343,8 +4769,9 @@ def home() -> str:
               ? 'Postgres'
               : 'SQLite';
         const wn = Number(data.total_wiper_rows || 0);
+        const locn = Number(data.total_location_rows || 0);
         document.getElementById('stats').innerText =
-          `إجمالي الصفوف: ${data.total_rows} | صفوف القشطان: ${wn} | عدد الأصناف: ${data.total_items || 0} | عدد الملفات: ${data.total_files} | المصدر: الخادم | قاعدة البيانات: ${backend}`;
+          `إجمالي الصفوف: ${data.total_rows} | قشطان: ${wn} | مواقع: ${locn} | أصناف: ${data.total_items || 0} | ملفات: ${data.total_files} | المصدر: الخادم | DB: ${backend}`;
       } catch (_) {
         document.getElementById('stats').innerText =
           `إجمالي الصفوف (محلي): ${localSnapshot.total_rows || (localSnapshot.rows || []).length}`;
@@ -4391,6 +4818,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 
     inserted_total = 0
     inserted_wiper_total = 0
+    inserted_location_total = 0
     inserted_items_total = 0
     processed_files = 0
     skipped_files = 0
@@ -4417,6 +4845,20 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
                 ) from exc
             continue
 
+        if should_process_as_location_spreadsheet(fname, content):
+            if is_same_location_upload(fname, content_hash, file_size):
+                skipped_files += 1
+                continue
+            try:
+                inserted_location_total += process_location_excel_file(content, fname, content_hash, file_size)
+                processed_files += 1
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not process location file '{file.filename}': {exc}",
+                ) from exc
+            continue
+
         if is_same_uploaded_file(file.filename, content_hash, file_size):
             skipped_files += 1
             continue
@@ -4435,6 +4877,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         "files_count": processed_files,
         "inserted_rows": inserted_total,
         "inserted_wiper_rows": inserted_wiper_total,
+        "inserted_location_rows": inserted_location_total,
         "inserted_items": inserted_items_total,
         "skipped_files": skipped_files,
     }
@@ -4456,6 +4899,7 @@ def google_drive_sync() -> dict:
     skipped = 0
     inserted_rows_total = 0
     inserted_wiper_total = 0
+    inserted_location_total = 0
     inserted_items_total = 0
     failed: list[str] = []
     unsupported: list[str] = []
@@ -4478,6 +4922,15 @@ def google_drive_sync() -> dict:
                 inserted_wiper_total += process_wiper_excel_file(content, file_name, content_hash, file_size)
                 processed += 1
                 continue
+            if should_process_as_location_spreadsheet(file_name, content):
+                if is_same_location_upload(file_name, content_hash, file_size):
+                    skipped += 1
+                    continue
+                inserted_location_total += process_location_excel_file(
+                    content, file_name, content_hash, file_size
+                )
+                processed += 1
+                continue
             if is_same_uploaded_file(file_name, content_hash, file_size):
                 skipped += 1
                 continue
@@ -4494,6 +4947,7 @@ def google_drive_sync() -> dict:
         "skipped_files": skipped,
         "inserted_rows": inserted_rows_total,
         "inserted_wiper_rows": inserted_wiper_total,
+        "inserted_location_rows": inserted_location_total,
         "inserted_items": inserted_items_total,
         "unsupported_files": unsupported[:100],
         "failed_files": failed[:100],
@@ -4831,12 +5285,60 @@ def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dic
     return {"total_rows": len(prepared), "rows": prepared}
 
 
+@app.get("/search_locations")
+def search_locations(q: str = "") -> dict:
+    tokens = tokenize_query(q or "")
+    parsed = [parse_query_year_token(t) for t in tokens]
+    text_tokens = [t for t, ys in zip(tokens, parsed) if ys is None]
+    if not text_tokens:
+        return {"total_rows": 0, "rows": []}
+
+    conn = get_db()
+    try:
+        where_parts: list[str] = []
+        params: list[str] = []
+
+        for token in text_tokens:
+            if any(ch.isdigit() for ch in token):
+                continue
+            like = f"%{token}%"
+            where_parts.append(
+                "(lower(COALESCE(item_name,'')) LIKE ? OR lower(COALESCE(barcode,'')) LIKE ?)"
+            )
+            params.extend([like, like])
+
+        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
+        candidate_rows = conn.execute(
+            f"""
+            SELECT item_name, location, company, barcode, source_file, source_sheet
+            FROM location_rows
+            WHERE {where_clause}
+            ORDER BY item_name, barcode, source_file
+            LIMIT 40000
+            """,
+            params,
+        ).fetchall()
+
+        filtered = [r for r in candidate_rows if location_row_matches_combined_item_or_barcode(r, text_tokens)]
+        rows_out = filtered[:500]
+    finally:
+        conn.close()
+
+    prepared: list[dict[str, Any]] = []
+    for index, row in enumerate(rows_out):
+        d = dict(row)
+        d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{index}"
+        prepared.append(d)
+    return {"total_rows": len(prepared), "rows": prepared}
+
+
 @app.get("/stats")
 def stats() -> dict:
     conn = get_db()
     try:
         total_rows = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
         total_wiper_rows = conn.execute("SELECT COUNT(*) AS c FROM wiper_rows").fetchone()["c"]
+        total_location_rows = conn.execute("SELECT COUNT(*) AS c FROM location_rows").fetchone()["c"]
         total_files = conn.execute("SELECT COUNT(*) AS c FROM uploaded_files").fetchone()["c"]
         total_items = conn.execute(
             "SELECT COUNT(DISTINCT item_name) AS c FROM products WHERE COALESCE(TRIM(item_name), '') <> ''"
@@ -4846,6 +5348,7 @@ def stats() -> dict:
     return {
         "total_rows": total_rows,
         "total_wiper_rows": total_wiper_rows,
+        "total_location_rows": total_location_rows,
         "total_files": total_files,
         "total_items": total_items,
         "db_backend": DB_BACKEND,
