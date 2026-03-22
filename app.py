@@ -99,6 +99,8 @@ def apple_touch_icon_cache_query() -> str:
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
 LOCATION_PARSER_VERSION = "location-1"
+# اسم مصدر ثابت لرفع المواقع من تبويب «اكتشاف الموقع» (لا يعتمد على اسم الملف على الجهاز)
+LOCATION_TAB_IMPORT_SOURCE_FILE = "مواقع_من_التطبيق.xlsx"
 
 
 class DBConnection:
@@ -2382,14 +2384,24 @@ def _location_row_looks_like_header(cells: list[str]) -> bool:
     return hits >= 2
 
 
-def process_location_excel_file(file_bytes: bytes, file_name: str, content_hash: str, file_size: int) -> int:
+def process_location_excel_file(
+    file_bytes: bytes,
+    file_name: str,
+    content_hash: str,
+    file_size: int,
+    *,
+    replace_entire_table: bool = False,
+) -> int:
     """أعمدة Excel: B = اسم الصنف، D = الموقع، E = الشركة المنتجة، F = الباركود."""
     conn = get_db()
     inserted_rows = 0
     source_key = normalize_source_file_name(file_name)
 
     try:
-        conn.execute("DELETE FROM location_rows WHERE source_file = ?", (source_key,))
+        if replace_entire_table:
+            conn.execute("DELETE FROM location_rows")
+        else:
+            conn.execute("DELETE FROM location_rows WHERE source_file = ?", (source_key,))
         wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
         try:
             for sheet_name in wb.sheetnames:
@@ -2582,7 +2594,13 @@ def home() -> str:
       </div>
 
       <div id="locationSearchPanel" class="search-panel">
-        <p class="muted" style="margin-top:10px;">البحث في <strong>اسم الصنف</strong> أو <strong>الباركود</strong> (من ملف المواقع). النتائج تعرض <strong>مكان التخزين</strong> (عمود D في Excel).</p>
+        <div style="margin:10px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
+          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B اسم الصنف، D الموقع، E الشركة، F الباركود. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
+          <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
+          <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
+          <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
+        </div>
+        <p class="muted" style="margin-top:10px;">البحث في <strong>اسم الصنف</strong> أو <strong>الباركود</strong>. النتائج تعرض <strong>مكان التخزين</strong> (عمود D في Excel).</p>
         <input id="locationQueryInput" placeholder="اسم الصنف أو رقم الباركود..." inputmode="search" autocomplete="off" />
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث الموقع</button>
@@ -2749,6 +2767,34 @@ def home() -> str:
       html5QrLocationScanner = null;
       const el = document.getElementById('barcodeScannerRegion');
       if (el) el.innerHTML = '';
+    }
+
+    async function uploadLocationSheetFile() {
+      const inp = document.getElementById('locationSheetFileInput');
+      const st = document.getElementById('locationUploadStatus');
+      if (!inp || !inp.files || !inp.files[0]) {
+        if (st) st.innerText = 'اختَر ملف Excel أولاً.';
+        return;
+      }
+      const f = inp.files[0];
+      if (st) st.innerText = 'جاري الرفع والمعالجة...';
+      try {
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        const res = await fetch('/upload_location_sheet', { method: 'POST', body: fd });
+        const data = await readJsonSafe(res);
+        if (!res.ok) throw new Error(data.detail || 'upload-location-failed');
+        if (data.skipped) {
+          if (st) st.innerText = 'نفس الملف مرفوع مسبقاً — لم يُعد الاستيراد.';
+        } else {
+          if (st) st.innerText = `تم استيراد ${Number(data.inserted_rows || 0)} صف موقع.`;
+        }
+        inp.value = '';
+        await loadStats();
+        await searchNow('location');
+      } catch (err) {
+        if (st) st.innerText = 'فشل الرفع: ' + ((err && err.message) ? err.message : err);
+      }
     }
 
     function registerServiceWorker() {
@@ -4881,6 +4927,31 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         "inserted_items": inserted_items_total,
         "skipped_files": skipped_files,
     }
+
+
+@app.post("/upload_location_sheet")
+async def upload_location_sheet(file: UploadFile = File(...)) -> dict:
+    """
+    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: يُستورد دائماً كجدول مواقع (B,D,E,F)
+    بغض النظر عن اسم الملف على الجهاز؛ يُخزَّن تحت اسم مصدر ثابت ويُستبدل السابق من نفس الزر.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="لم يُختَر ملف")
+    lower = str(file.filename).lower()
+    if not lower.endswith((".xlsx", ".xls", ".xlsm")):
+        raise HTTPException(status_code=400, detail="يُقبل Excel فقط (.xlsx / .xlsm / .xls)")
+    content = await file.read()
+    content_hash, file_size = file_fingerprint(content)
+    fixed_name = LOCATION_TAB_IMPORT_SOURCE_FILE
+    if is_same_location_upload(fixed_name, content_hash, file_size):
+        return {"ok": True, "skipped": True, "inserted_rows": 0}
+    try:
+        inserted = process_location_excel_file(
+            content, fixed_name, content_hash, file_size, replace_entire_table=True
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"تعذر معالجة الملف: {exc}") from exc
+    return {"ok": True, "skipped": False, "inserted_rows": inserted}
 
 
 @app.post("/google_drive/sync")
