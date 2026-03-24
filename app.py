@@ -98,7 +98,7 @@ def apple_touch_icon_cache_query() -> str:
 
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
-LOCATION_PARSER_VERSION = "location-3"
+LOCATION_PARSER_VERSION = "location-4"
 # اسم مصدر ثابت لرفع المواقع من تبويب «اكتشاف الموقع» (لا يعتمد على اسم الملف على الجهاز)
 LOCATION_TAB_IMPORT_SOURCE_FILE = "مواقع_من_التطبيق.xlsx"
 
@@ -1384,10 +1384,11 @@ def is_digits_only_query_token(token: str) -> bool:
 
 
 def normalize_barcode_for_storage(raw: str) -> str:
-    """تخزين الباركود: أرقام فقط عند الإمكان؛ وإلا النص المقصوص كما في المصدر."""
+    """تخزين الباركود: أرقام فقط + إزالة الأصفار البادئة (000022493 → 22493)."""
     nb = normalize_barcode(raw)
     if nb:
-        return nb
+        v = nb.lstrip("0")
+        return v if v else "0"
     return str(raw or "").strip()
 
 
@@ -1401,12 +1402,13 @@ def coalesce_location_barcode_query_tokens(raw_q: str, text_tokens: list[str]) -
     if not all(is_digits_only_query_token(t) for t in text_tokens):
         return text_tokens
     merged = normalize_barcode(raw_q)
-    if len(merged) < 6:
+    merged_stripped = merged.lstrip("0") or "0"
+    if len(merged_stripped) < 4:
         return text_tokens
     # قبول أطوال عملية للباركود الرقمي (هيونداي/كيا وغيرها)
     if len(merged) > 20:
         return text_tokens
-    return [merged]
+    return [merged_stripped]
 
 
 def normalize_pure_digit_string_ignore_leading_zeros(raw: str) -> str | None:
@@ -1438,8 +1440,10 @@ def location_row_matches_combined_item_or_barcode(row: Any, text_tokens: list[st
     )
     combined = normalize_text(fv)
     combined_compact = normalize_text_compact(fv)
-    bc = normalize_barcode(str(r.get("barcode") or "")) or str(r.get("barcode") or "")
-    orig = normalize_barcode(str(r.get("original_number") or "")) or str(r.get("original_number") or "")
+    _bc_raw = normalize_barcode(str(r.get("barcode") or ""))
+    bc = (_bc_raw.lstrip("0") or "0") if _bc_raw else str(r.get("barcode") or "").strip()
+    _orig_raw = normalize_barcode(str(r.get("original_number") or ""))
+    orig = (_orig_raw.lstrip("0") or "0") if _orig_raw else str(r.get("original_number") or "").strip()
     for token in text_tokens:
         nt = normalize_text(token)
         nct = normalize_text_compact(token)
@@ -2797,13 +2801,6 @@ def home() -> str:
   <div class="wrap">
     <div class="card">
       <h2>رفع ملفات Excel</h2>
-      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسمه أو صف العناوين يدل على قشط/مساح. ملف <strong>اكتشاف الموقع</strong>: <strong>B</strong> الرقم الأصلي، <strong>C</strong> اسم الصنف، <strong>D</strong> الباركود، <strong>E</strong> العلامة التجارية، <strong>F</strong> الشركة المنتجة، <strong>I</strong> الموقع، <strong>J</strong> الملاحظات، <strong>K</strong> السعر — يُستورد إذا كان الاسم أو العناوين فيها «موقع» / «باركود» / «مخزن» إلخ.</p>
-      <div style="margin:12px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
-        <p class="muted" style="margin:0 0 8px;"><strong>اختيار ملف Excel — قشطان فقط</strong> (بدون مجلد): أعمدة A–E (سيارة، موديل، ماتور، موقع القشاط، رقم القشاط). يُفضّل اسم الملف فيه «قشط» أو «wiper» أو صف عناوين فيه قشط/مساح.</p>
-        <input type="file" id="mainCardWiperFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
-        <button type="button" class="btn-secondary" onclick="uploadMainCardWiperFile()">رفع ملف القشطان</button>
-        <div id="mainCardWiperUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
-      </div>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -3113,10 +3110,6 @@ def home() -> str:
       } catch (err) {
         if (st) st.innerText = 'فشل الرفع: ' + ((err && err.message) ? err.message : err);
       }
-    }
-
-    async function uploadMainCardWiperFile() {
-      await uploadWiperExcelFromInput('mainCardWiperFileInput', 'mainCardWiperUploadStatus');
     }
 
     async function uploadWiperSheetFile() {
@@ -6152,8 +6145,10 @@ def search_locations(q: str = "") -> dict:
 
         for token in text_tokens:
             token_clean = normalize_barcode(token)
-            if token_clean and len(token_clean) >= 6 and token_clean.isdigit():
-                like = f"%{token_clean}%"
+            if token_clean and token_clean.isdigit():
+                # إزالة أصفار بادئة للـ LIKE حتى يطابق 000022493 و 22493 معاً
+                stripped = token_clean.lstrip("0") or "0"
+                like = f"%{stripped}%"
             elif any(ch.isdigit() for ch in str(token)):
                 like = f"%{str(token).strip()}%"
             else:

@@ -23,12 +23,14 @@ public enum BarcodeInputNormalizer {
                 break
             }
         }
-        return out
+        // نفس منطق الخادم: 000022493 → 22493
+        let stripped = String(out.drop(while: { $0 == "0" }))
+        return stripped.isEmpty ? "0" : stripped
     }
 
     /// Reject if too short or if after cleaning there are no digits and junk was present.
     public static func isAcceptableNumericBarcode(_ cleaned: String) -> Bool {
-        guard cleaned.count >= 6 else { return false }
+        guard cleaned.count >= 4 else { return false }
         if cleaned.count > 20 { return false }
         return cleaned.allSatisfy(\.isNumber)
     }
