@@ -1366,22 +1366,64 @@ def reverse_wiper_engine_display(engine: str | None) -> str:
     return " ".join(reversed(tokens))
 
 
+def normalize_barcode(raw: str) -> str:
+    """أرقام عربية/فارسية → إنجليزية، ثم إبقاء الأرقام فقط (بدون مسافات أو رموز). مثل 18843 10062 → 1884310062."""
+    if not raw:
+        return ""
+    s = str(raw).translate(DIGIT_TRANS)
+    return re.sub(r"[^\d]", "", s)
+
+
+def is_digits_only_query_token(token: str) -> bool:
+    """التوكن نصه كله أرقام (بعد تطبيع الأرقام العربية) — مسموح بمسافات داخل التوكن تُزال."""
+    nb = normalize_barcode(token)
+    if not nb:
+        return False
+    compact = re.sub(r"\s+", "", str(token).translate(DIGIT_TRANS))
+    return compact.isdigit()
+
+
+def normalize_barcode_for_storage(raw: str) -> str:
+    """تخزين الباركود: أرقام فقط عند الإمكان؛ وإلا النص المقصوص كما في المصدر."""
+    nb = normalize_barcode(raw)
+    if nb:
+        return nb
+    return str(raw or "").strip()
+
+
+def coalesce_location_barcode_query_tokens(raw_q: str, text_tokens: list[str]) -> list[str]:
+    """
+    إن كان الاستعلام مجموعة أرقام منفصلة بمسافات (18843 10062) ندمجها لتوكن واحد للمطابقة مع الباركود المخزّن.
+    لا يُدمج إن وُجدت كلمات نصية (مثل كيا 18843).
+    """
+    if not text_tokens:
+        return text_tokens
+    if not all(is_digits_only_query_token(t) for t in text_tokens):
+        return text_tokens
+    merged = normalize_barcode(raw_q)
+    if len(merged) < 6:
+        return text_tokens
+    # قبول أطوال عملية للباركود الرقمي (هيونداي/كيا وغيرها)
+    if len(merged) > 20:
+        return text_tokens
+    return [merged]
+
+
 def normalize_pure_digit_string_ignore_leading_zeros(raw: str) -> str | None:
     """
     للباركود الرقمي فقط: 000024356 يُعادل 24356.
     ترجع None إن لم يكن النص (بعد تطبيع الأرقام العربية) كله أرقاماً.
     """
-    t = str(raw or "").strip().translate(DIGIT_TRANS)
-    t = re.sub(r"\s+", "", t)
-    if not t or not t.isdigit():
+    t = normalize_barcode(raw)
+    if not t:
         return None
     v = t.lstrip("0")
     return v if v else "0"
 
 
 def location_row_barcode_matches_token_ignore_leading_zeros(barcode: str, token: str) -> bool:
-    nt = normalize_pure_digit_string_ignore_leading_zeros(token)
-    nb = normalize_pure_digit_string_ignore_leading_zeros(barcode)
+    nt = normalize_pure_digit_string_ignore_leading_zeros(normalize_barcode(token) or token)
+    nb = normalize_pure_digit_string_ignore_leading_zeros(normalize_barcode(barcode) or barcode)
     if nt is None or nb is None:
         return False
     return nt == nb
@@ -1396,14 +1438,15 @@ def location_row_matches_combined_item_or_barcode(row: Any, text_tokens: list[st
     )
     combined = normalize_text(fv)
     combined_compact = normalize_text_compact(fv)
-    bc = str(r.get("barcode") or "")
-    orig = str(r.get("original_number") or "")
+    bc = normalize_barcode(str(r.get("barcode") or "")) or str(r.get("barcode") or "")
+    orig = normalize_barcode(str(r.get("original_number") or "")) or str(r.get("original_number") or "")
     for token in text_tokens:
         nt = normalize_text(token)
         nct = normalize_text_compact(token)
+        token_clean = normalize_barcode(token) or token
         ok_substring = (nt in combined) or (bool(nct) and nct in combined_compact)
-        ok_barcode_digits = location_row_barcode_matches_token_ignore_leading_zeros(bc, token)
-        ok_orig_digits = location_row_barcode_matches_token_ignore_leading_zeros(orig, token)
+        ok_barcode_digits = location_row_barcode_matches_token_ignore_leading_zeros(bc, token_clean)
+        ok_orig_digits = location_row_barcode_matches_token_ignore_leading_zeros(orig, token_clean)
         if not ok_substring and not ok_barcode_digits and not ok_orig_digits:
             return False
     return True
@@ -2538,7 +2581,7 @@ def process_location_excel_file(
                         values.append("")
                     original_number = values[1]
                     item_name = values[2]
-                    barcode = values[3]
+                    barcode = normalize_barcode_for_storage(values[3])
                     brand = values[4]
                     company = values[5]
                     location = values[8]
@@ -5721,7 +5764,7 @@ def upload_location_rows_chunk(payload: LocationRowsChunkIn) -> dict:
                 row.location.strip(),
                 row.company.strip(),
                 row.original_number.strip(),
-                row.barcode.strip(),
+                normalize_barcode_for_storage(row.barcode),
                 row.brand.strip(),
                 row.notes.strip(),
                 row.price.strip(),
@@ -6098,6 +6141,7 @@ def search_locations(q: str = "") -> dict:
     tokens = tokenize_query(q or "")
     parsed = [parse_query_year_token(t) for t in tokens]
     text_tokens = [t for t, ys in zip(tokens, parsed) if ys is None]
+    text_tokens = coalesce_location_barcode_query_tokens(q or "", text_tokens)
     if not text_tokens:
         return {"total_rows": 0, "rows": []}
 
@@ -6107,9 +6151,13 @@ def search_locations(q: str = "") -> dict:
         params: list[str] = []
 
         for token in text_tokens:
-            if any(ch.isdigit() for ch in token):
-                continue
-            like = f"%{token}%"
+            token_clean = normalize_barcode(token)
+            if token_clean and len(token_clean) >= 6 and token_clean.isdigit():
+                like = f"%{token_clean}%"
+            elif any(ch.isdigit() for ch in str(token)):
+                like = f"%{str(token).strip()}%"
+            else:
+                like = f"%{token}%"
             where_parts.append(
                 "(lower(COALESCE(item_name,'')) LIKE ? OR lower(COALESCE(barcode,'')) LIKE ? "
                 "OR lower(COALESCE(company,'')) LIKE ? OR lower(COALESCE(original_number,'')) LIKE ? "
