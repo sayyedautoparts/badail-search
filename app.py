@@ -452,6 +452,70 @@ class UploadRowsAbortIn(BaseModel):
     file_name: str
 
 
+class LocationRowIn(BaseModel):
+    item_name: str = ""
+    location: str = ""
+    company: str = ""
+    original_number: str = ""
+    barcode: str = ""
+    brand: str = ""
+    notes: str = ""
+    price: str = ""
+    source_sheet: str = "Sheet1"
+
+
+class LocationRowsStartIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+    replace_entire_table: bool = False
+
+
+class LocationRowsChunkIn(BaseModel):
+    file_name: str
+    rows: list[LocationRowIn]
+
+
+class LocationRowsFinishIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+
+
+class LocationRowsAbortIn(BaseModel):
+    file_name: str
+
+
+class WiperRowIn(BaseModel):
+    car_name: str = ""
+    car_model: str = ""
+    engine: str = ""
+    wiper_location: str = ""
+    wiper_number: str = ""
+    source_sheet: str = "Sheet1"
+
+
+class WiperRowsStartIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+
+
+class WiperRowsChunkIn(BaseModel):
+    file_name: str
+    rows: list[WiperRowIn]
+
+
+class WiperRowsFinishIn(BaseModel):
+    file_name: str
+    content_hash: str
+    file_size: int
+
+
+class WiperRowsAbortIn(BaseModel):
+    file_name: str
+
+
 def upsert_uploaded_file_meta(file_name: str, rows_count: int, content_hash: str, file_size: int) -> None:
     source_key = normalize_source_file_name(file_name)
     conn = get_db()
@@ -2836,6 +2900,9 @@ def home() -> str:
     const OFFLINE_DB_NAME = 'badail_offline_db';
     const OFFLINE_DB_STORE = 'snapshots';
     const OFFLINE_DB_KEY = 'latest';
+    /** حد آمن لحجم الملف في طلب واحد (Vercel ~4.5MB للطلب كاملاً مع multipart). */
+    const VERCEL_SAFE_UPLOAD_BYTES = 2400000;
+    const LOCATION_TAB_SOURCE_FILE = 'مواقع_من_التطبيق.xlsx';
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
     let lastNotifiedVersion = '';
 
@@ -2962,11 +3029,22 @@ def home() -> str:
       const f = inp.files[0];
       if (st) st.innerText = 'جاري الرفع والمعالجة...';
       try {
-        const formData = new FormData();
-        formData.append('files', f, f.name);
-        const res = await fetch('/upload', { method: 'POST', body: formData });
-        const data = await readJsonSafe(res);
-        if (!res.ok) throw new Error(data.detail || 'upload-wiper-failed');
+        let data = null;
+        if (f.size > VERCEL_SAFE_UPLOAD_BYTES) {
+          if (st) st.innerText = 'ملف كبير — جاري التحليل والرفع على دفعات (مناسب لـ Vercel)...';
+          data = await uploadWiperSheetChunked(f);
+        } else {
+          const formData = new FormData();
+          formData.append('files', f, f.name);
+          const res = await fetch('/upload', { method: 'POST', body: formData });
+          data = await readJsonSafe(res);
+          if (res.status === 413 || (!res.ok && String(data.detail || '').toLowerCase().includes('too large'))) {
+            if (st) st.innerText = 'الطلب كبير — إعادة المحاولة على دفعات...';
+            data = await uploadWiperSheetChunked(f);
+          } else if (!res.ok) {
+            throw new Error(data.detail || 'upload-wiper-failed');
+          }
+        }
         const skipped = Number(data.skipped_files || 0) > 0;
         const wiper = Number(data.inserted_wiper_rows || 0);
         const proc = Number(data.files_count || 0);
@@ -2998,11 +3076,22 @@ def home() -> str:
       const f = inp.files[0];
       if (st) st.innerText = 'جاري الرفع والمعالجة...';
       try {
-        const fd = new FormData();
-        fd.append('file', f, f.name);
-        const res = await fetch('/upload_location_sheet', { method: 'POST', body: fd });
-        const data = await readJsonSafe(res);
-        if (!res.ok) throw new Error(data.detail || 'upload-location-failed');
+        let data = null;
+        if (f.size > VERCEL_SAFE_UPLOAD_BYTES) {
+          if (st) st.innerText = 'ملف كبير — جاري التحليل والرفع على دفعات (مناسب لـ Vercel)...';
+          data = await uploadLocationSheetChunked(f);
+        } else {
+          const fd = new FormData();
+          fd.append('file', f, f.name);
+          const res = await fetch('/upload_location_sheet', { method: 'POST', body: fd });
+          data = await readJsonSafe(res);
+          if (res.status === 413 || (!res.ok && String(data.detail || '').toLowerCase().includes('too large'))) {
+            if (st) st.innerText = 'الطلب كبير — إعادة المحاولة على دفعات...';
+            data = await uploadLocationSheetChunked(f);
+          } else if (!res.ok) {
+            throw new Error(data.detail || 'upload-location-failed');
+          }
+        }
         if (data.skipped) {
           if (st) st.innerText = 'نفس الملف مرفوع مسبقاً — لم يُعد الاستيراد.';
         } else {
@@ -3455,6 +3544,236 @@ def home() -> str:
       const hash = await crypto.subtle.digest('SHA-256', arrayBuffer);
       const bytes = Array.from(new Uint8Array(hash));
       return bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function cleanCellUploadJs(v) {
+      if (v == null || v === undefined) return '';
+      const t = String(v).trim();
+      return t.toLowerCase() === 'none' ? '' : t;
+    }
+
+    function locationRowLooksLikeHeaderJs(cells) {
+      const samples = cells.slice(0, 11).map(cleanCellUploadJs);
+      const joined = normalizeTextForSearch(samples.join(' '));
+      let hits = 0;
+      const kws = ['صنف', 'اسم', 'موقع', 'باركود', 'شركة', 'منتج', 'مكان', 'علامه', 'ملاحظ', 'سعر', 'location', 'barcode', 'company', 'brand', 'price'];
+      for (const kw of kws) {
+        if (joined.includes(normalizeTextForSearch(kw))) hits++;
+      }
+      return hits >= 2;
+    }
+
+    function wiperRowLooksLikeHeaderJs(cells) {
+      const samples = cells.slice(0, 5).map(cleanCellUploadJs);
+      if (samples[0] && samples[0].length > 48) return false;
+      const joined = normalizeTextForSearch(samples.join(' '));
+      let hits = 0;
+      for (const kw of ['اسم', 'سياره', 'سيارة', 'موديل', 'ماتور', 'محرك', 'موقع', 'قشاط', 'قشط', 'رقم']) {
+        if (joined.includes(normalizeTextForSearch(kw))) hits++;
+      }
+      if (hits >= 3) return true;
+      if (joined.includes(normalizeTextForSearch('اسم')) && joined.includes(normalizeTextForSearch('موديل'))) return true;
+      const hasW = ['قشاط', 'قشط', 'مساح', 'ماسحه'].some((k) => joined.includes(normalizeTextForSearch(k)));
+      const hasLoc = joined.includes(normalizeTextForSearch('موقع')) || joined.includes(normalizeTextForSearch('رقم'));
+      if (hasW && hasLoc) return true;
+      return false;
+    }
+
+    async function parseLocationRowsForChunkUpload(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const rows = [];
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        if (!grid.length) continue;
+        const firstRow = (grid[0] || []).map((x) => cleanCellUploadJs(x));
+        const dataStart = locationRowLooksLikeHeaderJs(firstRow) ? 1 : 0;
+        for (let ri = dataStart; ri < grid.length; ri++) {
+          const r = grid[ri] || [];
+          const vals = [];
+          for (let c = 0; c < 11; c++) vals.push(cleanCellUploadJs(r[c]));
+          const original_number = vals[1];
+          const item_name = vals[2];
+          const barcode = vals[3];
+          const brand = vals[4];
+          const company = vals[5];
+          const location = vals[8];
+          const notes = vals[9];
+          const price = vals[10];
+          if (!item_name && !location && !company && !original_number && !barcode && !brand && !notes && !price) continue;
+          rows.push({
+            item_name,
+            location,
+            company,
+            original_number,
+            barcode,
+            brand,
+            notes,
+            price,
+            source_sheet: String(sheetName)
+          });
+        }
+      }
+      return {
+        file_size: arrayBuffer.byteLength,
+        content_hash: await sha256Hex(arrayBuffer),
+        rows
+      };
+    }
+
+    async function parseWiperRowsForChunkUpload(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const sourceKey = sourceKeyForFile(file);
+      const rows = [];
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        if (!grid.length) continue;
+        const firstRow = (grid[0] || []).map((x) => cleanCellUploadJs(x));
+        const dataStart = wiperRowLooksLikeHeaderJs(firstRow) ? 1 : 0;
+        for (let ri = dataStart; ri < grid.length; ri++) {
+          const r = grid[ri] || [];
+          const vals = [];
+          for (let c = 0; c < 5; c++) vals.push(cleanCellUploadJs(r[c]));
+          const car_name = vals[0];
+          const car_model = vals[1];
+          const engine = vals[2];
+          const wiper_location = vals[3];
+          const wiper_number = vals[4];
+          if (!car_name && !car_model && !engine && !wiper_location && !wiper_number) continue;
+          rows.push({
+            car_name,
+            car_model,
+            engine,
+            wiper_location,
+            wiper_number,
+            source_sheet: String(sheetName)
+          });
+        }
+      }
+      return {
+        file_name: sourceKey,
+        file_size: arrayBuffer.byteLength,
+        content_hash: await sha256Hex(arrayBuffer),
+        rows
+      };
+    }
+
+    async function uploadLocationSheetChunked(file) {
+      const parsed = await parseLocationRowsForChunkUpload(file);
+      const sourceKey = LOCATION_TAB_SOURCE_FILE;
+      try {
+        const startRes = await fetch('/upload_location_rows/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: sourceKey,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size,
+            replace_entire_table: true
+          })
+        });
+        const startData = await readJsonSafe(startRes);
+        if (!startRes.ok) throw new Error(startData.detail || 'location-start-failed');
+        if (startData.skip) return { ok: true, skipped: true, inserted_rows: 0 };
+
+        const chunkSize = 500;
+        for (let i = 0; i < parsed.rows.length; i += chunkSize) {
+          const chunk = parsed.rows.slice(i, i + chunkSize);
+          const chunkRes = await fetch('/upload_location_rows/chunk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: sourceKey, rows: chunk })
+          });
+          const chunkData = await readJsonSafe(chunkRes);
+          if (!chunkRes.ok) throw new Error(chunkData.detail || 'location-chunk-failed');
+        }
+
+        const finishRes = await fetch('/upload_location_rows/finish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: sourceKey,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size
+          })
+        });
+        const finishData = await readJsonSafe(finishRes);
+        if (!finishRes.ok) throw new Error(finishData.detail || 'location-finish-failed');
+
+        return { ok: true, skipped: false, inserted_rows: Number(finishData.rows_count || 0) };
+      } catch (err) {
+        try {
+          await fetch('/upload_location_rows/abort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: sourceKey })
+          });
+        } catch (_) {}
+        throw err;
+      }
+    }
+
+    async function uploadWiperSheetChunked(file) {
+      const parsed = await parseWiperRowsForChunkUpload(file);
+      const sourceKey = parsed.file_name;
+      try {
+        const startRes = await fetch('/upload_wiper_rows/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: sourceKey,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size
+          })
+        });
+        const startData = await readJsonSafe(startRes);
+        if (!startRes.ok) throw new Error(startData.detail || 'wiper-start-failed');
+        if (startData.skip) {
+          return { files_count: 0, skipped_files: 1, inserted_wiper_rows: 0 };
+        }
+
+        const chunkSize = 800;
+        for (let i = 0; i < parsed.rows.length; i += chunkSize) {
+          const chunk = parsed.rows.slice(i, i + chunkSize);
+          const chunkRes = await fetch('/upload_wiper_rows/chunk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: sourceKey, rows: chunk })
+          });
+          const chunkData = await readJsonSafe(chunkRes);
+          if (!chunkRes.ok) throw new Error(chunkData.detail || 'wiper-chunk-failed');
+        }
+
+        const finishRes = await fetch('/upload_wiper_rows/finish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_name: sourceKey,
+            content_hash: parsed.content_hash,
+            file_size: parsed.file_size
+          })
+        });
+        const finishData = await readJsonSafe(finishRes);
+        if (!finishRes.ok) throw new Error(finishData.detail || 'wiper-finish-failed');
+
+        return {
+          files_count: 1,
+          skipped_files: 0,
+          inserted_wiper_rows: Number(finishData.rows_count || 0)
+        };
+      } catch (err) {
+        try {
+          await fetch('/upload_wiper_rows/abort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_name: sourceKey })
+          });
+        } catch (_) {}
+        throw err;
+      }
     }
 
     async function readJsonSafe(res) {
@@ -4562,8 +4881,6 @@ def home() -> str:
       let insertedItems = 0;
       const failed = [];
       const tooLarge = [];
-      const isVercel = window.location.hostname.includes('vercel.app');
-      const vercelMaxBytes = 4_200_000;
 
       document.getElementById('uploadResult').innerText = 'جاري الرفع والمعالجة...';
       setUploadProgress(0, `بدء الرفع... 0/${selectedFiles.length}`);
@@ -4573,7 +4890,7 @@ def home() -> str:
           let data = null;
           const ext = String(file.name || '').toLowerCase().split('.').pop() || '';
           const forceChunked = (ext === 'xlsb' || ext === 'xls');
-          if ((isVercel && file.size > vercelMaxBytes) || forceChunked) {
+          if (file.size > VERCEL_SAFE_UPLOAD_BYTES || forceChunked) {
             tooLarge.push(file.name);
             setUploadProgress(
               Math.round((done / selectedFiles.length) * 100),
@@ -5340,6 +5657,192 @@ def upload_rows_abort(payload: UploadRowsAbortIn) -> dict:
     conn = get_db()
     try:
         conn.execute("DELETE FROM products WHERE source_file = ?", (source_key,))
+        conn.execute("DELETE FROM uploaded_files WHERE file_name = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.post("/upload_location_rows/start")
+def upload_location_rows_start(payload: LocationRowsStartIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    if is_same_location_upload(source_key, payload.content_hash, payload.file_size):
+        return {"skip": True}
+    conn = get_db()
+    try:
+        if payload.replace_entire_table:
+            conn.execute("DELETE FROM location_rows")
+        else:
+            conn.execute("DELETE FROM location_rows WHERE source_file = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"skip": False}
+
+
+@app.post("/upload_location_rows/chunk")
+def upload_location_rows_chunk(payload: LocationRowsChunkIn) -> dict:
+    if not payload.rows:
+        return {"inserted_rows": 0}
+    source_key = normalize_source_file_name(payload.file_name)
+    rows_to_insert: list[tuple[str, str, str, str, str, str, str, str, str, str]] = []
+    for row in payload.rows:
+        if not any(
+            [
+                row.item_name,
+                row.location,
+                row.company,
+                row.original_number,
+                row.barcode,
+                row.brand,
+                row.notes,
+                row.price,
+            ]
+        ):
+            continue
+        rows_to_insert.append(
+            (
+                row.item_name.strip(),
+                row.location.strip(),
+                row.company.strip(),
+                row.original_number.strip(),
+                row.barcode.strip(),
+                row.brand.strip(),
+                row.notes.strip(),
+                row.price.strip(),
+                source_key,
+                (row.source_sheet or "Sheet1").strip(),
+            )
+        )
+    if not rows_to_insert:
+        return {"inserted_rows": 0}
+    conn = get_db()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO location_rows (
+                item_name, location, company, original_number, barcode,
+                brand, notes, price, source_file, source_sheet
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"inserted_rows": len(rows_to_insert)}
+
+
+@app.post("/upload_location_rows/finish")
+def upload_location_rows_finish(payload: LocationRowsFinishIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        rows_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM location_rows WHERE source_file = ?",
+            (source_key,),
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    upsert_location_file_meta(source_key, rows_count, payload.content_hash, payload.file_size)
+    return {"rows_count": rows_count}
+
+
+@app.post("/upload_location_rows/abort")
+def upload_location_rows_abort(payload: LocationRowsAbortIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM location_rows WHERE source_file = ?", (source_key,))
+        conn.execute("DELETE FROM uploaded_files WHERE file_name = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.post("/upload_wiper_rows/start")
+def upload_wiper_rows_start(payload: WiperRowsStartIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    if is_same_wiper_upload(source_key, payload.content_hash, payload.file_size):
+        return {"skip": True}
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM wiper_rows WHERE source_file = ?", (source_key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"skip": False}
+
+
+@app.post("/upload_wiper_rows/chunk")
+def upload_wiper_rows_chunk(payload: WiperRowsChunkIn) -> dict:
+    if not payload.rows:
+        return {"inserted_rows": 0}
+    source_key = normalize_source_file_name(payload.file_name)
+    rows_to_insert: list[tuple[str, str, str, str, str, str, str]] = []
+    for row in payload.rows:
+        if not any(
+            [
+                row.car_name,
+                row.car_model,
+                row.engine,
+                row.wiper_location,
+                row.wiper_number,
+            ]
+        ):
+            continue
+        rows_to_insert.append(
+            (
+                row.car_name.strip(),
+                row.car_model.strip(),
+                row.engine.strip(),
+                row.wiper_location.strip(),
+                row.wiper_number.strip(),
+                source_key,
+                (row.source_sheet or "Sheet1").strip(),
+            )
+        )
+    if not rows_to_insert:
+        return {"inserted_rows": 0}
+    conn = get_db()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO wiper_rows (
+                car_name, car_model, engine, wiper_location, wiper_number, source_file, source_sheet
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"inserted_rows": len(rows_to_insert)}
+
+
+@app.post("/upload_wiper_rows/finish")
+def upload_wiper_rows_finish(payload: WiperRowsFinishIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        rows_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM wiper_rows WHERE source_file = ?",
+            (source_key,),
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    upsert_wiper_file_meta(source_key, rows_count, payload.content_hash, payload.file_size)
+    return {"rows_count": rows_count}
+
+
+@app.post("/upload_wiper_rows/abort")
+def upload_wiper_rows_abort(payload: WiperRowsAbortIn) -> dict:
+    source_key = normalize_source_file_name(payload.file_name)
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM wiper_rows WHERE source_file = ?", (source_key,))
         conn.execute("DELETE FROM uploaded_files WHERE file_name = ?", (source_key,))
         conn.commit()
     finally:
