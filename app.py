@@ -2755,6 +2755,12 @@ def home() -> str:
     <div class="card">
       <h2>رفع ملفات Excel</h2>
       <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسمه أو صف العناوين يدل على قشط/مساح. ملف <strong>اكتشاف الموقع</strong>: <strong>B</strong> الرقم الأصلي، <strong>C</strong> اسم الصنف، <strong>D</strong> الباركود، <strong>E</strong> العلامة التجارية، <strong>F</strong> الشركة المنتجة، <strong>I</strong> الموقع، <strong>J</strong> الملاحظات، <strong>K</strong> السعر — يُستورد إذا كان الاسم أو العناوين فيها «موقع» / «باركود» / «مخزن» إلخ.</p>
+      <div style="margin:12px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
+        <p class="muted" style="margin:0 0 8px;"><strong>اختيار ملف Excel — قشطان فقط</strong> (بدون مجلد): أعمدة A–E (سيارة، موديل، ماتور، موقع القشاط، رقم القشاط). يُفضّل اسم الملف فيه «قشط» أو «wiper» أو صف عناوين فيه قشط/مساح.</p>
+        <input type="file" id="mainCardWiperFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
+        <button type="button" class="btn-secondary" onclick="uploadMainCardWiperFile()">رفع ملف القشطان</button>
+        <div id="mainCardWiperUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
+      </div>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -3019,9 +3025,9 @@ def home() -> str:
       if (el) el.innerHTML = '';
     }
 
-    async function uploadWiperSheetFile() {
-      const inp = document.getElementById('wiperSheetFileInput');
-      const st = document.getElementById('wiperUploadStatus');
+    async function uploadWiperExcelFromInput(inputId, statusId) {
+      const inp = document.getElementById(inputId);
+      const st = document.getElementById(statusId);
       if (!inp || !inp.files || !inp.files[0]) {
         if (st) st.innerText = 'اختَر ملف Excel أولاً.';
         return;
@@ -3064,6 +3070,14 @@ def home() -> str:
       } catch (err) {
         if (st) st.innerText = 'فشل الرفع: ' + ((err && err.message) ? err.message : err);
       }
+    }
+
+    async function uploadMainCardWiperFile() {
+      await uploadWiperExcelFromInput('mainCardWiperFileInput', 'mainCardWiperUploadStatus');
+    }
+
+    async function uploadWiperSheetFile() {
+      await uploadWiperExcelFromInput('wiperSheetFileInput', 'wiperUploadStatus');
     }
 
     async function uploadLocationSheetFile() {
