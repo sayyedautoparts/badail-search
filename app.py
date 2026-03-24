@@ -98,7 +98,7 @@ def apple_touch_icon_cache_query() -> str:
 
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
-LOCATION_PARSER_VERSION = "location-1"
+LOCATION_PARSER_VERSION = "location-3"
 # اسم مصدر ثابت لرفع المواقع من تبويب «اكتشاف الموقع» (لا يعتمد على اسم الملف على الجهاز)
 LOCATION_TAB_IMPORT_SOURCE_FILE = "مواقع_من_التطبيق.xlsx"
 
@@ -300,12 +300,22 @@ def init_db() -> None:
                     item_name TEXT,
                     location TEXT,
                     company TEXT,
+                    original_number TEXT,
                     barcode TEXT,
+                    brand TEXT,
+                    notes TEXT,
+                    price TEXT,
                     source_file TEXT NOT NULL,
                     source_sheet TEXT NOT NULL
                 )
                 """
             )
+            conn.execute(
+                "ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS original_number TEXT"
+            )
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS brand TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS notes TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS price TEXT")
         else:
             conn.execute(
                 """
@@ -314,12 +324,23 @@ def init_db() -> None:
                     item_name TEXT,
                     location TEXT,
                     company TEXT,
+                    original_number TEXT,
                     barcode TEXT,
+                    brand TEXT,
+                    notes TEXT,
+                    price TEXT,
                     source_file TEXT NOT NULL,
                     source_sheet TEXT NOT NULL
                 )
                 """
             )
+            try:
+                _loc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(location_rows)").fetchall()}
+                for col in ("original_number", "brand", "notes", "price"):
+                    if col not in _loc_cols:
+                        conn.execute(f"ALTER TABLE location_rows ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_item_name ON location_rows(item_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_barcode ON location_rows(barcode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_source_file ON location_rows(source_file)")
@@ -1281,15 +1302,45 @@ def reverse_wiper_engine_display(engine: str | None) -> str:
     return " ".join(reversed(tokens))
 
 
+def normalize_pure_digit_string_ignore_leading_zeros(raw: str) -> str | None:
+    """
+    للباركود الرقمي فقط: 000024356 يُعادل 24356.
+    ترجع None إن لم يكن النص (بعد تطبيع الأرقام العربية) كله أرقاماً.
+    """
+    t = str(raw or "").strip().translate(DIGIT_TRANS)
+    t = re.sub(r"\s+", "", t)
+    if not t or not t.isdigit():
+        return None
+    v = t.lstrip("0")
+    return v if v else "0"
+
+
+def location_row_barcode_matches_token_ignore_leading_zeros(barcode: str, token: str) -> bool:
+    nt = normalize_pure_digit_string_ignore_leading_zeros(token)
+    nb = normalize_pure_digit_string_ignore_leading_zeros(barcode)
+    if nt is None or nb is None:
+        return False
+    return nt == nb
+
+
 def location_row_matches_combined_item_or_barcode(row: Any, text_tokens: list[str]) -> bool:
-    """كل توكنات البحث يجب أن تظهر في (اسم الصنف + الباركود) مجتمعين."""
-    fv = f"{row['item_name'] or ''} {row['barcode'] or ''}"
+    """البحث في (اسم الصنف + الشركة + العلامة + الملاحظات + الباركود + الرقم الأصلي + السعر) أو تطابق رقمي مع تجاهل الأصفار البادئة."""
+    r = dict(row)
+    fv = (
+        f"{r.get('item_name') or ''} {r.get('company') or ''} {r.get('brand') or ''} {r.get('notes') or ''} "
+        f"{r.get('barcode') or ''} {r.get('original_number') or ''} {r.get('price') or ''}"
+    )
     combined = normalize_text(fv)
     combined_compact = normalize_text_compact(fv)
+    bc = str(r.get("barcode") or "")
+    orig = str(r.get("original_number") or "")
     for token in text_tokens:
         nt = normalize_text(token)
         nct = normalize_text_compact(token)
-        if nt not in combined and (nct and nct not in combined_compact):
+        ok_substring = (nt in combined) or (bool(nct) and nct in combined_compact)
+        ok_barcode_digits = location_row_barcode_matches_token_ignore_leading_zeros(bc, token)
+        ok_orig_digits = location_row_barcode_matches_token_ignore_leading_zeros(orig, token)
+        if not ok_substring and not ok_barcode_digits and not ok_orig_digits:
             return False
     return True
 
@@ -2364,7 +2415,7 @@ def process_wiper_excel_file(file_bytes: bytes, file_name: str, content_hash: st
 
 
 def _location_row_looks_like_header(cells: list[str]) -> bool:
-    samples = [clean_cell(x) for x in (cells[:6] if cells else [])]
+    samples = [clean_cell(x) for x in (cells[:11] if cells else [])]
     joined = normalize_text(" ".join(samples))
     hits = 0
     for kw in (
@@ -2375,9 +2426,14 @@ def _location_row_looks_like_header(cells: list[str]) -> bool:
         "شركة",
         "منتج",
         "مكان",
+        "علامه",
+        "ملاحظ",
+        "سعر",
         "location",
         "barcode",
         "company",
+        "brand",
+        "price",
     ):
         if kw in joined:
             hits += 1
@@ -2392,7 +2448,7 @@ def process_location_excel_file(
     *,
     replace_entire_table: bool = False,
 ) -> int:
-    """أعمدة Excel: B = اسم الصنف، D = الموقع، E = الشركة المنتجة، F = الباركود."""
+    """أعمدة Excel: B رقم أصلي، C اسم الصنف، D باركود، E علامة تجارية، F شركة منتجة، I موقع، J ملاحظات/أرقام، K سعر."""
     conn = get_db()
     inserted_rows = 0
     source_key = normalize_source_file_name(file_name)
@@ -2406,32 +2462,59 @@ def process_location_excel_file(
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
-                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=6, values_only=True))
+                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=11, values_only=True))
                 first_row = preview[0] if preview else ()
                 first_cells = [clean_cell(v) for v in (first_row or ())]
                 data_start_row = 2 if _location_row_looks_like_header(first_cells) else 1
 
-                rows_to_insert: list[tuple[str, str, str, str, str, str]] = []
-                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=6, values_only=True):
+                rows_to_insert: list[tuple[str, str, str, str, str, str, str, str, str, str]] = []
+                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=11, values_only=True):
                     values = [clean_cell(v) for v in row]
-                    while len(values) < 6:
+                    while len(values) < 11:
                         values.append("")
-                    item_name = values[1]
-                    location = values[3]
-                    company = values[4]
-                    barcode = values[5]
-                    if not any([item_name, location, company, barcode]):
+                    original_number = values[1]
+                    item_name = values[2]
+                    barcode = values[3]
+                    brand = values[4]
+                    company = values[5]
+                    location = values[8]
+                    notes = values[9]
+                    price = values[10]
+                    if not any(
+                        [
+                            item_name,
+                            location,
+                            company,
+                            original_number,
+                            barcode,
+                            brand,
+                            notes,
+                            price,
+                        ]
+                    ):
                         continue
                     rows_to_insert.append(
-                        (item_name, location, company, barcode, source_key, str(sheet_name))
+                        (
+                            item_name,
+                            location,
+                            company,
+                            original_number,
+                            barcode,
+                            brand,
+                            notes,
+                            price,
+                            source_key,
+                            str(sheet_name),
+                        )
                     )
 
                 if rows_to_insert:
                     conn.executemany(
                         """
                         INSERT INTO location_rows (
-                            item_name, location, company, barcode, source_file, source_sheet
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            item_name, location, company, original_number, barcode,
+                            brand, notes, price, source_file, source_sheet
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows_to_insert,
                     )
@@ -2524,11 +2607,80 @@ def home() -> str:
     .tab-btn.active { background: #0b66ff; color: #fff; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
-    #locationsTable th:first-child, #locationsTable td:first-child { width: 12%; font-size: 12px; color: #444; }
+    /* جدول المواقع: قابل للتمرير الأفقي على الجوال، أحجام خط مناسبة */
+    #locationsTableWrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      width: 100%;
+      max-width: 100%;
+      margin-top: 8px;
+    }
+    #locationsTable {
+      table-layout: auto;
+      width: 100%;
+      min-width: 28rem;
+      font-size: 11px;
+    }
+    #locationsTable th,
+    #locationsTable td {
+      padding: 5px 4px;
+      font-size: 11px;
+      line-height: 1.35;
+      vertical-align: top;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    #locationsTable th {
+      font-size: 10px;
+      font-weight: 700;
+      color: #333;
+      background: #f3f5fa;
+    }
+    /* أعمدة أضيق للهاتف: اسم الصنف يأخذ مساحة معقولة، الأرقام لا تُضغط أكثر من اللازم */
+    #locationsTable th:nth-child(1),
+    #locationsTable td:nth-child(1) {
+      min-width: 4.25rem;
+      width: 22%;
+      max-width: 7rem;
+    }
+    #locationsTable th:nth-child(2),
+    #locationsTable td:nth-child(2) { min-width: 3.5rem; width: 16%; }
+    #locationsTable th:nth-child(3),
+    #locationsTable td:nth-child(3) { min-width: 3.25rem; width: 16%; }
+    #locationsTable th:nth-child(4),
+    #locationsTable td:nth-child(4) { min-width: 3.5rem; width: 18%; }
+    #locationsTable th:nth-child(5),
+    #locationsTable td:nth-child(5) {
+      min-width: 3.25rem;
+      width: 22%;
+      font-weight: 600;
+    }
+    #locationsTable th:nth-child(6),
+    #locationsTable td:nth-child(6) {
+      min-width: 3rem;
+      width: 14%;
+      font-weight: 600;
+      color: #1a4d1a;
+    }
+    @media (min-width: 480px) {
+      #locationsTable { font-size: 12px; min-width: 32rem; }
+      #locationsTable th, #locationsTable td { padding: 6px 5px; font-size: 12px; }
+      #locationsTable th { font-size: 11px; }
+      #locationsTable th:nth-child(1),
+      #locationsTable td:nth-child(1) { max-width: 9rem; }
+    }
+    @media (min-width: 640px) {
+      #locationsTable { font-size: 13px; min-width: 0; width: 100%; }
+      #locationsTable th, #locationsTable td { padding: 7px 6px; font-size: 13px; }
+      #locationsTable th { font-size: 12px; color: #222; }
+      #locationsTable th:nth-child(1),
+      #locationsTable td:nth-child(1) { max-width: 14rem; width: 24%; }
+    }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
-    .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
-    #barcodeScannerRegion { min-height: 220px; margin: 10px 0; border-radius: 10px; overflow: hidden; }
+    .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: min(98vw, 640px); width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); box-sizing: border-box; }
+    #barcodeScannerRegion { min-height: 280px; width: 100%; margin: 10px 0; border-radius: 10px; overflow: hidden; background: #111; }
     .btn-camera { background: #1a2744; color: #fff; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .btn-row button { flex: 1; min-width: 120px; }
@@ -2538,7 +2690,7 @@ def home() -> str:
   <div class="wrap">
     <div class="card">
       <h2>رفع ملفات Excel</h2>
-      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسمه أو صف العناوين يدل على قشط/مساح. ملف <strong>اكتشاف الموقع</strong>: العمود B = اسم الصنف، D = الموقع، E = الشركة، F = الباركود — يُستورد إذا كان الاسم أو العناوين فيها «موقع» / «باركود» / «مخزن» إلخ.</p>
+      <p class="muted">اختَر ملفات Excel و/أو فولدرات تحتوي Excel بنفس الوقت، ثم ارفع دفعة واحدة. ملف القشطان (A–E) يُستورد كقشطان إذا كان اسمه أو صف العناوين يدل على قشط/مساح. ملف <strong>اكتشاف الموقع</strong>: <strong>B</strong> الرقم الأصلي، <strong>C</strong> اسم الصنف، <strong>D</strong> الباركود، <strong>E</strong> العلامة التجارية، <strong>F</strong> الشركة المنتجة، <strong>I</strong> الموقع، <strong>J</strong> الملاحظات، <strong>K</strong> السعر — يُستورد إذا كان الاسم أو العناوين فيها «موقع» / «باركود» / «مخزن» إلخ.</p>
       <button type="button" class="btn-secondary" onclick="pickFolderDeep()">اختيار مجلد رئيسي مع كل المجلدات الفرعية</button>
       <div class="upload-actions">
         <button type="button" class="btn-secondary" onclick="clearSelectedFiles()">تفريغ الاختيار</button>
@@ -2586,6 +2738,12 @@ def home() -> str:
       </div>
 
       <div id="wiperSearchPanel" class="search-panel">
+        <div style="margin:10px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
+          <p class="muted" style="margin:0 0 8px;"><strong>اختيار ملف Excel</strong> — رفع جدول القشطان (A–E: سيارة، موديل، ماتور، موقع القشاط، رقم القشاط). يُفضّل أن يحتوي اسم الملف على «قشط» أو «wiper» أو أن يضمّ صف العناوين كلمات مثل قشط/مساح.</p>
+          <input type="file" id="wiperSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
+          <button type="button" class="btn-secondary" onclick="uploadWiperSheetFile()">رفع ملف القشطان</button>
+          <div id="wiperUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
+        </div>
         <p class="muted" style="margin-top:10px;">بحث جدول القشطان (العمود A = اسم السيارة؛ B = الموديل؛ C = الماتور). التطابق بنفس تطبيع كلمات البحث الرئيسي.</p>
         <input id="wiperCarInput" placeholder="اسم السيارة (مثلاً Malibu)..." />
         <input id="wiperModelInput" placeholder="الموديل (اختياري)..." />
@@ -2595,13 +2753,13 @@ def home() -> str:
 
       <div id="locationSearchPanel" class="search-panel">
         <div style="margin:10px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
-          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B اسم الصنف، D الموقع، E الشركة، F الباركود. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
+          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B رقم أصلي، C صنف، D باركود، E علامة، F شركة، I موقع، J ملاحظات، K سعر. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
           <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
           <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
           <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
         </div>
-        <p class="muted" style="margin-top:10px;">البحث في <strong>اسم الصنف</strong> أو <strong>الباركود</strong>. النتائج تعرض <strong>مكان التخزين</strong> (عمود D في Excel).</p>
-        <input id="locationQueryInput" placeholder="اسم الصنف أو رقم الباركود..." inputmode="search" autocomplete="off" />
+        <p class="muted" style="margin-top:10px;">ملف Excel: <strong>B</strong> الرقم الأصلي، <strong>C</strong> الصنف، <strong>D</strong> الباركود، <strong>E–F</strong> علامة وشركة، <strong>I</strong> الموقع، <strong>J</strong> ملاحظات، <strong>K</strong> السعر. البحث يشمل هذه الحقول.</p>
+        <input id="locationQueryInput" placeholder="اسم الصنف أو الباركود أو الرقم الأصلي أو العلامة..." inputmode="search" autocomplete="off" />
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث الموقع</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">📷 كاميرا الباركود</button>
@@ -2643,11 +2801,12 @@ def home() -> str:
         <table id="locationsTable" style="display:none;">
           <thead>
             <tr>
-              <th>اسم الملف</th>
               <th>اسم الصنف</th>
-              <th>الموقع</th>
               <th>الشركة المنتجة</th>
+              <th>الرقم الأصلي</th>
               <th>الباركود</th>
+              <th>الموقع</th>
+              <th>السعر</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -2659,7 +2818,7 @@ def home() -> str:
   <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الباركود</strong>
-      <p class="muted" style="margin:8px 0;">وجّه الكاميرا نحو الباركود</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">المستطيل <strong>عريض</strong> لـ Code 128. أضِئ الملصق وثبّت الجهاز. على <strong>Chrome / أندرويد</strong> يُستخدم مسرّع القراءة التلقائي عند توفره.</p>
       <div id="barcodeScannerRegion"></div>
       <button type="button" class="btn-secondary" onclick="closeBarcodeScanner()">إغلاق الكاميرا</button>
     </div>
@@ -2718,40 +2877,64 @@ def home() -> str:
       document.getElementById(regionId).innerHTML = '';
       const scanner = new Html5Qrcode(regionId);
       html5QrLocationScanner = scanner;
+      /* خطي فقط — بدون QR لتقليل وقت فك الشفرة على كل إطار */
       const fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined')
         ? [
             Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
             Html5QrcodeSupportedFormats.CODE_39,
             Html5QrcodeSupportedFormats.CODE_93,
             Html5QrcodeSupportedFormats.ITF,
-            Html5QrcodeSupportedFormats.QR_CODE
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E
           ]
         : null;
-      const cfg = { fps: 8, qrbox: { width: Math.min(300, window.innerWidth - 48), height: 200 }, aspectRatio: 1.333 };
+      /* سرعة: fps أعلى + دقة فيديو أوضح + BarcodeDetector الأصلي (Chrome/Android) عند الدعم */
+      const cfg = {
+        fps: 20,
+        aspectRatio: 1.777,
+        disableFlip: false,
+        useBarCodeDetectorIfSupported: true,
+        videoConstraints: {
+          facingMode: 'environment',
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 }
+        },
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+          const vw = Math.max(1, viewfinderWidth);
+          const vh = Math.max(1, viewfinderHeight);
+          const w = Math.min(vw - 8, Math.floor(vw * 0.96));
+          const h = Math.max(100, Math.min(240, Math.floor(vh * 0.48)));
+          return { width: w, height: Math.min(h, vh - 12) };
+        }
+      };
       if (fmt) cfg.formatsToSupport = fmt;
+      const onDecode = (decodedText) => {
+        const t = String(decodedText || '').trim();
+        if (!t) return;
+        document.getElementById('locationQueryInput').value = t;
+        closeBarcodeScanner();
+        searchNow('location');
+      };
+      const noopScan = () => {};
       try {
-        await scanner.start(
-          { facingMode: 'environment' },
-          cfg,
-          (decodedText) => {
-            const t = String(decodedText || '').trim();
-            if (!t) return;
-            document.getElementById('locationQueryInput').value = t;
-            closeBarcodeScanner();
-            searchNow('location');
-          },
-          () => {}
-        );
+        await scanner.start({ facingMode: 'environment' }, cfg, onDecode, noopScan);
         locationBarcodeRunning = true;
-      } catch (e) {
-        modal.classList.remove('active');
-        modal.setAttribute('aria-hidden', 'true');
-        html5QrLocationScanner = null;
-        alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا في إعدادات المتصفح. ' + (e && e.message ? e.message : String(e)));
+      } catch (e1) {
+        try {
+          const cfgLite = Object.assign({}, cfg);
+          delete cfgLite.videoConstraints;
+          cfgLite.fps = 16;
+          await scanner.start({ facingMode: 'environment' }, cfgLite, onDecode, noopScan);
+          locationBarcodeRunning = true;
+        } catch (e2) {
+          modal.classList.remove('active');
+          modal.setAttribute('aria-hidden', 'true');
+          html5QrLocationScanner = null;
+          const msg = (e2 && e2.message) ? e2.message : String(e2);
+          alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا. ' + msg);
+        }
       }
     }
 
@@ -2767,6 +2950,42 @@ def home() -> str:
       html5QrLocationScanner = null;
       const el = document.getElementById('barcodeScannerRegion');
       if (el) el.innerHTML = '';
+    }
+
+    async function uploadWiperSheetFile() {
+      const inp = document.getElementById('wiperSheetFileInput');
+      const st = document.getElementById('wiperUploadStatus');
+      if (!inp || !inp.files || !inp.files[0]) {
+        if (st) st.innerText = 'اختَر ملف Excel أولاً.';
+        return;
+      }
+      const f = inp.files[0];
+      if (st) st.innerText = 'جاري الرفع والمعالجة...';
+      try {
+        const formData = new FormData();
+        formData.append('files', f, f.name);
+        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await readJsonSafe(res);
+        if (!res.ok) throw new Error(data.detail || 'upload-wiper-failed');
+        const skipped = Number(data.skipped_files || 0) > 0;
+        const wiper = Number(data.inserted_wiper_rows || 0);
+        const proc = Number(data.files_count || 0);
+        if (skipped && wiper === 0 && proc === 0) {
+          if (st) st.innerText = 'نفس الملف مرفوع مسبقاً — لم يُعد الاستيراد.';
+        } else if (wiper > 0) {
+          if (st) st.innerText = `تم استيراد ${wiper} صف قشطان.`;
+        } else {
+          if (st) {
+            st.innerText =
+              'لم يُستورد كقشطان. غيّر اسم الملف ليشمل «قشط» أو «wiper» أو أضف في الصف الأول عناوين قشط/مساح، ثم أعد المحاولة.';
+          }
+        }
+        inp.value = '';
+        await loadStats();
+        await searchNow('wiper');
+      } catch (err) {
+        if (st) st.innerText = 'فشل الرفع: ' + ((err && err.message) ? err.message : err);
+      }
     }
 
     async function uploadLocationSheetFile() {
@@ -4450,18 +4669,19 @@ def home() -> str:
         lBody.innerHTML = '';
         safeRows.forEach((r) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${escapeHtml(String(r.source_file || '').trim())}</td>
-            <td>${escapeHtml(String(r.item_name ?? ''))}</td>
-            <td><strong>${escapeHtml(String(r.location ?? ''))}</strong></td>
+          tr.innerHTML = `<td>${escapeHtml(String(r.item_name ?? ''))}</td>
             <td>${escapeHtml(String(r.company ?? ''))}</td>
-            <td>${escapeHtml(String(r.barcode ?? ''))}</td>`;
+            <td>${escapeHtml(String(r.original_number ?? ''))}</td>
+            <td>${escapeHtml(String(r.barcode ?? ''))}</td>
+            <td><strong>${escapeHtml(String(r.location ?? ''))}</strong></td>
+            <td>${escapeHtml(String(r.price ?? ''))}</td>`;
           lBody.appendChild(tr);
         });
         const showL = safeRows.length > 0;
         locWrap.style.display = showL ? 'block' : 'none';
         locTable.style.display = showL ? 'table' : 'none';
         if (!showL) {
-          document.getElementById('stats').innerText = 'لا توجد نتيجة لهذا الاسم أو الباركود في ملف المواقع.';
+          document.getElementById('stats').innerText = 'لا توجد نتيجة لهذا البحث في ملف المواقع.';
         }
         return;
       }
@@ -4932,8 +5152,8 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 @app.post("/upload_location_sheet")
 async def upload_location_sheet(file: UploadFile = File(...)) -> dict:
     """
-    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: يُستورد دائماً كجدول مواقع (B,D,E,F)
-    بغض النظر عن اسم الملف على الجهاز؛ يُخزَّن تحت اسم مصدر ثابت ويُستبدل السابق من نفس الزر.
+    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: B–K (رقم أصلي، صنف، باركود، علامة، شركة، …، موقع I، ملاحظات J، سعر K).
+    يُخزَّن تحت اسم مصدر ثابت ويُستبدل السابق من نفس الزر.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="لم يُختَر ملف")
@@ -5374,14 +5594,18 @@ def search_locations(q: str = "") -> dict:
                 continue
             like = f"%{token}%"
             where_parts.append(
-                "(lower(COALESCE(item_name,'')) LIKE ? OR lower(COALESCE(barcode,'')) LIKE ?)"
+                "(lower(COALESCE(item_name,'')) LIKE ? OR lower(COALESCE(barcode,'')) LIKE ? "
+                "OR lower(COALESCE(company,'')) LIKE ? OR lower(COALESCE(original_number,'')) LIKE ? "
+                "OR lower(COALESCE(brand,'')) LIKE ? OR lower(COALESCE(notes,'')) LIKE ? "
+                "OR lower(COALESCE(price,'')) LIKE ?)"
             )
-            params.extend([like, like])
+            params.extend([like, like, like, like, like, like, like])
 
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
         candidate_rows = conn.execute(
             f"""
-            SELECT item_name, location, company, barcode, source_file, source_sheet
+            SELECT item_name, location, company, original_number, barcode, brand, notes, price,
+                   source_file, source_sheet
             FROM location_rows
             WHERE {where_clause}
             ORDER BY item_name, barcode, source_file

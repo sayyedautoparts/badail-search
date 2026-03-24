@@ -1,0 +1,7 @@
+# تقليل حجم الرفع — غير مطلوبة لتشغيل التطبيق على Vercel
+ios_app_icons/
+tools/
+.venv/
+__pycache__/
+*.pyc
+search_data.db

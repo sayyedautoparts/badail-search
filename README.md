@@ -101,19 +101,31 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 ## تشغيل على Vercel
 
-تم تجهيز ملفات Vercel:
-- `vercel.json`
-- `api/index.py`
+التطبيق **FastAPI** في `app.py` في جذر المشروع؛ Vercel يكتشفه تلقائياً (بدون `vercel.json` قديم). يوجد `.vercelignore` لتقليل حجم الرفع.
 
-### الخطوات:
+### أ) من الموقع (مع GitHub)
 
-1. ادخل إلى [Vercel](https://vercel.com) وسجل دخول بحساب GitHub.
-2. اختر **Add New...** ثم **Project**.
-3. اختر الريبو: `sayyedautoparts/badail-search`.
-4. اضغط **Deploy**.
+1. ارفع المشروع إلى مستودع GitHub (إن لم يكن مرفوعاً).
+2. ادخل [vercel.com](https://vercel.com) → **Add New…** → **Project**.
+3. اربط نفس الريبو واضغط **Deploy**.
+4. (اختياري لكن مُستحسن للديمومة) في **Settings → Environment Variables** أضف أحد:
+   - `DATABASE_URL` أو `NEON_DATABASE_URL` أو `SUPABASE_DB_URL` (PostgreSQL)  
+   حتى لا تعتمد على SQLite في `/tmp` فقط.
 
-### ملاحظة مهمة جداً:
+### ب) من الطرفية (CLI)
 
-- على Vercel، SQLite المحلي ليس تخزين دائم (يكون مؤقت).
-- يعني البيانات المرفوعة قد تختفي بعد إعادة تشغيل/نشر.
-- إذا بدك حفظ دائم 100%، استخدم Railway/Render مع Volume أو قاعدة بيانات خارجية.
+```bash
+cd مسار_المشروع
+npx vercel@latest login
+npx vercel@latest
+```
+
+للإنتاج: `npx vercel@latest --prod`
+
+يُفضّل CLI حديثاً (مثلاً ≥ 48) كما في [وثائق FastAPI على Vercel](https://vercel.com/docs/frameworks/backend/fastapi).
+
+### ملاحظات مهمة
+
+- بدون Postgres: على Vercel يُستخدم SQLite تحت `/tmp` (انظر `VERCEL` في `app.py`) — **البيانات ليست دائمة** بين إعادة التشغيل/النشر.
+- لرفع ملفات Excel كبيرة: إذا انتهت المهلة، زِد **Function Max Duration** من إعدادات المشروع في Vercel.
+- للتشغيل المحلي بنفس أسلوب الاستضافة: `npx vercel@latest dev` (بعد `pip install -r requirements.txt`).
