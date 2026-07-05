@@ -4199,7 +4199,7 @@ def home() -> str:
     function normalizeHeaderCellForMatchJs(raw) {
       let t = normalizeTextForSearch(String(raw || ''));
       t = t.replace(/\u200c|\u200b|\ufeff|\xa0/g, '');
-      return t.replace(/\s+/g, ' ').trim();
+      return t.replace(/\\s+/g, ' ').trim();
     }
 
     function findCompanyColumnByExactHeaderJs(header) {
@@ -4719,7 +4719,7 @@ def home() -> str:
       let raw = normalizeTextForSearch(text).replace(/[،,;/|]+/g, ' ');
       raw = raw.replace(/[()]+/g, ' ');
       raw = raw.replace(/(\d{1,2})\s*[.,،]\s*(\d{1,3})(?!\d)/g, '$1.$2');
-      raw = raw.replace(/\s+/g, ' ').trim();
+      raw = raw.replace(/\\s+/g, ' ').trim();
       return raw.split(' ').filter(Boolean).filter(t => !['+', '-', '–', '—'].includes(t));
     }
 
@@ -4731,7 +4731,7 @@ def home() -> str:
       raw = raw.replace(/[،,;/|]+/g, ' ');
       raw = raw.replace(/[()]+/g, ' ');
       raw = raw.replace(/(\d{1,2})\s*[.,،]\s*(\d{1,3})(?!\d)/g, '$1.$2');
-      raw = raw.replace(/\s+/g, ' ').trim();
+      raw = raw.replace(/\\s+/g, ' ').trim();
       return raw.split(' ').filter(Boolean).filter(t => !['+', '-', '–', '—'].includes(t));
     }
 
@@ -4929,7 +4929,7 @@ def home() -> str:
       const hn = String(hintNorm || '').trim();
       if (!hn) return true;
       if (pn.includes(hn)) return true;
-      const significant = hn.split(/\s+/).filter(w => w.length >= 2);
+      const significant = hn.split(/\\s+/).filter(w => w.length >= 2);
       if (significant.length < 2) return pn.includes(hn);
       function wordOk(w) {
         if (pn.includes(w)) return true;
@@ -5106,7 +5106,7 @@ def home() -> str:
     function normSegmentWordSetJs(nseg) {
       const edges = '.,|;:()[]';
       const out = new Set();
-      for (const w of String(nseg || '').split(/\s+/)) {
+      for (const w of String(nseg || '').split(/\\s+/)) {
         let t = w;
         while (t.length && edges.includes(t[0])) t = t.slice(1);
         while (t.length && edges.includes(t[t.length - 1])) t = t.slice(0, -1);
@@ -5978,7 +5978,7 @@ def home() -> str:
       function stripTrailingSpreadsheetFileFromDisplayName(label) {
         const s = String(label || '').trim();
         if (!s) return s;
-        const re = /\s+([^.]+)\.(xlsx|xlsm|xlsb|xls)\s*$/i;
+        const re = /\\s+([^.]+)\\.(xlsx|xlsm|xlsb|xls)\\s*$/i;
         const m = re.exec(s);
         if (!m || m.index === undefined) return s;
         const body = String(m[1] || '').trim();
@@ -6170,22 +6170,22 @@ def home() -> str:
     function looksLikeOriginalNumber(token) {
       const t = String(token || '').trim();
       if (!t || t.length < 2) return false;
-      if (!/\d|[\u0660-\u0669\u06F0-\u06F9]/.test(t)) return false;
-      const noDigits = t.replace(/[\u0660-\u0669\u06F0-\u06F9\d]/g, '');
-      if (/[\u0600-\u06FF]/.test(noDigits)) return false;
-      const cleaned = t.replace(/[\s\-_.\/\\|:،؛,]+/g, '');
-      if (!cleaned || !/^[\dA-Za-z\u0660-\u0669\u06F0-\u06F9]+$/u.test(cleaned)) return false;
-      return /\d|[\u0660-\u0669\u06F0-\u06F9]/.test(cleaned);
+      if (!/\\d|[\\u0660-\\u0669\\u06F0-\\u06F9]/.test(t)) return false;
+      const noDigits = t.replace(/[\\u0660-\\u0669\\u06F0-\\u06F9\\d]/g, '');
+      if (/[\\u0600-\\u06FF]/.test(noDigits)) return false;
+      const cleaned = t.replace(/[\\s\\-_.\\/\\\\|:،؛,]+/g, '');
+      if (!cleaned || !/^[\\dA-Za-z\\u0660-\\u0669\\u06F0-\\u06F9]+$/u.test(cleaned)) return false;
+      return /\\d|[\\u0660-\\u0669\\u06F0-\\u06F9]/.test(cleaned);
     }
 
     function pickFirstOriginalNumber(raw) {
       const s = String(raw || '').trim();
       if (!s) return '';
-      const parts = s.split(/[\s,،;؛|/\\]+/).map(p => String(p || '').trim()).filter(Boolean);
+      const parts = s.split(/[\\s,،;؛|/\\\\]+/).map(p => String(p || '').trim()).filter(Boolean);
       for (const p of parts) {
         if (looksLikeOriginalNumber(p)) return p;
       }
-      const scanRe = /[A-Za-z0-9][A-Za-z0-9\-_.\/\\]{0,48}\d[A-Za-z0-9\-_.\/\\]{0,48}|\d[A-Za-z0-9\-_.\/\\]{1,49}/g;
+      const scanRe = /[A-Za-z0-9][A-Za-z0-9\\-_.\\/\\\\]{0,48}\\d[A-Za-z0-9\\-_.\\/\\\\]{0,48}|\\d[A-Za-z0-9\\-_.\\/\\\\]{1,49}/g;
       let m;
       while ((m = scanRe.exec(s)) !== null) {
         if (looksLikeOriginalNumber(m[0])) return m[0];
@@ -6290,7 +6290,7 @@ def home() -> str:
 """
     ).replace('href="/app-icon.png"', f'href="/app-icon.png?v={_icon_q}"').replace(
         'href="/apple-touch-icon.png"', f'href="/apple-touch-icon.png?v={_at_q}"', 1
-    )
+    ).replace("{APP_VERSION}", APP_VERSION)
 
 
 @app.post("/upload")
