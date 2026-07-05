@@ -2,6 +2,7 @@ import io
 import os
 import re
 import sqlite3
+import threading
 import unicodedata
 import hashlib
 import json
@@ -10,10 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from openpyxl import load_workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 try:
     import psycopg
@@ -98,7 +99,16 @@ def apple_touch_icon_cache_query() -> str:
 
 INGEST_PARSER_VERSION = "5"
 WIPER_PARSER_VERSION = "wiper-1"
-LOCATION_PARSER_VERSION = "location-4"
+LOCATION_PARSER_VERSION = "location-8"
+LOCATION_SEARCH_LIMIT_DEFAULT = 200
+LOCATION_SEARCH_LIMIT_MAX = 500
+LOCATION_BARCODE_LIKE_FALLBACK_MIN_LEN = 5
+LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP = 450
+LOCATION_BARCODE_SEARCH_KEYS_MAX = 6
+BARCODE_SEARCH_DEBUG = os.getenv("BARCODE_SEARCH_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+_location_norm_schema_lock = threading.Lock()
+_location_norm_schema_ready = False
 # اسم مصدر ثابت لرفع المواقع من تبويب «اكتشاف الموقع» (لا يعتمد على اسم الملف على الجهاز)
 LOCATION_TAB_IMPORT_SOURCE_FILE = "مواقع_من_التطبيق.xlsx"
 
@@ -127,12 +137,61 @@ class DBConnection:
     def commit(self) -> None:
         self._conn.commit()
 
+    def rollback(self) -> None:
+        self._conn.rollback()
+
     def close(self) -> None:
         self._conn.close()
 
     @property
     def postgres(self) -> bool:
         return self._postgres
+
+
+def sql_row_to_dict(row: Any) -> dict[str, Any]:
+    """تحويل صف قاعدة البيانات إلى dict — dict(sqlite3.Row) قد يرمي TypeError في بايثون 3.14+."""
+    if isinstance(row, dict):
+        return dict(row)
+    keys_fn = getattr(row, "keys", None)
+    if callable(keys_fn):
+        keys = list(keys_fn())
+        if keys:
+            return {k: row[k] for k in keys}
+    try:
+        return dict(row)
+    except Exception as exc:
+        raise TypeError(f"unsupported row type {type(row)!r}") from exc
+
+
+def _json_safe_value(v: Any) -> Any:
+    """قيم آمنة لـ JSON (تفادي bytes/Decimal/datetime وغيرها التي تكسر FastAPI)."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return int(v)
+    if isinstance(v, float):
+        return float(v)
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return bytes(v).decode("utf-8", errors="replace")
+    if isinstance(v, str):
+        return v
+    try:
+        from decimal import Decimal
+
+        if isinstance(v, Decimal):
+            return str(v)
+    except Exception:
+        pass
+    try:
+        from datetime import date, datetime
+
+        if isinstance(v, (date, datetime)):
+            return v.isoformat()
+    except Exception:
+        pass
+    return str(v)
 
 
 def get_db() -> DBConnection:
@@ -304,6 +363,7 @@ def init_db() -> None:
                     barcode TEXT,
                     brand TEXT,
                     notes TEXT,
+                    quantity TEXT,
                     price TEXT,
                     source_file TEXT NOT NULL,
                     source_sheet TEXT NOT NULL
@@ -315,7 +375,10 @@ def init_db() -> None:
             )
             conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS brand TEXT")
             conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS notes TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS quantity TEXT")
             conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS price TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_barcode TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_text TEXT")
         else:
             conn.execute(
                 """
@@ -328,6 +391,7 @@ def init_db() -> None:
                     barcode TEXT,
                     brand TEXT,
                     notes TEXT,
+                    quantity TEXT,
                     price TEXT,
                     source_file TEXT NOT NULL,
                     source_sheet TEXT NOT NULL
@@ -336,7 +400,7 @@ def init_db() -> None:
             )
             try:
                 _loc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(location_rows)").fetchall()}
-                for col in ("original_number", "brand", "notes", "price"):
+                for col in ("original_number", "brand", "notes", "quantity", "price", "normalized_barcode", "normalized_text"):
                     if col not in _loc_cols:
                         conn.execute(f"ALTER TABLE location_rows ADD COLUMN {col} TEXT")
             except Exception:
@@ -344,6 +408,12 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_item_name ON location_rows(item_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_barcode ON location_rows(barcode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_location_source_file ON location_rows(source_file)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_location_norm_barcode ON location_rows(normalized_barcode)")
+        # Postgres: فهرس B-tree على نص طويل جداً يفشل (حد ~2704 بايت لصف الفهرس). LIKE %…% لا يستفيد منه عملياً.
+        if conn.postgres:
+            conn.execute("DROP INDEX IF EXISTS idx_location_norm_text")
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_location_norm_text ON location_rows(normalized_text)")
         conn.commit()
     finally:
         conn.close()
@@ -413,7 +483,7 @@ def get_sync_rows() -> list[dict]:
             ORDER BY id
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [sql_row_to_dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -452,16 +522,55 @@ class UploadRowsAbortIn(BaseModel):
     file_name: str
 
 
+def _excel_json_cell_str(v: Any) -> str:
+    """تحويل قيمة خلية Excel عند وصولها كـ JSON (رقم/نص/فارغ) إلى نص آمن للاستيراد."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, float):
+        if v != v:  # NaN
+            return ""
+        if abs(v - int(v)) < 1e-9:
+            return str(int(v))
+        return str(v).strip()
+    if isinstance(v, int):
+        return str(v)
+    return str(v).strip()
+
+
 class LocationRowIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     item_name: str = ""
     location: str = ""
     company: str = ""
     original_number: str = ""
     barcode: str = ""
+    unit_barcodes: str = ""
     brand: str = ""
     notes: str = ""
+    quantity: str = ""
     price: str = ""
     source_sheet: str = "Sheet1"
+
+    @field_validator(
+        "item_name",
+        "location",
+        "company",
+        "original_number",
+        "barcode",
+        "unit_barcodes",
+        "brand",
+        "notes",
+        "quantity",
+        "price",
+        "source_sheet",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_excel_cell(cls, v: Any) -> str:
+        return _excel_json_cell_str(v)
 
 
 class LocationRowsStartIn(BaseModel):
@@ -771,6 +880,174 @@ def normalize_text(text: str) -> str:
 def normalize_text_compact(text: str) -> str:
     n = normalize_text(text)
     return re.sub(r"[\s\-_/]+", "", n)
+
+
+def _extract_location_unit_barcodes_from_cell(unit_barcodes_raw: str) -> list[str]:
+    """
+    استخراج باركودات «باركود الوحدات» (عمود K) عند ورود أكثر من قيمة.
+    الصيغة المعتادة: كل باركود يسبقه ':' مثل ':512312321 :4255761249700'.
+    """
+    raw = str(unit_barcodes_raw or "")
+    if not raw.strip():
+        return []
+    out: list[str] = []
+    for part in re.findall(r":\s*([^\s:;,|]+)", raw):
+        nb = normalize_barcode_lookup_key(part)
+        if nb and nb not in out:
+            out.append(nb)
+    return out
+
+
+def location_row_normalized_barcode_value(barcode_raw: str, unit_barcodes_raw: str = "") -> str:
+    """
+    تطبيع باركود الصف للمساواة:
+    - باركود الصنف من D
+    - + باركود/باركودات الوحدات من K (كل قيمة بعد ':')
+    يُخزَّن كمفاتيح مفصولة بمسافة لتسهيل المطابقة كتوكنات مستقلة.
+    """
+    out: list[str] = []
+    main_nb = normalize_barcode_lookup_key(barcode_raw or "")
+    if main_nb:
+        out.append(main_nb)
+    for ub in _extract_location_unit_barcodes_from_cell(unit_barcodes_raw):
+        if ub not in out:
+            out.append(ub)
+    if not out:
+        return ""
+    return f" {' '.join(out)} "
+
+
+def location_row_normalized_text_value(
+    item_name: str,
+    company: str,
+    brand: str,
+    notes: str,
+    original_number: str,
+) -> str:
+    """
+    حقول نصية للبحث (بدون الباركود): نسخة مطبّعة + مدمجة + رقم أصلي بلا أصفار بادئة لتحسين التطابق.
+    """
+    raw = f"{item_name or ''} {company or ''} {brand or ''} {notes or ''} {original_number or ''}"
+    spaced = normalize_text(raw)
+    compact = normalize_text_compact(raw)
+    parts: list[str] = []
+    if spaced:
+        parts.append(spaced)
+    if compact:
+        parts.append(compact)
+    od = normalize_barcode(original_number or "")
+    if od:
+        parts.append(od.lstrip("0") or "0")
+    return " ".join(parts).strip()
+
+
+def ensure_location_rows_import_schema(conn: DBConnection) -> None:
+    """
+    قبل INSERT مواقع (رفع Excel أو دفعات): يضمن أعمدة quantity وnormalized_* على قواعد أُنشئت قبل التحديث.
+    يُستدعى من مسارات الرفع لتفادي أخطاء «no column named quantity» وما شابه على Vercel/Neon.
+    """
+    try:
+        if conn.postgres:
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS quantity TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_barcode TEXT")
+            conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_text TEXT")
+        else:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(location_rows)").fetchall()}
+            for col in ("quantity", "normalized_barcode", "normalized_text"):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE location_rows ADD COLUMN {col} TEXT")
+                    cols.add(col)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+
+
+def ensure_location_normalized_schema(conn: DBConnection) -> None:
+    """يضمن وجود أعمدة البحث المطبّع + فهارسها — مرة واحدة لكل عملية خادم (لا نكرر ALTER/INDEX كل بحث).
+    على Postgres لا يُنشأ فهرس normalized_text (صفوف طويلة تكسر حد B-tree؛ البحث يبقى عبر الاستعلام نفسه)."""
+    global _location_norm_schema_ready
+    if _location_norm_schema_ready:
+        return
+    with _location_norm_schema_lock:
+        if _location_norm_schema_ready:
+            return
+        try:
+            if conn.postgres:
+                conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS quantity TEXT")
+                conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_barcode TEXT")
+                conn.execute("ALTER TABLE location_rows ADD COLUMN IF NOT EXISTS normalized_text TEXT")
+            else:
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(location_rows)").fetchall()}
+                for col in ("quantity", "normalized_barcode", "normalized_text"):
+                    if col not in cols:
+                        conn.execute(f"ALTER TABLE location_rows ADD COLUMN {col} TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_location_norm_barcode ON location_rows(normalized_barcode)")
+            if conn.postgres:
+                conn.execute("DROP INDEX IF EXISTS idx_location_norm_text")
+            else:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_location_norm_text ON location_rows(normalized_text)")
+            conn.commit()
+            _location_norm_schema_ready = True
+        except Exception:
+            # Postgres: أي فشل يُبقي المعاملة في حالة aborted — لازم rollback وإلا كل استعلام لاحق يفشل بصمت ثم 500
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+
+def backfill_location_normalized_columns(
+    conn: DBConnection, *, max_per_boot: int = 4000, batch_size: int = 800
+) -> None:
+    """
+    تعبئة الأعمدة المطبّعة للصفوف القديمة — على دفعات مع commit.
+    لا تُستدعى عند إقلاع التطبيق (لتفادي تجمد Vercel)؛ تُستدعى من بحث المواقع لإكمال الترحيل تدريجياً.
+    """
+    if max_per_boot <= 0:
+        return
+    processed = 0
+    while processed < max_per_boot:
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, item_name, company, brand, notes, original_number, barcode
+                FROM location_rows
+                WHERE normalized_text IS NULL
+                   OR normalized_barcode IS NULL
+                   OR (
+                     COALESCE(TRIM(barcode), '') <> ''
+                     AND TRIM(COALESCE(normalized_barcode, '')) = ''
+                   )
+                LIMIT ?
+                """,
+                (batch_size,),
+            ).fetchall()
+        except Exception:
+            return
+        if not rows:
+            return
+        updates: list[tuple[str, str, Any]] = []
+        for r in rows:
+            rd = sql_row_to_dict(r)
+            nb = location_row_normalized_barcode_value(str(rd.get("barcode") or ""))
+            nt = location_row_normalized_text_value(
+                str(rd.get("item_name") or ""),
+                str(rd.get("company") or ""),
+                str(rd.get("brand") or ""),
+                str(rd.get("notes") or ""),
+                str(rd.get("original_number") or ""),
+            )
+            updates.append((nb, nt, rd["id"]))
+        conn.executemany(
+            "UPDATE location_rows SET normalized_barcode = ?, normalized_text = ? WHERE id = ?",
+            updates,
+        )
+        conn.commit()
+        processed += len(rows)
 
 
 def _norm_segment_word_set(nseg: str) -> set[str]:
@@ -1374,6 +1651,107 @@ def normalize_barcode(raw: str) -> str:
     return re.sub(r"[^\d]", "", s)
 
 
+_INVISIBLE_OR_SOFT_HYPHEN_RE = re.compile(r"[\u200B-\u200D\uFEFF\u2060\u00AD]")
+
+
+def strip_barcode_input_noise(s: str) -> str:
+    """NFKC + إزالة مسافات/فاصلات غير مرئية قبل تطبيع الباركود."""
+    if not s:
+        return ""
+    t = unicodedata.normalize("NFKC", str(s))
+    return _INVISIBLE_OR_SOFT_HYPHEN_RE.sub("", t)
+
+
+def normalize_barcode_lookup_key(raw: str) -> str:
+    """
+    المفتاح الكانوني الواحد للتخزين والمساواة الدقيقة (يتبعها barcode_search_keys للبحث):
+    - أرقام عربية/فارسية → لاتينية، أحرف لاتينية كبيرة
+    - حذف المسافات، الشرطات، الشرطات السفلية، / \\ . ، ( ) وأي فاصل غير أبجدي رقمي
+    - الإبقاء على A-Z و 0-9 فقط
+    - إن كانت النتيجة أرقاماً فقط: إزالة الأصفار البادئة
+    - إن وُجدت أحرف: الإبقاء على الأصفار البادئة كما هي
+    """
+    if not raw:
+        return ""
+    s = strip_barcode_input_noise(raw).translate(DIGIT_TRANS).strip()
+    alnum = re.sub(r"[^A-Za-z0-9]", "", s)
+    if not alnum:
+        return ""
+    up = alnum.upper()
+    if up.isdigit():
+        # الإبقاء على الأصفار البادئة في القيمة المخزّنة؛ إزالة الأصفار تُدار عبر barcode_search_keys عند البحث
+        return up
+    return up
+
+
+def barcode_search_keys(raw: str) -> list[str]:
+    """
+    مفاتيح آمنة للبحث: المفتاح الكانوني + للأرقام فقط نضيف الشكل بأصفار بادئة إن اختلف
+    (مثال المخزن 12322311 والاستعلام 012322311 بعد الضغط النصي).
+    """
+    if not (raw and str(raw).strip()):
+        return []
+    s = strip_barcode_input_noise(raw).translate(DIGIT_TRANS).strip()
+    alnum = re.sub(r"[^A-Za-z0-9]", "", s)
+    if not alnum:
+        return []
+    up = alnum.upper()
+    out: list[str] = []
+    if up.isdigit():
+        full = up
+        stripped = full.lstrip("0") or "0"
+        for k in (full, stripped):
+            if k and k not in out:
+                out.append(k)
+    else:
+        out.append(up)
+    return out[:LOCATION_BARCODE_SEARCH_KEYS_MAX]
+
+
+def barcode_cell_matches_search_keys(cell_raw: str, key_set: set[str]) -> bool:
+    """هل عمود barcode الخام يطابق أي مفتاح من مفاتيح الاستعلام (بعد تطبيع الطرفين)."""
+    if not key_set:
+        return False
+    candidates: list[str] = []
+    for k in barcode_search_keys(cell_raw):
+        if k and k not in candidates:
+            candidates.append(k)
+    for k in _extract_location_unit_barcodes_from_cell(cell_raw):
+        if k and k not in candidates:
+            candidates.append(k)
+    for k in candidates:
+        if k in key_set:
+            return True
+    return False
+
+
+def _barcode_search_debug_log(
+    enabled: bool, msg: str, *, raw: str = "", keys: list[str] | None = None, kind: str = ""
+) -> None:
+    if not (BARCODE_SEARCH_DEBUG or enabled):
+        return
+    parts = [msg]
+    if raw:
+        parts.append(f"raw={raw!r}")
+    if keys is not None:
+        parts.append(f"keys={keys!r}")
+    if kind:
+        parts.append(f"match={kind}")
+    try:
+        print("[barcode-search] " + " | ".join(parts), flush=True)
+    except Exception:
+        pass
+
+
+def _like_pattern_escape_sql(s: str) -> str:
+    return (
+        str(s)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 def is_digits_only_query_token(token: str) -> bool:
     """التوكن نصه كله أرقام (بعد تطبيع الأرقام العربية) — مسموح بمسافات داخل التوكن تُزال."""
     nb = normalize_barcode(token)
@@ -1381,15 +1759,6 @@ def is_digits_only_query_token(token: str) -> bool:
         return False
     compact = re.sub(r"\s+", "", str(token).translate(DIGIT_TRANS))
     return compact.isdigit()
-
-
-def normalize_barcode_for_storage(raw: str) -> str:
-    """تخزين الباركود: أرقام فقط + إزالة الأصفار البادئة (000022493 → 22493)."""
-    nb = normalize_barcode(raw)
-    if nb:
-        v = nb.lstrip("0")
-        return v if v else "0"
-    return str(raw or "").strip()
 
 
 def coalesce_location_barcode_query_tokens(raw_q: str, text_tokens: list[str]) -> list[str]:
@@ -1411,49 +1780,206 @@ def coalesce_location_barcode_query_tokens(raw_q: str, text_tokens: list[str]) -
     return [merged_stripped]
 
 
-def normalize_pure_digit_string_ignore_leading_zeros(raw: str) -> str | None:
-    """
-    للباركود الرقمي فقط: 000024356 يُعادل 24356.
-    ترجع None إن لم يكن النص (بعد تطبيع الأرقام العربية) كله أرقاماً.
-    """
-    t = normalize_barcode(raw)
-    if not t:
+def _location_like_pattern_contains(norm_token: str) -> str | None:
+    """LIKE %…% مع إزالة رموز خاصة قد تكسر النمط؛ None إن لم يبقَ محتوى (لا نستخدم % وحده)."""
+    safe = re.sub(r"[%_\\]+", " ", str(norm_token or "")).strip()
+    if not safe:
         return None
-    v = t.lstrip("0")
-    return v if v else "0"
+    return f"%{safe}%"
 
 
-def location_row_barcode_matches_token_ignore_leading_zeros(barcode: str, token: str) -> bool:
-    nt = normalize_pure_digit_string_ignore_leading_zeros(normalize_barcode(token) or token)
-    nb = normalize_pure_digit_string_ignore_leading_zeros(normalize_barcode(barcode) or barcode)
-    if nt is None or nb is None:
-        return False
-    return nt == nb
+def location_query_canonical_barcode(raw_q: str) -> str:
+    """المفتاح الكانوني الأول (للتوافق والعرض) — انظر barcode_search_keys للبحث الفعلي."""
+    return normalize_barcode_lookup_key((raw_q or "").strip())
 
 
-def location_row_matches_combined_item_or_barcode(row: Any, text_tokens: list[str]) -> bool:
-    """البحث في (اسم الصنف + الشركة + العلامة + الملاحظات + الباركود + الرقم الأصلي + السعر) أو تطابق رقمي مع تجاهل الأصفار البادئة."""
-    r = dict(row)
-    fv = (
-        f"{r.get('item_name') or ''} {r.get('company') or ''} {r.get('brand') or ''} {r.get('notes') or ''} "
-        f"{r.get('barcode') or ''} {r.get('original_number') or ''} {r.get('price') or ''}"
+def location_text_search_norm_tokens(raw_q: str) -> list[str]:
+    tokens = tokenize_query(raw_q or "")
+    parsed = [parse_query_year_token(t) for t in tokens]
+    text_tokens = [t for t, ys in zip(tokens, parsed) if ys is None]
+    merged = coalesce_location_barcode_query_tokens(raw_q or "", text_tokens)
+    out: list[str] = []
+    for t in merged:
+        nt = normalize_text(t)
+        if nt:
+            out.append(nt)
+    return out
+
+
+def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for row in rows:
+        d = sql_row_to_dict(row)
+        rid = d.get("id", "")
+        d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{rid}"
+        prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
+    return prepared
+
+
+def _search_locations_sql_only(
+    conn: DBConnection,
+    *,
+    mode: str,
+    canonical_barcode: str,
+    barcode_keys: list[str] | None,
+    norm_tokens: list[str],
+    limit: int,
+    offset: int,
+) -> tuple[list[Any], bool]:
+    lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
+    off = max(0, offset)
+    fetch = lim + 1
+    cols = (
+        "id, item_name, location, company, original_number, barcode, brand, notes, quantity, price, "
+        "source_file, source_sheet"
     )
-    combined = normalize_text(fv)
-    combined_compact = normalize_text_compact(fv)
-    _bc_raw = normalize_barcode(str(r.get("barcode") or ""))
-    bc = (_bc_raw.lstrip("0") or "0") if _bc_raw else str(r.get("barcode") or "").strip()
-    _orig_raw = normalize_barcode(str(r.get("original_number") or ""))
-    orig = (_orig_raw.lstrip("0") or "0") if _orig_raw else str(r.get("original_number") or "").strip()
-    for token in text_tokens:
-        nt = normalize_text(token)
-        nct = normalize_text_compact(token)
-        token_clean = normalize_barcode(token) or token
-        ok_substring = (nt in combined) or (bool(nct) and nct in combined_compact)
-        ok_barcode_digits = location_row_barcode_matches_token_ignore_leading_zeros(bc, token_clean)
-        ok_orig_digits = location_row_barcode_matches_token_ignore_leading_zeros(orig, token_clean)
-        if not ok_substring and not ok_barcode_digits and not ok_orig_digits:
-            return False
-    return True
+    if mode == "barcode":
+        keys = [k for k in (barcode_keys or []) if k]
+        if not keys and canonical_barcode:
+            keys = [canonical_barcode]
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return [], False
+        placeholders = ", ".join(["?"] * len(keys))
+        like_clauses = " OR ".join(["normalized_barcode LIKE ? ESCAPE '\\'"] * len(keys))
+        like_params = [f"% {_like_pattern_escape_sql(k)} %" for k in keys]
+        rows = conn.execute(
+            f"""
+            SELECT {cols}
+            FROM location_rows
+            WHERE normalized_barcode IN ({placeholders})
+               OR ({like_clauses})
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (*keys, *like_params, fetch, off),
+        ).fetchall()
+    else:
+        if not norm_tokens:
+            return [], False
+        patterns = [p for p in (_location_like_pattern_contains(t) for t in norm_tokens) if p]
+        if not patterns:
+            return [], False
+        # مربع النص: normalized_text إن وُجد، أو مطابقة على أعمدة الصنف/الشركة/العلامة/الرقم/الملاحظات
+        # (صفوف بلا normalized_text أو فارغ لا تظهر إن اعتمدنا normalized_text فقط)
+        norm_and = " AND ".join(["normalized_text LIKE ?"] * len(patterns))
+        part_norm = (
+            "(normalized_text IS NOT NULL AND TRIM(COALESCE(normalized_text,'')) <> '' AND "
+            f"{norm_and})"
+        )
+        legacy_groups: list[str] = []
+        for _ in patterns:
+            legacy_groups.append(
+                "("
+                + " OR ".join(
+                    [
+                        "lower(COALESCE(item_name,'')) LIKE ?",
+                        "lower(COALESCE(company,'')) LIKE ?",
+                        "lower(COALESCE(brand,'')) LIKE ?",
+                        "lower(COALESCE(original_number,'')) LIKE ?",
+                        "lower(COALESCE(barcode,'')) LIKE ?",
+                        "lower(COALESCE(notes,'')) LIKE ?",
+                    ]
+                )
+                + ")"
+            )
+        part_legacy = "(" + " AND ".join(legacy_groups) + ")"
+        where_sql = f"(({part_norm}) OR ({part_legacy}))"
+        params: list[Any] = []
+        params.extend(patterns)
+        for pat in patterns:
+            params.extend([pat, pat, pat, pat, pat, pat])
+        params.extend([fetch, off])
+        rows = conn.execute(
+            f"""
+            SELECT {cols}
+            FROM location_rows
+            WHERE {where_sql}
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+    has_more = len(rows) > lim
+    return rows[:lim], has_more
+
+
+def _search_locations_barcode_python_fallback(
+    conn: DBConnection,
+    key_set: set[str],
+    limit: int,
+    offset: int,
+) -> tuple[list[Any], bool]:
+    """صفوف لم يُعبّأ normalized_barcode أو فارغ مع وجود barcode — مطابقة مفاتيح متعددة في بايثون."""
+    if not key_set:
+        return [], False
+    cap = 15000
+    rows = conn.execute(
+        """
+        SELECT id, item_name, location, company, original_number, barcode, brand, notes, quantity, price,
+               source_file, source_sheet
+        FROM location_rows
+        WHERE COALESCE(TRIM(barcode), '') <> ''
+          AND (
+            normalized_barcode IS NULL
+            OR TRIM(COALESCE(normalized_barcode, '')) = ''
+          )
+        ORDER BY id
+        LIMIT ?
+        """,
+        (cap,),
+    ).fetchall()
+    matched: list[Any] = []
+    for row in rows:
+        rd = sql_row_to_dict(row)
+        if barcode_cell_matches_search_keys(str(rd.get("barcode") or ""), key_set):
+            matched.append(row)
+    lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
+    off = max(0, offset)
+    chunk = matched[off : off + lim + 1]
+    has_more = len(chunk) > lim
+    return chunk[:lim], has_more
+
+
+def _search_locations_barcode_like_fallback(
+    conn: DBConnection,
+    key_set: set[str],
+    limit: int,
+    offset: int,
+) -> tuple[list[Any], bool]:
+    """
+    بيانات قديمة سيئة التطبيع: LIKE محدود على عمود barcode ثم تحقق بمفاتيح الاستعلام (آمن من هجمات النمط الواسع).
+    """
+    if not key_set:
+        return [], False
+    needles = sorted(key_set, key=len, reverse=True)
+    needle = next((n for n in needles if len(n) >= LOCATION_BARCODE_LIKE_FALLBACK_MIN_LEN), "")
+    if not needle:
+        return [], False
+    pat = f"%{_like_pattern_escape_sql(needle)}%"
+    rows = conn.execute(
+        """
+        SELECT id, item_name, location, company, original_number, barcode, brand, notes, quantity, price,
+               source_file, source_sheet
+        FROM location_rows
+        WHERE COALESCE(TRIM(barcode), '') <> ''
+          AND LENGTH(barcode) <= 128
+          AND barcode LIKE ? ESCAPE '\\'
+        ORDER BY id
+        LIMIT ?
+        """,
+        (pat, LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP),
+    ).fetchall()
+    matched: list[Any] = []
+    for row in rows:
+        rd = sql_row_to_dict(row)
+        if barcode_cell_matches_search_keys(str(rd.get("barcode") or ""), key_set):
+            matched.append(row)
+    lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
+    off = max(0, offset)
+    chunk = matched[off : off + lim + 1]
+    has_more = len(chunk) > lim
+    return chunk[:lim], has_more
 
 
 def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
@@ -1465,7 +1991,7 @@ def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
     out: list[Any] = []
     seen_orig: set[str] = set()
     for r in rows:
-        d = dict(r)
+        d = sql_row_to_dict(r)
         orig_c = normalize_text_compact(d.get("original_numbers") or "")
         if not orig_c:
             out.append(r)
@@ -1479,7 +2005,7 @@ def dedupe_rows_by_normalized_original(rows: list[Any]) -> list[Any]:
 
 def _row_search_relevance_score(row: Any, text_tokens: list[str], years: list[int]) -> tuple[int, int, int, str]:
     """درجة أعلى = الصف أنسب لكلمات البحث الحالية (لاختيار مَن يُبقى عند تكرار الرقم الأصلي)."""
-    d = dict(row)
+    d = sql_row_to_dict(row)
     item = d.get("item_name") or ""
     alt = d.get("alternatives") or ""
     bag = normalize_text(f"{item} {alt}")
@@ -1525,7 +2051,7 @@ def dedupe_rows_by_normalized_original_for_search(
     """
     winners: dict[str, Any] = {}
     for r in rows:
-        d = dict(r)
+        d = sql_row_to_dict(r)
         oc = normalize_text_compact(d.get("original_numbers") or "")
         if not oc:
             continue
@@ -1540,7 +2066,7 @@ def dedupe_rows_by_normalized_original_for_search(
     out: list[Any] = []
     emitted: set[str] = set()
     for r in rows:
-        d = dict(r)
+        d = sql_row_to_dict(r)
         oc = normalize_text_compact(d.get("original_numbers") or "")
         if not oc:
             out.append(r)
@@ -2540,6 +3066,8 @@ def _location_row_looks_like_header(cells: list[str]) -> bool:
         "علامه",
         "ملاحظ",
         "سعر",
+        "كميه",
+        "كمية",
         "location",
         "barcode",
         "company",
@@ -2559,12 +3087,13 @@ def process_location_excel_file(
     *,
     replace_entire_table: bool = False,
 ) -> int:
-    """أعمدة Excel: B رقم أصلي، C اسم الصنف، D باركود، E علامة تجارية، F شركة منتجة، I موقع، J ملاحظات/أرقام، K سعر."""
+    """أعمدة Excel: B رقم أصلي، C صنف، D باركود، E علامة، F شركة، G كمية، I موقع، J ملاحظات، K باركود الوحدات، L سعر."""
     conn = get_db()
     inserted_rows = 0
     source_key = normalize_source_file_name(file_name)
 
     try:
+        ensure_location_rows_import_schema(conn)
         if replace_entire_table:
             conn.execute("DELETE FROM location_rows")
         else:
@@ -2573,24 +3102,26 @@ def process_location_excel_file(
         try:
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
-                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=11, values_only=True))
+                preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=12, values_only=True))
                 first_row = preview[0] if preview else ()
                 first_cells = [clean_cell(v) for v in (first_row or ())]
                 data_start_row = 2 if _location_row_looks_like_header(first_cells) else 1
 
-                rows_to_insert: list[tuple[str, str, str, str, str, str, str, str, str, str]] = []
-                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=11, values_only=True):
+                rows_to_insert: list[tuple[str, ...]] = []
+                for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=12, values_only=True):
                     values = [clean_cell(v) for v in row]
-                    while len(values) < 11:
+                    while len(values) < 12:
                         values.append("")
                     original_number = values[1]
                     item_name = values[2]
-                    barcode = normalize_barcode_for_storage(values[3])
+                    barcode = str(values[3] or "").strip()
                     brand = values[4]
                     company = values[5]
+                    quantity = str(values[6] or "").strip()
                     location = values[8]
                     notes = values[9]
-                    price = values[10]
+                    unit_barcodes = str(values[10] or "").strip()
+                    price = values[11]
                     if not any(
                         [
                             item_name,
@@ -2600,22 +3131,30 @@ def process_location_excel_file(
                             barcode,
                             brand,
                             notes,
+                            quantity,
+                            unit_barcodes,
                             price,
                         ]
                     ):
                         continue
+                    merged_barcode = " | ".join(x for x in [barcode, unit_barcodes] if x)
+                    nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
+                    nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
                     rows_to_insert.append(
                         (
                             item_name,
                             location,
                             company,
                             original_number,
-                            barcode,
+                            merged_barcode,
                             brand,
                             notes,
+                            quantity,
                             price,
                             source_key,
                             str(sheet_name),
+                            nb,
+                            nt,
                         )
                     )
 
@@ -2624,8 +3163,9 @@ def process_location_excel_file(
                         """
                         INSERT INTO location_rows (
                             item_name, location, company, original_number, barcode,
-                            brand, notes, price, source_file, source_sheet
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            brand, notes, quantity, price, source_file, source_sheet,
+                            normalized_barcode, normalized_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows_to_insert,
                     )
@@ -2636,6 +3176,12 @@ def process_location_excel_file(
         conn.commit()
         upsert_location_file_meta(source_key, inserted_rows, content_hash, file_size)
         return inserted_rows
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -2718,75 +3264,76 @@ def home() -> str:
     .tab-btn.active { background: #0b66ff; color: #fff; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
-    /* جدول المواقع: قابل للتمرير الأفقي على الجوال، أحجام خط مناسبة */
+    /* جدول المواقع: iPhone — خط أوضح، تمرير أفقي سلس، صفوف متناوبة */
     #locationsTableWrap {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       width: 100%;
       max-width: 100%;
-      margin-top: 8px;
+      margin-top: 10px;
+      border-radius: 12px;
+      border: 1px solid #dde1eb;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(26,39,68,.06);
     }
     #locationsTable {
       table-layout: auto;
       width: 100%;
-      min-width: 28rem;
-      font-size: 11px;
+      min-width: 38rem;
+      font-size: 13px;
+      border-collapse: collapse;
     }
     #locationsTable th,
     #locationsTable td {
-      padding: 5px 4px;
-      font-size: 11px;
-      line-height: 1.35;
+      padding: 9px 8px;
+      font-size: 13px;
+      line-height: 1.45;
       vertical-align: top;
       white-space: normal;
       word-break: break-word;
       overflow-wrap: anywhere;
+      border-bottom: 1px solid #eceff5;
     }
+    #locationsTable tbody tr:nth-child(even) { background: #f8f9fc; }
     #locationsTable th {
-      font-size: 10px;
-      font-weight: 700;
-      color: #333;
-      background: #f3f5fa;
+      font-size: 12px;
+      font-weight: 800;
+      color: #1a2744;
+      background: linear-gradient(180deg, #f0f3f9 0%, #e8ecf5 100%);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      box-shadow: 0 1px 0 #dde1eb;
     }
-    /* أعمدة أضيق للهاتف: اسم الصنف يأخذ مساحة معقولة، الأرقام لا تُضغط أكثر من اللازم */
-    #locationsTable th:nth-child(1),
-    #locationsTable td:nth-child(1) {
-      min-width: 4.25rem;
-      width: 22%;
-      max-width: 7rem;
+    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) {
+      min-width: 5.75rem; max-width: 11rem;
     }
-    #locationsTable th:nth-child(2),
-    #locationsTable td:nth-child(2) { min-width: 3.5rem; width: 16%; }
-    #locationsTable th:nth-child(3),
-    #locationsTable td:nth-child(3) { min-width: 3.25rem; width: 16%; }
-    #locationsTable th:nth-child(4),
-    #locationsTable td:nth-child(4) { min-width: 3.5rem; width: 18%; }
-    #locationsTable th:nth-child(5),
-    #locationsTable td:nth-child(5) {
-      min-width: 3.25rem;
-      width: 22%;
-      font-weight: 600;
+    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { min-width: 4.25rem; }
+    #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) {
+      min-width: 3.75rem; font-variant-numeric: tabular-nums;
     }
-    #locationsTable th:nth-child(6),
-    #locationsTable td:nth-child(6) {
-      min-width: 3rem;
-      width: 14%;
-      font-weight: 600;
-      color: #1a4d1a;
+    #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) {
+      min-width: 4.25rem; font-variant-numeric: tabular-nums; font-size: 12px;
+    }
+    #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) {
+      min-width: 3rem; text-align: center; font-weight: 800;
+      font-variant-numeric: tabular-nums; color: #0d47a1;
+    }
+    #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) {
+      min-width: 4.5rem; font-weight: 700; color: #1a237e;
+    }
+    #locationsTable th:nth-child(7), #locationsTable td:nth-child(7) {
+      min-width: 3.25rem; font-weight: 700; font-variant-numeric: tabular-nums; color: #1b5e20;
     }
     @media (min-width: 480px) {
-      #locationsTable { font-size: 12px; min-width: 32rem; }
-      #locationsTable th, #locationsTable td { padding: 6px 5px; font-size: 12px; }
-      #locationsTable th { font-size: 11px; }
-      #locationsTable th:nth-child(1),
-      #locationsTable td:nth-child(1) { max-width: 9rem; }
+      #locationsTable { font-size: 14px; min-width: 44rem; }
+      #locationsTable th, #locationsTable td { padding: 10px 9px; font-size: 14px; }
+      #locationsTable th { font-size: 13px; }
+      #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { max-width: 16rem; }
     }
-    @media (min-width: 640px) {
-      #locationsTable { font-size: 13px; min-width: 0; width: 100%; }
-      #locationsTable th, #locationsTable td { padding: 7px 6px; font-size: 13px; }
-      #locationsTable th { font-size: 12px; color: #222; }
-      #locationsTable th:nth-child(1),
-      #locationsTable td:nth-child(1) { max-width: 14rem; width: 24%; }
+    @media (min-width: 768px) {
+      #locationsTable { min-width: 0; width: 100%; }
+      #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { max-width: 20rem; width: 22%; }
     }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
@@ -2863,18 +3410,22 @@ def home() -> str:
 
       <div id="locationSearchPanel" class="search-panel">
         <div style="margin:10px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
-          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B رقم أصلي، C صنف، D باركود، E علامة، F شركة، I موقع، J ملاحظات، K سعر. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
+          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B رقم أصلي، C صنف، D باركود، E علامة، F شركة، <strong>G كمية</strong>، I موقع، J ملاحظات، <strong>K باركود الوحدات</strong>، <strong>L سعر</strong>. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
           <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
           <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
           <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
         </div>
-        <p class="muted" style="margin-top:10px;">ملف Excel: <strong>B</strong> الرقم الأصلي، <strong>C</strong> الصنف، <strong>D</strong> الباركود، <strong>E–F</strong> علامة وشركة، <strong>I</strong> الموقع، <strong>J</strong> ملاحظات، <strong>K</strong> السعر. البحث يشمل هذه الحقول.</p>
-        <input id="locationQueryInput" placeholder="اسم الصنف أو الباركود أو الرقم الأصلي أو العلامة..." inputmode="search" autocomplete="off" />
+        <p class="muted" style="margin-top:10px;">ملف Excel: <strong>B</strong> الرقم الأصلي، <strong>C</strong> الصنف، <strong>D</strong> الباركود، <strong>E–F</strong> علامة وشركة، <strong>G</strong> الكمية، <strong>I</strong> الموقع، <strong>J</strong> ملاحظات، <strong>K</strong> باركود الوحدات، <strong>L</strong> السعر.</p>
+        <label class="muted" for="locationTextQueryInput" style="display:block;font-size:13px;margin-top:8px;">بحث بالصنف / الرقم الأصلي / الملاحظات (بدون الباركود)</label>
+        <input id="locationTextQueryInput" placeholder="اسم الصنف، الرقم الأصلي، أو ملاحظات..." inputmode="search" autocomplete="off" />
+        <label class="muted" for="locationBarcodeQueryInput" style="display:block;font-size:13px;margin-top:10px;">بحث بالباركود فقط</label>
+        <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب بالكيبورد أو الكاميرا (أرقام وحروف لاتينية)..." inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <p class="muted" style="font-size:12px;margin:4px 0 0;">يمكن كتابة الباركود مع أو بدون <strong>-</strong> أو مسافات — التطبيع يتم تلقائياً عند البحث.</p>
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث الموقع</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">📷 كاميرا الباركود</button>
         </div>
-        <p class="muted" style="font-size:12px;">على iPhone: Safari + HTTPS + السماح بالكاميرا. إن تعذّر الفتح، اكتب الباركود يدوياً.</p>
+        <p class="muted" style="font-size:12px;">إن وُجد نص في مربع الباركود يُستخدم <strong>هو</strong> فقط للبحث (ويُتجاهل المربع الأول). الكاميرا تقرأ <strong>باركوداً خطّياً فقط</strong> (ليس QR). على iPhone: Safari + HTTPS + السماح بالكاميرا.</p>
       </div>
 
       <div id="stats" class="muted"></div>
@@ -2912,9 +3463,10 @@ def home() -> str:
           <thead>
             <tr>
               <th>اسم الصنف</th>
-              <th>الشركة المنتجة</th>
+              <th>الشركة</th>
               <th>الرقم الأصلي</th>
               <th>الباركود</th>
+              <th>الكمية</th>
               <th>الموقع</th>
               <th>السعر</th>
             </tr>
@@ -2927,10 +3479,15 @@ def home() -> str:
 
   <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
-      <strong>قراءة الباركود</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">المستطيل <strong>عريض</strong> لـ Code 128. أضِئ الملصق وثبّت الجهاز. على <strong>Chrome / أندرويد</strong> يُستخدم مسرّع القراءة التلقائي عند توفره.</p>
+      <strong>قراءة الباركود الخطّي</strong>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">المستطيل <strong>عريض</strong> لـ Code 128 وغيره — <strong>لا يُقرأ QR</strong>. أضِئ الملصق وثبّت الجهاز؛ القراءة تُؤكَّد بعد تكرار نفس القيمة.</p>
+      <p id="barcodeScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">وجّه الكاميرا على الباركود</p>
+      <p id="barcodeScanDebug" class="muted" style="font-size:11px;margin:0 0 8px;line-height:1.35;display:none;word-break:break-all;"></p>
       <div id="barcodeScannerRegion"></div>
-      <button type="button" class="btn-secondary" onclick="closeBarcodeScanner()">إغلاق الكاميرا</button>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
+        <button type="button" id="barcodeScanConfirmBtn" class="btn-secondary" disabled>تأكيد القراءة</button>
+        <button type="button" class="btn-secondary" onclick="closeBarcodeScanner()">إغلاق الكاميرا</button>
+      </div>
     </div>
   </div>
 
@@ -2975,6 +3532,93 @@ def home() -> str:
 
     let html5QrLocationScanner = null;
     let locationBarcodeRunning = false;
+    const LOCATION_BARCODE_SCAN_MIN_LEN = 5;
+    const LOCATION_BARCODE_SEARCH_KEYS_MAX_JS = 6;
+    let locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
+
+    function stripBarcodeInvisibleJs(str) {
+      return String(str || '').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF\u2060\u00AD]/g, '');
+    }
+    function translateDigitsLatinJs(str) {
+      let out = '';
+      for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        if (c >= 0x0660 && c <= 0x0669) out += String.fromCharCode(c - 0x0660 + 0x30);
+        else if (c >= 0x06F0 && c <= 0x06F9) out += String.fromCharCode(c - 0x06F0 + 0x30);
+        else out += str.charAt(i);
+      }
+      return out;
+    }
+    function normalizeBarcodeLookupKeyClient(raw) {
+      if (!raw || !String(raw).trim()) return '';
+      let s = stripBarcodeInvisibleJs(raw);
+      s = translateDigitsLatinJs(s).trim();
+      const alnum = s.replace(/[^A-Za-z0-9]/g, '');
+      if (!alnum) return '';
+      const up = alnum.toUpperCase();
+      if (/^\\d+$/.test(up)) {
+        return up;
+      }
+      return up;
+    }
+    function barcodeSearchKeysClient(raw) {
+      if (!raw || !String(raw).trim()) return [];
+      let s = stripBarcodeInvisibleJs(raw);
+      s = translateDigitsLatinJs(s).trim();
+      const alnum = s.replace(/[^A-Za-z0-9]/g, '');
+      if (!alnum) return [];
+      const up = alnum.toUpperCase();
+      const out = [];
+      if (/^\\d+$/.test(up)) {
+        const full = up;
+        const stripped = full.replace(/^0+/, '') || '0';
+        [full, stripped].forEach((k) => { if (k && !out.includes(k)) out.push(k); });
+      } else {
+        out.push(up);
+      }
+      return out.slice(0, LOCATION_BARCODE_SEARCH_KEYS_MAX_JS);
+    }
+    function lightSanitizeBarcodeValue(s) {
+      return stripBarcodeInvisibleJs(String(s || '')).trim();
+    }
+    function sanitizeScanResult(raw) {
+      let t = stripBarcodeInvisibleJs(String(raw || ''));
+      t = t.replace(/^[\\s\\u00A0\\-–—:_./\\\\]+|[\\s\\u00A0\\-–—:_./\\\\]+$/g, '').trim();
+      return t;
+    }
+    function logBarcodeClientDebug() {
+      try {
+        if (localStorage.getItem('locationBarcodeDebug') === '1')
+          console.log.apply(console, ['[barcode-ui]'].concat([].slice.call(arguments)));
+      } catch (_) {}
+    }
+    function setBarcodeScanStatus(text) {
+      const el = document.getElementById('barcodeScanStatus');
+      if (el) el.innerText = text || '';
+    }
+    function setBarcodeScanDebug(raw, canon) {
+      const el = document.getElementById('barcodeScanDebug');
+      if (!el) return;
+      if (!raw && !canon) {
+        el.style.display = 'none';
+        el.innerText = '';
+        return;
+      }
+      el.style.display = 'block';
+      const r = String(raw || '');
+      const short = r.length > 52 ? r.slice(0, 50) + '…' : r;
+      el.innerText = 'آخر قراءة: ' + short + ' ← بعد التطبيع: ' + String(canon || '');
+    }
+
+    async function acceptLocationScanAndSearch(canon, raw) {
+      logBarcodeClientDebug('accept-scan', { raw, canon });
+      const inp = document.getElementById('locationBarcodeQueryInput');
+      if (inp) inp.value = canon;
+      setBarcodeScanStatus('تم التقاط الباركود');
+      try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
+      await closeBarcodeScanner();
+      searchNow('location');
+    }
 
     async function openLocationBarcodeScanner() {
       if (activeSearchTab !== 'location') setSearchTab('location');
@@ -2985,12 +3629,23 @@ def home() -> str:
         return;
       }
       await closeBarcodeScanner();
+      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
       modal.classList.add('active');
       modal.setAttribute('aria-hidden', 'false');
+      setBarcodeScanStatus('وجّه الكاميرا على الباركود');
+      setBarcodeScanDebug('', '');
+      const confirmBtn = document.getElementById('barcodeScanConfirmBtn');
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.onclick = () => {
+          if (locScanSession.pendingCanon) {
+            acceptLocationScanAndSearch(locScanSession.pendingCanon, locScanSession.pendingRaw || '');
+          }
+        };
+      }
       document.getElementById(regionId).innerHTML = '';
       const scanner = new Html5Qrcode(regionId);
       html5QrLocationScanner = scanner;
-      /* خطي فقط — بدون QR لتقليل وقت فك الشفرة على كل إطار */
       const fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined')
         ? [
             Html5QrcodeSupportedFormats.CODE_128,
@@ -3003,12 +3658,11 @@ def home() -> str:
             Html5QrcodeSupportedFormats.UPC_E
           ]
         : null;
-      /* سرعة: fps أعلى + دقة فيديو أوضح + BarcodeDetector الأصلي (Chrome/Android) عند الدعم */
       const cfg = {
-        fps: 20,
+        fps: 22,
         aspectRatio: 1.777,
         disableFlip: false,
-        useBarCodeDetectorIfSupported: true,
+        useBarCodeDetectorIfSupported: false,
         videoConstraints: {
           facingMode: 'environment',
           width: { ideal: 1280, min: 640 },
@@ -3017,18 +3671,51 @@ def home() -> str:
         qrbox: (viewfinderWidth, viewfinderHeight) => {
           const vw = Math.max(1, viewfinderWidth);
           const vh = Math.max(1, viewfinderHeight);
-          const w = Math.min(vw - 8, Math.floor(vw * 0.96));
-          const h = Math.max(100, Math.min(240, Math.floor(vh * 0.48)));
-          return { width: w, height: Math.min(h, vh - 12) };
+          const w = Math.min(vw - 8, Math.floor(vw * 0.98));
+          const h = Math.max(88, Math.min(220, Math.floor(vh * 0.4)));
+          return { width: w, height: Math.min(h, vh - 16) };
         }
       };
       if (fmt) cfg.formatsToSupport = fmt;
-      const onDecode = (decodedText) => {
-        const t = String(decodedText || '').trim();
-        if (!t) return;
-        document.getElementById('locationQueryInput').value = t;
-        closeBarcodeScanner();
-        searchNow('location');
+      function scanLooksLikeQr(decodedResult) {
+        if (!decodedResult || typeof decodedResult !== 'object') return false;
+        const r = decodedResult.result || decodedResult;
+        const f = r && (r.format != null ? r.format : r.barcodeFormat);
+        if (f == null) return false;
+        const s = String(f).toUpperCase();
+        if (s.includes('QR') || s.includes('AZTEC') || s.includes('DATA_MATRIX')) return true;
+        return false;
+      }
+      const onDecode = (decodedText, decodedResult) => {
+        if (scanLooksLikeQr(decodedResult)) return;
+        const now = Date.now();
+        if (now - locScanSession.lastCbMs < 45) return;
+        locScanSession.lastCbMs = now;
+        const raw = sanitizeScanResult(decodedText);
+        if (!raw) return;
+        const canon = normalizeBarcodeLookupKeyClient(raw);
+        logBarcodeClientDebug('scan-frame', { raw, canon });
+        setBarcodeScanDebug(raw, canon);
+        if (!canon || canon.length < LOCATION_BARCODE_SCAN_MIN_LEN) {
+          setBarcodeScanStatus('قراءة قصيرة — حرّك الكاميرا قليلاً');
+          return;
+        }
+        if (canon !== locScanSession.lastCanon) {
+          locScanSession.lastCanon = canon;
+          locScanSession.streak = 1;
+        } else {
+          locScanSession.streak += 1;
+        }
+        locScanSession.pendingCanon = canon;
+        locScanSession.pendingRaw = raw;
+        if (confirmBtn) confirmBtn.disabled = false;
+        setBarcodeScanStatus('جاري التحقق… ثبّت الكاميرا');
+        locScanSession.window.push({ t: now, c: canon });
+        locScanSession.window = locScanSession.window.filter((x) => now - x.t < 850);
+        const sameInWindow = locScanSession.window.filter((x) => x.c === canon).length;
+        if (locScanSession.streak >= 2 || sameInWindow >= 2) {
+          acceptLocationScanAndSearch(canon, raw);
+        }
       };
       const noopScan = () => {};
       try {
@@ -3038,7 +3725,7 @@ def home() -> str:
         try {
           const cfgLite = Object.assign({}, cfg);
           delete cfgLite.videoConstraints;
-          cfgLite.fps = 16;
+          cfgLite.fps = 18;
           await scanner.start({ facingMode: 'environment' }, cfgLite, onDecode, noopScan);
           locationBarcodeRunning = true;
         } catch (e2) {
@@ -3053,8 +3740,10 @@ def home() -> str:
 
     async function closeBarcodeScanner() {
       const modal = document.getElementById('barcodeModal');
-      modal.classList.remove('active');
-      modal.setAttribute('aria-hidden', 'true');
+      if (modal) {
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+      }
       if (html5QrLocationScanner && locationBarcodeRunning) {
         try { await html5QrLocationScanner.stop(); } catch (_) {}
         try { await html5QrLocationScanner.clear(); } catch (_) {}
@@ -3063,6 +3752,12 @@ def home() -> str:
       html5QrLocationScanner = null;
       const el = document.getElementById('barcodeScannerRegion');
       if (el) el.innerHTML = '';
+      const confirmBtn = document.getElementById('barcodeScanConfirmBtn');
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.onclick = null;
+      }
+      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
     }
 
     async function uploadWiperExcelFromInput(inputId, statusId) {
@@ -3606,7 +4301,7 @@ def home() -> str:
       const samples = cells.slice(0, 11).map(cleanCellUploadJs);
       const joined = normalizeTextForSearch(samples.join(' '));
       let hits = 0;
-      const kws = ['صنف', 'اسم', 'موقع', 'باركود', 'شركة', 'منتج', 'مكان', 'علامه', 'ملاحظ', 'سعر', 'location', 'barcode', 'company', 'brand', 'price'];
+      const kws = ['صنف', 'اسم', 'موقع', 'باركود', 'شركة', 'منتج', 'مكان', 'علامه', 'ملاحظ', 'سعر', 'كميه', 'كمية', 'location', 'barcode', 'company', 'brand', 'price'];
       for (const kw of kws) {
         if (joined.includes(normalizeTextForSearch(kw))) hits++;
       }
@@ -3642,24 +4337,28 @@ def home() -> str:
         for (let ri = dataStart; ri < grid.length; ri++) {
           const r = grid[ri] || [];
           const vals = [];
-          for (let c = 0; c < 11; c++) vals.push(cleanCellUploadJs(r[c]));
+          for (let c = 0; c < 12; c++) vals.push(cleanCellUploadJs(r[c]));
           const original_number = vals[1];
           const item_name = vals[2];
           const barcode = vals[3];
           const brand = vals[4];
           const company = vals[5];
+          const quantity = vals[6];
           const location = vals[8];
           const notes = vals[9];
-          const price = vals[10];
-          if (!item_name && !location && !company && !original_number && !barcode && !brand && !notes && !price) continue;
+          const unit_barcodes = vals[10];
+          const price = vals[11];
+          if (!item_name && !location && !company && !original_number && !barcode && !unit_barcodes && !brand && !notes && !quantity && !price) continue;
           rows.push({
             item_name,
             location,
             company,
             original_number,
             barcode,
+            unit_barcodes,
             brand,
             notes,
+            quantity,
             price,
             source_sheet: String(sheetName)
           });
@@ -4768,11 +5467,12 @@ def home() -> str:
       try {
         setSyncInfo('جاري تنزيل نسخة البيانات للهاتف...');
         const res = await fetch('/sync/data', { cache: 'no-store' });
-        if (!res.ok) throw new Error('sync-data-failed');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         await saveLocalSnapshot(data);
-      } catch (_) {
-        setSyncInfo('فشل تنزيل نسخة الهاتف. تأكد أن السيرفر شغال ثم أعد المحاولة.');
+      } catch (err) {
+        const m = (err && err.message) ? String(err.message) : '';
+        setSyncInfo(`فشل تنزيل نسخة الهاتف. ${m ? '(' + m + ') ' : ''}تحقق من الإنترنت أو أن السيرفر غير مشغول ثم أعد المحاولة.`);
       }
     }
 
@@ -4996,21 +5696,32 @@ def home() -> str:
       const locTable = document.getElementById('locationsTable');
 
       if (effectiveMode === 'location') {
-        const lq = document.getElementById('locationQueryInput').value.trim();
-        localStorage.setItem('lastLocationQuery', lq);
+        const lqText = document.getElementById('locationTextQueryInput').value.trim();
+        let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
+        const lqCanon = normalizeBarcodeLookupKeyClient(lqBc);
+        const barcodeDebug = localStorage.getItem('locationBarcodeDebug') === '1';
+        logBarcodeClientDebug('search-location', { raw: lqBc, canonical: lqCanon, debug: barcodeDebug });
+        localStorage.setItem('lastLocationTextQuery', lqText);
+        localStorage.setItem('lastLocationBarcodeQuery', lqBc);
+        document.getElementById('locationBarcodeQueryInput').value = lqBc;
         document.getElementById('names').innerHTML = '';
         document.getElementById('resultsTable').style.display = 'none';
         wiperWrap.style.display = 'none';
         wipersTable.style.display = 'none';
-        if (!lq) {
+        if (!lqText && !lqBc) {
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
-          document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب اسم الصنف أو الباركود أو استخدم الكاميرا.';
+          document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب في مربع الصنف/الرقم أو في مربع الباركود، أو استخدم الكاميرا.';
           return;
         }
         let data = null;
         try {
-          const params = new URLSearchParams({ q: lq });
+          const params = lqBc ? new URLSearchParams() : new URLSearchParams({ q: lqText });
+          if (lqBc) {
+            params.set('q_barcode', lqBc);
+            if (lqCanon) params.set('q_barcode_canonical', lqCanon);
+            if (barcodeDebug) params.set('barcode_debug', '1');
+          }
           const ctrl = new AbortController();
           const to = setTimeout(() => ctrl.abort(), 90000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
@@ -5023,15 +5734,28 @@ def home() -> str:
           const parsed = await readJsonSafe(res);
           if (!res.ok) throw new Error(parsed.detail || `search-locations-${res.status}`);
           data = parsed;
-        } catch (_) {
-          document.getElementById('stats').innerText = 'تعذر البحث في المواقع. تأكد من الاتصال بالخادم.';
+        } catch (err) {
+          let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار (٩٠ ثانية). أعد المحاولة.';
+          else if (err && err.message) {
+            const m = String(err.message);
+            if (m.includes('search-locations-')) hint = `ردّ الخادم (${m.replace('search-locations-', 'رمز ')}) — قد يكون السيرفر مشغولاً؛ أعد المحاولة بعد قليل.`;
+            else if (m !== 'Failed to fetch') hint = m;
+          }
+          document.getElementById('stats').innerText = `تعذر البحث في المواقع: ${hint}`;
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
           return;
         }
         const safeRows = Array.isArray(data && data.rows) ? data.rows : [];
         const safeTotal = Number((data && data.total_rows) || safeRows.length || 0);
-        document.getElementById('stats').innerText = `عدد نتائج المواقع: ${safeTotal} | المصدر: الخادم`;
+        const locSrc = lqBc ? `بحث بالباركود فقط | عدد النتائج: ${safeTotal}` : `عدد نتائج المواقع: ${safeTotal}`;
+        let statLine = `${locSrc} | المصدر: الخادم`;
+        if (barcodeDebug && data && data.barcode_meta) {
+          statLine += ` | تتبع: ${data.barcode_meta.match_kind || ''} — مفاتيح: ${(data.barcode_meta.keys_tried || []).join(',')}`;
+          logBarcodeClientDebug('search-result-meta', data.barcode_meta);
+        }
+        document.getElementById('stats').innerText = statLine;
         const lBody = locTable.querySelector('tbody');
         lBody.innerHTML = '';
         safeRows.forEach((r) => {
@@ -5040,6 +5764,7 @@ def home() -> str:
             <td>${escapeHtml(String(r.company ?? ''))}</td>
             <td>${escapeHtml(String(r.original_number ?? ''))}</td>
             <td>${escapeHtml(String(r.barcode ?? ''))}</td>
+            <td>${escapeHtml(String(r.quantity ?? ''))}</td>
             <td><strong>${escapeHtml(String(r.location ?? ''))}</strong></td>
             <td>${escapeHtml(String(r.price ?? ''))}</td>`;
           lBody.appendChild(tr);
@@ -5048,7 +5773,9 @@ def home() -> str:
         locWrap.style.display = showL ? 'block' : 'none';
         locTable.style.display = showL ? 'table' : 'none';
         if (!showL) {
-          document.getElementById('stats').innerText = 'لا توجد نتيجة لهذا البحث في ملف المواقع.';
+          document.getElementById('stats').innerText = lqBc
+            ? 'لا يوجد صنف بهذا الباركود في ملف المواقع.'
+            : 'لا توجد نتيجة لهذا البحث في ملف المواقع.';
         }
         return;
       }
@@ -5089,8 +5816,15 @@ def home() -> str:
           const parsed = await readJsonSafe(res);
           if (!res.ok) throw new Error(parsed.detail || `search-wipers-${res.status}`);
           data = parsed;
-        } catch (_) {
-          document.getElementById('stats').innerText = 'تعذر البحث في القشطان. تأكد من الاتصال بالخادم.';
+        } catch (err) {
+          let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار. أعد المحاولة.';
+          else if (err && err.message) {
+            const m = String(err.message);
+            if (m.includes('search-wipers-')) hint = `ردّ الخادم (${m.replace('search-wipers-', 'رمز ')}) — أعد المحاولة لاحقاً.`;
+            else if (m !== 'Failed to fetch') hint = m;
+          }
+          document.getElementById('stats').innerText = `تعذر البحث في القشطان: ${hint}`;
           wiperWrap.style.display = 'none';
           wipersTable.style.display = 'none';
           return;
@@ -5282,7 +6016,18 @@ def home() -> str:
       safeRows.forEach(r => {
         const sizeLabel = String(r.size_label || '');
         const nameForUi = stripTrailingSpreadsheetFileFromDisplayName(r.item_name || '');
-        const nameCell = `${escapeHtml(nameForUi)}${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
+        const originalNumbers = String(r.original_numbers || '');
+        const copyIcon =
+          '<button type="button" title="نسخ الرقم الأصلي + اكتشاف الموقع" aria-label="نسخ الرقم الأصلي" data-copy="1" ' +
+          'style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;margin-left:8px;' +
+          'border:0;background:transparent;color:#1a2744;cursor:pointer;line-height:1;opacity:.9;" ' +
+          'onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=.9">' +
+          '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="display:block">' +
+          '<rect x="8" y="3" width="12" height="14" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2"/>' +
+          '<rect x="4" y="7" width="12" height="14" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2"/>' +
+          '</svg>' +
+          '</button>';
+        const nameCell = `${copyIcon}<span>${escapeHtml(nameForUi)}</span>${sizeLabel ? `<div class="quick-size">${escapeHtml(sizeLabel)}</div>` : ''}`;
         const itemNumberDisplay = String(r.company_number || r.item_number || '');
         const fileName = String(r.source_file || '').trim();
         const tr = document.createElement('tr');
@@ -5291,6 +6036,14 @@ def home() -> str:
                         <td>${nameCell}</td>
                         <td>${escapeHtml(itemNumberDisplay)}</td>
                         <td>${escapeHtml(String(r.alternatives ?? ''))}</td>`;
+        const copyBtn = tr.querySelector('button[data-copy="1"]');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            copyOriginalAndGoToLocation(originalNumbers, itemNumberDisplay);
+          });
+        }
         body.appendChild(tr);
       });
       table.style.display = safeRows.length ? 'table' : 'none';
@@ -5318,7 +6071,18 @@ def home() -> str:
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
-      document.getElementById('locationQueryInput').value = localStorage.getItem('lastLocationQuery') || '';
+      {
+        let lt = localStorage.getItem('lastLocationTextQuery');
+        if (lt == null || lt === '') {
+          const legacy = localStorage.getItem('lastLocationQuery');
+          if (legacy) {
+            lt = legacy;
+            try { localStorage.setItem('lastLocationTextQuery', legacy); } catch (_) {}
+          }
+        }
+        document.getElementById('locationTextQueryInput').value = lt || '';
+        document.getElementById('locationBarcodeQueryInput').value = localStorage.getItem('lastLocationBarcodeQuery') || '';
+      }
       updateSizeInputsLayout();
 
       queryInput.addEventListener('input', () => {
@@ -5357,12 +6121,26 @@ def home() -> str:
           }, 250);
         });
       });
-      document.getElementById('locationQueryInput').addEventListener('input', () => {
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          if (activeSearchTab === 'location') searchNow('location');
-        }, 300);
+      ['locationTextQueryInput', 'locationBarcodeQueryInput'].forEach((id) => {
+        document.getElementById(id).addEventListener('input', () => {
+          clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            if (activeSearchTab === 'location') searchNow('location');
+          }, 300);
+        });
       });
+      const locBcEl = document.getElementById('locationBarcodeQueryInput');
+      if (locBcEl) {
+        locBcEl.addEventListener('paste', () => {
+          setTimeout(() => {
+            locBcEl.value = lightSanitizeBarcodeValue(locBcEl.value);
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+              if (activeSearchTab === 'location') searchNow('location');
+            }, 200);
+          }, 0);
+        });
+      }
 
       clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(() => {
@@ -5387,6 +6165,77 @@ def home() -> str:
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+    }
+
+    function looksLikeOriginalNumber(token) {
+      const t = String(token || '').trim();
+      if (!t || t.length < 2) return false;
+      if (!/\d|[\u0660-\u0669\u06F0-\u06F9]/.test(t)) return false;
+      const noDigits = t.replace(/[\u0660-\u0669\u06F0-\u06F9\d]/g, '');
+      if (/[\u0600-\u06FF]/.test(noDigits)) return false;
+      const cleaned = t.replace(/[\s\-_.\/\\|:،؛,]+/g, '');
+      if (!cleaned || !/^[\dA-Za-z\u0660-\u0669\u06F0-\u06F9]+$/u.test(cleaned)) return false;
+      return /\d|[\u0660-\u0669\u06F0-\u06F9]/.test(cleaned);
+    }
+
+    function pickFirstOriginalNumber(raw) {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      const parts = s.split(/[\s,،;؛|/\\]+/).map(p => String(p || '').trim()).filter(Boolean);
+      for (const p of parts) {
+        if (looksLikeOriginalNumber(p)) return p;
+      }
+      const scanRe = /[A-Za-z0-9][A-Za-z0-9\-_.\/\\]{0,48}\d[A-Za-z0-9\-_.\/\\]{0,48}|\d[A-Za-z0-9\-_.\/\\]{1,49}/g;
+      let m;
+      while ((m = scanRe.exec(s)) !== null) {
+        if (looksLikeOriginalNumber(m[0])) return m[0];
+      }
+      return '';
+    }
+
+    async function copyTextToClipboard(text) {
+      const t = String(text || '').trim();
+      if (!t) return false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(t);
+          return true;
+        }
+      } catch (_) {}
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        ta.style.pointerEvents = 'none';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!ok;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function copyOriginalAndGoToLocation(originalCandidate, fallbackCandidate = '') {
+      const picked = pickFirstOriginalNumber(originalCandidate) || pickFirstOriginalNumber(fallbackCandidate);
+      if (!picked) return;
+
+      await copyTextToClipboard(picked);
+
+      setSearchTab('location');
+      const textEl = document.getElementById('locationTextQueryInput');
+      const bcEl = document.getElementById('locationBarcodeQueryInput');
+      if (bcEl) bcEl.value = '';
+      if (textEl) {
+        textEl.value = picked;
+        try { localStorage.setItem('lastLocationTextQuery', picked); } catch (_) {}
+        textEl.focus();
+        textEl.setSelectionRange(textEl.value.length, textEl.value.length);
+      }
+      await searchNow('location');
     }
 
     async function loadStats() {
@@ -5519,7 +6368,7 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 @app.post("/upload_location_sheet")
 async def upload_location_sheet(file: UploadFile = File(...)) -> dict:
     """
-    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: B–K (رقم أصلي، صنف، باركود، علامة، شركة، …، موقع I، ملاحظات J، سعر K).
+    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: B–L شاملاً G الكمية، I موقع، J ملاحظات، K باركود الوحدات، L سعر.
     يُخزَّن تحت اسم مصدر ثابت ويُستبدل السابق من نفس الزر.
     """
     if not file.filename:
@@ -5721,6 +6570,7 @@ def upload_location_rows_start(payload: LocationRowsStartIn) -> dict:
         return {"skip": True}
     conn = get_db()
     try:
+        ensure_location_rows_import_schema(conn)
         if payload.replace_entire_table:
             conn.execute("DELETE FROM location_rows")
         else:
@@ -5736,7 +6586,7 @@ def upload_location_rows_chunk(payload: LocationRowsChunkIn) -> dict:
     if not payload.rows:
         return {"inserted_rows": 0}
     source_key = normalize_source_file_name(payload.file_name)
-    rows_to_insert: list[tuple[str, str, str, str, str, str, str, str, str, str]] = []
+    rows_to_insert: list[tuple[str, ...]] = []
     for row in payload.rows:
         if not any(
             [
@@ -5745,40 +6595,68 @@ def upload_location_rows_chunk(payload: LocationRowsChunkIn) -> dict:
                 row.company,
                 row.original_number,
                 row.barcode,
+                row.unit_barcodes,
                 row.brand,
                 row.notes,
+                row.quantity,
                 row.price,
             ]
         ):
             continue
+        bc = row.barcode.strip()
+        ub = (row.unit_barcodes or "").strip()
+        bc_store = " | ".join(x for x in [bc, ub] if x)
+        in_item = row.item_name.strip()
+        in_co = row.company.strip()
+        in_br = row.brand.strip()
+        in_no = row.notes.strip()
+        in_orig = row.original_number.strip()
+        in_qty = (row.quantity or "").strip()
+        nb = location_row_normalized_barcode_value(bc, ub)
+        nt = location_row_normalized_text_value(in_item, in_co, in_br, in_no, in_orig)
         rows_to_insert.append(
             (
-                row.item_name.strip(),
+                in_item,
                 row.location.strip(),
-                row.company.strip(),
-                row.original_number.strip(),
-                normalize_barcode_for_storage(row.barcode),
-                row.brand.strip(),
-                row.notes.strip(),
+                in_co,
+                in_orig,
+                bc_store,
+                in_br,
+                in_no,
+                in_qty,
                 row.price.strip(),
                 source_key,
                 (row.source_sheet or "Sheet1").strip(),
+                nb,
+                nt,
             )
         )
     if not rows_to_insert:
         return {"inserted_rows": 0}
     conn = get_db()
     try:
-        conn.executemany(
-            """
-            INSERT INTO location_rows (
-                item_name, location, company, original_number, barcode,
-                brand, notes, price, source_file, source_sheet
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows_to_insert,
-        )
-        conn.commit()
+        ensure_location_rows_import_schema(conn)
+        try:
+            conn.executemany(
+                """
+                INSERT INTO location_rows (
+                    item_name, location, company, original_number, barcode,
+                    brand, notes, quantity, price, source_file, source_sheet,
+                    normalized_barcode, normalized_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows_to_insert,
+            )
+            conn.commit()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            detail = f"{type(exc).__name__}: {exc!s}"
+            if len(detail) > 900:
+                detail = detail[:900] + "…"
+            raise HTTPException(status_code=400, detail=f"تعذر حفظ دفعة المواقع: {detail}") from exc
     finally:
         conn.close()
     return {"inserted_rows": len(rows_to_insert)}
@@ -5998,7 +6876,7 @@ def search(
     quick_items = []
     seen_quick = set()
     for index, row in enumerate(rows):
-        row_dict = dict(row)
+        row_dict = sql_row_to_dict(row)
         matched_alt = extract_matched_alternative(
             row_dict.get("alternatives", ""),
             text_tokens,
@@ -6122,7 +7000,7 @@ def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dic
 
     prepared: list[dict[str, Any]] = []
     for index, row in enumerate(rows_out):
-        d = dict(row)
+        d = sql_row_to_dict(row)
         d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{index}"
         d["engine"] = reverse_wiper_engine_display(d.get("engine"))
         prepared.append(d)
@@ -6130,61 +7008,178 @@ def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dic
 
 
 @app.get("/search_locations")
-def search_locations(q: str = "") -> dict:
-    tokens = tokenize_query(q or "")
-    parsed = [parse_query_year_token(t) for t in tokens]
-    text_tokens = [t for t, ys in zip(tokens, parsed) if ys is None]
-    text_tokens = coalesce_location_barcode_query_tokens(q or "", text_tokens)
-    if not text_tokens:
-        return {"total_rows": 0, "rows": []}
+def search_locations(
+    q: str = "",
+    q_barcode: str = "",
+    q_barcode_canonical: str = "",
+    barcode_debug: int = Query(default=0, ge=0, le=1),
+    limit: int = Query(default=LOCATION_SEARCH_LIMIT_DEFAULT, ge=1, le=LOCATION_SEARCH_LIMIT_MAX),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """
+    q: بحث نصي (normalized_text إن وُجد، وإلا مطابقة على أعمدة الصنف/الشركة/العلامة/الرقم/الملاحظات).
+    q_barcode: الباركود كما أدخله المستخدم (خام) — يُعاد تطبيعه على الخادم؛ إن وُجد يُتجاهل q.
+    q_barcode_canonical: اختياري من الواجهة للمطابقة والتتبع؛ لا يُستخدم للاستعلام دون إعادة تطبيع الخادم.
+    barcode_debug=1: إخراج تتبع خفيف في استجابة الـ JSON وفي سجلات الخادم (مع BARCODE_SEARCH_DEBUG أو الطلب).
+    """
+    lim = int(limit)
+    off = int(offset)
+    meta: dict[str, Any] = {"has_more": False, "limit": lim, "offset": off}
+    debug_req = bool(int(barcode_debug)) or BARCODE_SEARCH_DEBUG
 
     conn = get_db()
     try:
-        where_parts: list[str] = []
-        params: list[str] = []
+        try:
+            ensure_location_normalized_schema(conn)
+            try:
+                need_norm = conn.execute(
+                    """
+                    SELECT 1 AS x FROM location_rows
+                    WHERE normalized_text IS NULL
+                       OR normalized_barcode IS NULL
+                       OR (
+                         COALESCE(TRIM(barcode), '') <> ''
+                         AND TRIM(COALESCE(normalized_barcode, '')) = ''
+                       )
+                    LIMIT 1
+                    """
+                ).fetchone()
+            except Exception:
+                need_norm = None
+            if need_norm:
+                try:
+                    backfill_location_normalized_columns(conn, max_per_boot=5000, batch_size=1500)
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
-        for token in text_tokens:
-            token_clean = normalize_barcode(token)
-            if token_clean and token_clean.isdigit():
-                # إزالة أصفار بادئة للـ LIKE حتى يطابق 000022493 و 22493 معاً
-                stripped = token_clean.lstrip("0") or "0"
-                like = f"%{stripped}%"
-            elif any(ch.isdigit() for ch in str(token)):
-                like = f"%{str(token).strip()}%"
-            else:
-                like = f"%{token}%"
-            where_parts.append(
-                "(lower(COALESCE(item_name,'')) LIKE ? OR lower(COALESCE(barcode,'')) LIKE ? "
-                "OR lower(COALESCE(company,'')) LIKE ? OR lower(COALESCE(original_number,'')) LIKE ? "
-                "OR lower(COALESCE(brand,'')) LIKE ? OR lower(COALESCE(notes,'')) LIKE ? "
-                "OR lower(COALESCE(price,'')) LIKE ?)"
+            qb_raw = (q_barcode or "").strip()
+            if qb_raw:
+                b_keys = barcode_search_keys(qb_raw)
+                if not b_keys:
+                    _barcode_search_debug_log(
+                        debug_req, "no-keys-after-normalize", raw=qb_raw, keys=b_keys, kind="none"
+                    )
+                    out = {"total_rows": 0, "rows": [], **meta}
+                    if debug_req:
+                        out["barcode_meta"] = {
+                            "keys_tried": [],
+                            "match_kind": "none",
+                            "raw_input": qb_raw,
+                            "canonical_primary": "",
+                            "client_canonical_hint": (q_barcode_canonical or "").strip(),
+                        }
+                    return out
+
+                key_set = set(b_keys)
+                bc_primary = b_keys[0]
+                match_kind = ""
+
+                rows, has_more = _search_locations_sql_only(
+                    conn,
+                    mode="barcode",
+                    canonical_barcode=bc_primary,
+                    barcode_keys=b_keys,
+                    norm_tokens=[],
+                    limit=lim,
+                    offset=off,
+                )
+                if rows:
+                    match_kind = "exact_index"
+                if not rows:
+                    rows, has_more = _search_locations_barcode_python_fallback(
+                        conn, key_set, lim, off
+                    )
+                    if rows:
+                        match_kind = "legacy_barcode_fallback"
+                if not rows:
+                    rows, has_more = _search_locations_barcode_like_fallback(conn, key_set, lim, off)
+                    if rows:
+                        match_kind = "like_barcode_fallback"
+                if not rows:
+                    try:
+                        backfill_location_normalized_columns(conn, max_per_boot=8000, batch_size=2000)
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                    rows, has_more = _search_locations_sql_only(
+                        conn,
+                        mode="barcode",
+                        canonical_barcode=bc_primary,
+                        barcode_keys=b_keys,
+                        norm_tokens=[],
+                        limit=lim,
+                        offset=off,
+                    )
+                    if rows:
+                        match_kind = "exact_index_after_backfill"
+                if not rows:
+                    rows, has_more = _search_locations_barcode_python_fallback(
+                        conn, key_set, lim, off
+                    )
+                    if rows:
+                        match_kind = "legacy_barcode_fallback_after_backfill"
+                if not rows:
+                    rows, has_more = _search_locations_barcode_like_fallback(conn, key_set, lim, off)
+                    if rows:
+                        match_kind = "like_barcode_fallback_after_backfill"
+
+                _barcode_search_debug_log(
+                    debug_req,
+                    "barcode-search-done",
+                    raw=qb_raw,
+                    keys=b_keys,
+                    kind=match_kind or "none",
+                )
+
+                prepared = _prepare_location_search_rows(rows)
+                out = {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
+                if debug_req:
+                    out["barcode_meta"] = {
+                        "keys_tried": list(b_keys),
+                        "match_kind": match_kind or "none",
+                        "raw_input": qb_raw,
+                        "canonical_primary": bc_primary,
+                        "client_canonical_hint": (q_barcode_canonical or "").strip(),
+                        "server_canonical": normalize_barcode_lookup_key(qb_raw),
+                    }
+                return out
+
+            qt = (q or "").strip()
+            if not qt:
+                return {"total_rows": 0, "rows": [], **meta}
+
+            norm_tokens = location_text_search_norm_tokens(qt)
+            if not norm_tokens:
+                return {"total_rows": 0, "rows": [], **meta}
+            rows, has_more = _search_locations_sql_only(
+                conn,
+                mode="text",
+                canonical_barcode="",
+                barcode_keys=None,
+                norm_tokens=norm_tokens,
+                limit=lim,
+                offset=off,
             )
-            params.extend([like, like, like, like, like, like, like])
-
-        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
-        candidate_rows = conn.execute(
-            f"""
-            SELECT item_name, location, company, original_number, barcode, brand, notes, price,
-                   source_file, source_sheet
-            FROM location_rows
-            WHERE {where_clause}
-            ORDER BY item_name, barcode, source_file
-            LIMIT 40000
-            """,
-            params,
-        ).fetchall()
-
-        filtered = [r for r in candidate_rows if location_row_matches_combined_item_or_barcode(r, text_tokens)]
-        rows_out = filtered[:500]
+            prepared = _prepare_location_search_rows(rows)
+            return {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            detail = f"{type(exc).__name__}: {exc!s}"
+            if len(detail) > 800:
+                detail = detail[:800] + "…"
+            raise HTTPException(status_code=500, detail=detail) from exc
     finally:
         conn.close()
-
-    prepared: list[dict[str, Any]] = []
-    for index, row in enumerate(rows_out):
-        d = dict(row)
-        d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{index}"
-        prepared.append(d)
-    return {"total_rows": len(prepared), "rows": prepared}
 
 
 @app.get("/stats")
@@ -6280,6 +7275,24 @@ self.addEventListener('fetch', (event) => {{
   const req = event.request;
   if (req.method !== 'GET') return;
 
+  let path = '';
+  try {{
+    path = new URL(req.url).pathname || '';
+  }} catch (_) {{
+    path = '';
+  }}
+  // دائماً من الشبكة: فحص الإصدار، المزامنة، البحث، الرفع — لا كاش قديم يعطل التحديث على الهاتف
+  const networkOnly =
+    path === '/health' ||
+    path.startsWith('/sync/') ||
+    path.startsWith('/search') ||
+    path.startsWith('/upload') ||
+    path === '/stats';
+  if (networkOnly) {{
+    event.respondWith(fetch(req));
+    return;
+  }}
+
   if (req.mode === 'navigate') {{
     event.respondWith(
       fetch(req).then((res) => {{
@@ -6288,11 +7301,6 @@ self.addEventListener('fetch', (event) => {{
         return res;
       }}).catch(() => caches.match('/'))
     );
-    return;
-  }}
-
-  if (req.url.includes('/sync/') || req.url.includes('/search') || req.url.includes('/stats') || req.url.includes('/upload')) {{
-    event.respondWith(fetch(req).catch(() => caches.match(req)));
     return;
   }}
 
