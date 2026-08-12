@@ -870,10 +870,67 @@ def is_same_location_upload(file_name: str, content_hash: str, file_size: int) -
         conn.close()
 
 
+# أخطاء إملائية شائعة ↔ الشكل الصحيح (بحث أي شكل يعيد الاثنين)
+SEARCH_SPELLING_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"focus", "foucs"}),
+    frozenset({"tucson", "toucson"}),
+)
+SEARCH_SPELLING_CANON: dict[str, str] = {
+    "foucs": "focus",
+    "toucson": "tucson",
+}
+
+
+def apply_spelling_aliases(text: str) -> str:
+    """توحيد Foucs→Focus و Toucson→Tucson داخل النص المطبع (كلمات لاتينية فقط)."""
+    if not text:
+        return text
+
+    def repl(m: re.Match[str]) -> str:
+        w = m.group(0)
+        return SEARCH_SPELLING_CANON.get(w, w)
+
+    return re.sub(r"[a-z]+", repl, text)
+
+
+def spelling_query_variants(token: str) -> list[str]:
+    """كل أشكال الكتابة المكافئة لتوسيع LIKE في SQL (foucs↔focus، toucson↔tucson)."""
+    raw = str(token or "").translate(DIGIT_TRANS).strip().lower()
+    raw = re.sub(r"[\s\-_]+", " ", raw).strip()
+    if not raw:
+        return []
+    group: frozenset[str] | None = None
+    for g in SEARCH_SPELLING_GROUPS:
+        if raw in g:
+            group = g
+            break
+    if group is None:
+        # توكن مطبّع مسبقاً (مثل focus بعد توحيد foucs)
+        canon_raw = apply_spelling_aliases(raw)
+        for g in SEARCH_SPELLING_GROUPS:
+            if canon_raw in g:
+                group = g
+                break
+    if group is None:
+        return [raw]
+    out: list[str] = []
+    if raw in group:
+        out.append(raw)
+    else:
+        canon = apply_spelling_aliases(raw)
+        if canon in group:
+            out.append(canon)
+    for v in sorted(group):
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def normalize_text(text: str) -> str:
     text = str(text).translate(DIGIT_TRANS).translate(ARABIC_LETTER_TRANS).strip().lower()
     text = re.sub(r"[\u064B-\u065F\u0670\u06D6-\u06ED]", "", text)
     text = re.sub(r"[\s\-_]+", " ", text)
+    text = apply_spelling_aliases(text)
     return text
 
 
@@ -1857,38 +1914,57 @@ def _search_locations_sql_only(
     else:
         if not norm_tokens:
             return [], False
-        patterns = [p for p in (_location_like_pattern_contains(t) for t in norm_tokens) if p]
-        if not patterns:
+        # لكل توكن: كل أشكال الكتابة المكافئة (foucs↔focus …) كـ OR داخل التوكن، وAND بين التوكنات
+        token_pats: list[list[str]] = []
+        for t in norm_tokens:
+            pats = [
+                p
+                for p in (
+                    _location_like_pattern_contains(v) for v in spelling_query_variants(t)
+                )
+                if p
+            ]
+            pats = list(dict.fromkeys(pats))
+            if pats:
+                token_pats.append(pats)
+        if not token_pats:
             return [], False
         # مربع النص: normalized_text إن وُجد، أو مطابقة على أعمدة الصنف/الشركة/العلامة/الرقم/الملاحظات
         # (صفوف بلا normalized_text أو فارغ لا تظهر إن اعتمدنا normalized_text فقط)
-        norm_and = " AND ".join(["normalized_text LIKE ?"] * len(patterns))
+        norm_and = " AND ".join(
+            "(" + " OR ".join(["normalized_text LIKE ?"] * len(pats)) + ")" for pats in token_pats
+        )
         part_norm = (
             "(normalized_text IS NOT NULL AND TRIM(COALESCE(normalized_text,'')) <> '' AND "
             f"{norm_and})"
         )
         legacy_groups: list[str] = []
-        for _ in patterns:
-            legacy_groups.append(
-                "("
-                + " OR ".join(
-                    [
-                        "lower(COALESCE(item_name,'')) LIKE ?",
-                        "lower(COALESCE(company,'')) LIKE ?",
-                        "lower(COALESCE(brand,'')) LIKE ?",
-                        "lower(COALESCE(original_number,'')) LIKE ?",
-                        "lower(COALESCE(barcode,'')) LIKE ?",
-                        "lower(COALESCE(notes,'')) LIKE ?",
-                    ]
+        for pats in token_pats:
+            var_ors: list[str] = []
+            for _ in pats:
+                var_ors.append(
+                    "("
+                    + " OR ".join(
+                        [
+                            "lower(COALESCE(item_name,'')) LIKE ?",
+                            "lower(COALESCE(company,'')) LIKE ?",
+                            "lower(COALESCE(brand,'')) LIKE ?",
+                            "lower(COALESCE(original_number,'')) LIKE ?",
+                            "lower(COALESCE(barcode,'')) LIKE ?",
+                            "lower(COALESCE(notes,'')) LIKE ?",
+                        ]
+                    )
+                    + ")"
                 )
-                + ")"
-            )
+            legacy_groups.append("(" + " OR ".join(var_ors) + ")")
         part_legacy = "(" + " AND ".join(legacy_groups) + ")"
         where_sql = f"(({part_norm}) OR ({part_legacy}))"
         params: list[Any] = []
-        params.extend(patterns)
-        for pat in patterns:
-            params.extend([pat, pat, pat, pat, pat, pat])
+        for pats in token_pats:
+            params.extend(pats)
+        for pats in token_pats:
+            for pat in pats:
+                params.extend([pat, pat, pat, pat, pat, pat])
         params.extend([fetch, off])
         rows = conn.execute(
             f"""
@@ -4694,6 +4770,7 @@ def home() -> str:
       }
     }
 
+    const SEARCH_SPELLING_CANON_JS = { foucs: 'focus', toucson: 'tucson' };
     function normalizeTextForSearch(text) {
       return String(text || '')
         .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
@@ -4708,7 +4785,8 @@ def home() -> str:
         .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
         .trim()
         .toLowerCase()
-        .replace(/[\\s\\-_]+/g, ' ');
+        .replace(/[\\s\\-_]+/g, ' ')
+        .replace(/[a-z]+/g, w => SEARCH_SPELLING_CANON_JS[w] || w);
     }
 
     function normalizeTextCompactJs(text) {
@@ -6809,16 +6887,28 @@ def search(
             # Keep final matching in Python (normalized) to avoid false misses.
             if any(ch.isdigit() for ch in token):
                 continue
-            like = f"%{token}%"
-            where_parts.append("(lower(item_name) LIKE ? OR lower(alternatives) LIKE ? OR lower(source_file) LIKE ?)")
-            params.extend([like, like, like])
+            var_ors: list[str] = []
+            for v in spelling_query_variants(token):
+                like = f"%{v}%"
+                var_ors.append(
+                    "(lower(item_name) LIKE ? OR lower(alternatives) LIKE ? OR lower(source_file) LIKE ?)"
+                )
+                params.extend([like, like, like])
+            if var_ors:
+                where_parts.append("(" + " OR ".join(var_ors) + ")")
 
         for token in number_tokens:
             if any(ch.isdigit() for ch in token):
                 continue
-            like = f"%{token}%"
-            where_parts.append("(lower(company_number) LIKE ? OR lower(original_numbers) LIKE ? OR lower(notes) LIKE ?)")
-            params.extend([like, like, like])
+            var_ors = []
+            for v in spelling_query_variants(token):
+                like = f"%{v}%"
+                var_ors.append(
+                    "(lower(company_number) LIKE ? OR lower(original_numbers) LIKE ? OR lower(notes) LIKE ?)"
+                )
+                params.extend([like, like, like])
+            if var_ors:
+                where_parts.append("(" + " OR ".join(var_ors) + ")")
 
         if file_hints:
             fh_sql, fh_params = file_hints_sql_clause(file_hints)
@@ -6967,9 +7057,19 @@ def search_wipers(q_car: str = "", q_model: str = "", q_engine: str = "") -> dic
             for token in toks:
                 if any(ch.isdigit() for ch in token):
                     continue
-                like = f"%{token}%"
-                where_parts.append(f"lower(COALESCE({field_sql},'')) LIKE ?")
-                params.append(like)
+                variants = spelling_query_variants(token)
+                if not variants:
+                    continue
+                if len(variants) == 1:
+                    where_parts.append(f"lower(COALESCE({field_sql},'')) LIKE ?")
+                    params.append(f"%{variants[0]}%")
+                else:
+                    where_parts.append(
+                        "("
+                        + " OR ".join([f"lower(COALESCE({field_sql},'')) LIKE ?" for _ in variants])
+                        + ")"
+                    )
+                    params.extend([f"%{v}%" for v in variants])
 
         add_like_tokens("car_name", car_tt)
         add_like_tokens("car_model", model_tt)
