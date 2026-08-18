@@ -14,7 +14,7 @@ struct BarcodeScannerRepresentable: UIViewControllerRepresentable {
     var initialZoom: CGFloat
 
     init(
-        requiredMatches: Int = 3,
+        requiredMatches: Int = 2,
         minLength: Int = 6,
         initialZoom: CGFloat = 1.6,
         onCode: @escaping (String, VNBarcodeSymbology?) -> Void

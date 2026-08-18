@@ -3270,7 +3270,11 @@ init_db()
 def app_icon_png() -> FileResponse:
     if not APP_ICON_PATH.is_file():
         raise HTTPException(status_code=404, detail="App icon missing")
-    return FileResponse(APP_ICON_PATH, media_type="image/png")
+    return FileResponse(
+        APP_ICON_PATH,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/favicon.ico")
@@ -3278,7 +3282,11 @@ def favicon_ico() -> FileResponse:
     """متصفحات كثيرة تطلب /favicon.ico تلقائياً — نعيد نفس شعار PNG."""
     if not APP_ICON_PATH.is_file():
         raise HTTPException(status_code=404, detail="App icon missing")
-    return FileResponse(APP_ICON_PATH, media_type="image/png")
+    return FileResponse(
+        APP_ICON_PATH,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/apple-touch-icon.png")
@@ -3286,14 +3294,18 @@ def apple_touch_icon_png() -> FileResponse:
     """أيقونة 180×180 لـ Safari: إضافة إلى الشاشة الرئيسية فقط (ليست favicon التبويب)."""
     if not APPLE_TOUCH_ICON_PATH.is_file():
         raise HTTPException(status_code=404, detail="Apple touch icon missing")
-    return FileResponse(APPLE_TOUCH_ICON_PATH, media_type="image/png")
+    return FileResponse(
+        APPLE_TOUCH_ICON_PATH,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
-@app.get("/", response_class=HTMLResponse)
-def home() -> str:
+@app.get("/")
+def home() -> HTMLResponse:
     _icon_q = app_icon_cache_query()
     _at_q = apple_touch_icon_cache_query()
-    return (
+    html = (
         """
 <!doctype html>
 <html lang="ar" dir="rtl">
@@ -3340,10 +3352,10 @@ def home() -> str:
     .tab-btn.active { background: #0b66ff; color: #fff; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
-    /* جدول المواقع: iPhone — خط أوضح، تمرير أفقي سلس، صفوف متناوبة */
+    /* جدول المواقع: كل الأعمدة ظاهرة دفعة واحدة بدون تمرير أفقي */
     #locationsTableWrap {
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
+      overflow-x: hidden;
+      overflow-y: visible;
       width: 100%;
       max-width: 100%;
       margin-top: 10px;
@@ -3353,26 +3365,27 @@ def home() -> str:
       box-shadow: 0 1px 3px rgba(26,39,68,.06);
     }
     #locationsTable {
-      table-layout: auto;
+      table-layout: fixed;
       width: 100%;
-      min-width: 38rem;
-      font-size: 13px;
+      min-width: 0;
+      font-size: 11px;
       border-collapse: collapse;
     }
     #locationsTable th,
     #locationsTable td {
-      padding: 9px 8px;
-      font-size: 13px;
-      line-height: 1.45;
+      padding: 6px 3px;
+      font-size: 11px;
+      line-height: 1.35;
       vertical-align: top;
       white-space: normal;
       word-break: break-word;
       overflow-wrap: anywhere;
+      hyphens: auto;
       border-bottom: 1px solid #eceff5;
     }
     #locationsTable tbody tr:nth-child(even) { background: #f8f9fc; }
     #locationsTable th {
-      font-size: 12px;
+      font-size: 10px;
       font-weight: 800;
       color: #1a2744;
       background: linear-gradient(180deg, #f0f3f9 0%, #e8ecf5 100%);
@@ -3381,40 +3394,62 @@ def home() -> str:
       z-index: 1;
       box-shadow: 0 1px 0 #dde1eb;
     }
-    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) {
-      min-width: 5.75rem; max-width: 11rem;
-    }
-    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { min-width: 4.25rem; }
+    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 22%; }
+    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { width: 13%; }
     #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) {
-      min-width: 3.75rem; font-variant-numeric: tabular-nums;
+      width: 15%; font-variant-numeric: tabular-nums;
     }
     #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) {
-      min-width: 4.25rem; font-variant-numeric: tabular-nums; font-size: 12px;
+      width: 16%; font-variant-numeric: tabular-nums;
     }
     #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) {
-      min-width: 3rem; text-align: center; font-weight: 800;
+      width: 8%; text-align: center; font-weight: 800;
       font-variant-numeric: tabular-nums; color: #0d47a1;
     }
     #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) {
-      min-width: 4.5rem; font-weight: 700; color: #1a237e;
+      width: 16%; font-weight: 700; color: #1a237e;
     }
     #locationsTable th:nth-child(7), #locationsTable td:nth-child(7) {
-      min-width: 3.25rem; font-weight: 700; font-variant-numeric: tabular-nums; color: #1b5e20;
+      width: 10%; font-weight: 700; font-variant-numeric: tabular-nums; color: #1b5e20;
+    }
+    @media (max-width: 767px) {
+      #locationsTableWrap {
+        margin-left: -8px;
+        margin-right: -8px;
+        width: calc(100% + 16px);
+        max-width: none;
+      }
     }
     @media (min-width: 480px) {
-      #locationsTable { font-size: 14px; min-width: 44rem; }
-      #locationsTable th, #locationsTable td { padding: 10px 9px; font-size: 14px; }
-      #locationsTable th { font-size: 13px; }
-      #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { max-width: 16rem; }
+      #locationsTable { font-size: 12px; }
+      #locationsTable th, #locationsTable td { padding: 8px 5px; font-size: 12px; }
+      #locationsTable th { font-size: 11px; }
     }
     @media (min-width: 768px) {
-      #locationsTable { min-width: 0; width: 100%; }
-      #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { max-width: 20rem; width: 22%; }
+      #locationsTable { font-size: 14px; }
+      #locationsTable th, #locationsTable td { padding: 10px 8px; font-size: 14px; }
+      #locationsTable th { font-size: 13px; }
     }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
     .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: min(98vw, 640px); width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); box-sizing: border-box; }
     #barcodeScannerRegion { min-height: 280px; width: 100%; margin: 10px 0; border-radius: 10px; overflow: hidden; background: #111; }
+    html.barcode-scan-open, html.barcode-scan-open body { overflow: hidden; }
+    html.barcode-scan-open body { position: fixed; width: 100%; left: 0; right: 0; }
+    .barcode-modal-overlay.force-portrait {
+      width: 100vh; height: 100vw;
+      transform: rotate(-90deg) translateX(-100%);
+      transform-origin: top left;
+    }
+    .barcode-modal-overlay.force-portrait-left {
+      width: 100vh; height: 100vw;
+      transform: rotate(90deg) translateY(-100%);
+      transform-origin: top left;
+    }
+    .barcode-modal-overlay.force-portrait .barcode-modal-box,
+    .barcode-modal-overlay.force-portrait-left .barcode-modal-box {
+      max-width: min(96vh, 640px);
+    }
     .btn-camera { background: #1a2744; color: #fff; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .btn-row button { flex: 1; min-width: 120px; }
@@ -3534,7 +3569,7 @@ def home() -> str:
           <tbody></tbody>
         </table>
       </div>
-      <div id="locationsTableWrap" style="display:none; overflow:auto;">
+      <div id="locationsTableWrap" style="display:none;">
         <table id="locationsTable" style="display:none;">
           <thead>
             <tr>
@@ -3567,8 +3602,6 @@ def home() -> str:
     </div>
   </div>
 
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     let autoRefreshTimer = null;
     let searchDebounceTimer = null;
@@ -3582,8 +3615,36 @@ def home() -> str:
     /** حد آمن لحجم الملف في طلب واحد (Vercel ~4.5MB للطلب كاملاً مع multipart). */
     const VERCEL_SAFE_UPLOAD_BYTES = 2400000;
     const LOCATION_TAB_SOURCE_FILE = 'مواقع_من_التطبيق.xlsx';
+    const SCRIPT_XLSX = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    const SCRIPT_QR = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+    const loadedScripts = {};
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
+    let snapshotLoadPromise = null;
     let lastNotifiedVersion = '';
+
+    function loadExternalScript(src) {
+      if (loadedScripts[src]) return loadedScripts[src];
+      loadedScripts[src] = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => {
+          loadedScripts[src] = null;
+          reject(new Error('script-load-failed'));
+        };
+        document.head.appendChild(s);
+      });
+      return loadedScripts[src];
+    }
+    async function ensureXlsxLib() {
+      if (typeof XLSX !== 'undefined') return;
+      await loadExternalScript(SCRIPT_XLSX);
+    }
+    async function ensureQrLib() {
+      if (typeof Html5Qrcode !== 'undefined') return;
+      await loadExternalScript(SCRIPT_QR);
+    }
 
     function setSyncInfo(message) {
       document.getElementById('syncInfo').innerText = message || '';
@@ -3603,6 +3664,7 @@ def home() -> str:
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
+      if (activeSearchTab === 'location') ensureQrLib().catch(() => {});
       searchNow('auto');
     }
 
@@ -3610,7 +3672,58 @@ def home() -> str:
     let locationBarcodeRunning = false;
     const LOCATION_BARCODE_SCAN_MIN_LEN = 5;
     const LOCATION_BARCODE_SEARCH_KEYS_MAX_JS = 6;
-    let locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
+    let locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [], accepted: false };
+    let scanLockScrollY = 0;
+
+    function scanOrientationIsLandscape() {
+      try {
+        const type = String((screen.orientation && screen.orientation.type) || '');
+        if (type.indexOf('landscape') >= 0) return true;
+      } catch (_) {}
+      const ang = typeof window.orientation === 'number' ? window.orientation : 0;
+      return Math.abs(ang) === 90;
+    }
+    function keepScanPortrait() {
+      const modal = document.getElementById('barcodeModal');
+      if (!modal || !document.documentElement.classList.contains('barcode-scan-open')) return;
+      const ang = typeof window.orientation === 'number' ? window.orientation : 0;
+      const landscape = scanOrientationIsLandscape();
+      if (!landscape) {
+        modal.classList.remove('force-portrait', 'force-portrait-left');
+        return;
+      }
+      if (ang === -90 || ang === 270) {
+        modal.classList.add('force-portrait-left');
+        modal.classList.remove('force-portrait');
+      } else {
+        modal.classList.add('force-portrait');
+        modal.classList.remove('force-portrait-left');
+      }
+    }
+    async function lockScanOrientation() {
+      scanLockScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      document.documentElement.classList.add('barcode-scan-open');
+      document.body.style.top = '-' + scanLockScrollY + 'px';
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('portrait').catch(() => {});
+        }
+      } catch (_) {}
+      window.addEventListener('orientationchange', keepScanPortrait);
+      window.addEventListener('resize', keepScanPortrait);
+      keepScanPortrait();
+    }
+    function unlockScanOrientation() {
+      if (!document.documentElement.classList.contains('barcode-scan-open')) return;
+      document.documentElement.classList.remove('barcode-scan-open');
+      document.body.style.top = '';
+      window.removeEventListener('orientationchange', keepScanPortrait);
+      window.removeEventListener('resize', keepScanPortrait);
+      const modal = document.getElementById('barcodeModal');
+      if (modal) modal.classList.remove('force-portrait', 'force-portrait-left');
+      try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+      window.scrollTo(0, scanLockScrollY || 0);
+    }
 
     function stripBarcodeInvisibleJs(str) {
       return String(str || '').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF\u2060\u00AD]/g, '');
@@ -3687,6 +3800,8 @@ def home() -> str:
     }
 
     async function acceptLocationScanAndSearch(canon, raw) {
+      if (locScanSession.accepted) return;
+      locScanSession.accepted = true;
       logBarcodeClientDebug('accept-scan', { raw, canon });
       const inp = document.getElementById('locationBarcodeQueryInput');
       if (inp) inp.value = canon;
@@ -3697,17 +3812,36 @@ def home() -> str:
     }
 
     async function openLocationBarcodeScanner() {
-      if (activeSearchTab !== 'location') setSearchTab('location');
+      if (activeSearchTab !== 'location') {
+        activeSearchTab = 'location';
+        try { localStorage.setItem('activeSearchTab', 'location'); } catch (_) {}
+        document.getElementById('tabMainBtn').classList.toggle('active', false);
+        document.getElementById('tabSizeBtn').classList.toggle('active', false);
+        document.getElementById('tabWiperBtn').classList.toggle('active', false);
+        document.getElementById('tabLocBtn').classList.toggle('active', true);
+        document.getElementById('mainSearchPanel').classList.toggle('active', false);
+        document.getElementById('sizeSearchPanel').classList.toggle('active', false);
+        document.getElementById('wiperSearchPanel').classList.toggle('active', false);
+        document.getElementById('locationSearchPanel').classList.toggle('active', true);
+      }
       const modal = document.getElementById('barcodeModal');
       const regionId = 'barcodeScannerRegion';
+      setBarcodeScanStatus('جاري تحميل قارئ الباركود...');
+      try {
+        await ensureQrLib();
+      } catch (_) {
+        alert('تعذر تحميل مكتبة قراءة الباركود. تحقق من الاتصال.');
+        return;
+      }
       if (typeof Html5Qrcode === 'undefined') {
         alert('تعذر تحميل مكتبة قراءة الباركود. تحقق من الاتصال.');
         return;
       }
       await closeBarcodeScanner();
-      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
+      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [], accepted: false };
       modal.classList.add('active');
       modal.setAttribute('aria-hidden', 'false');
+      await lockScanOrientation();
       setBarcodeScanStatus('وجّه الكاميرا على الباركود');
       setBarcodeScanDebug('', '');
       const confirmBtn = document.getElementById('barcodeScanConfirmBtn');
@@ -3735,15 +3869,10 @@ def home() -> str:
           ]
         : null;
       const cfg = {
-        fps: 22,
+        fps: 16,
         aspectRatio: 1.777,
-        disableFlip: false,
-        useBarCodeDetectorIfSupported: false,
-        videoConstraints: {
-          facingMode: 'environment',
-          width: { ideal: 1280, min: 640 },
-          height: { ideal: 720, min: 480 }
-        },
+        disableFlip: true,
+        useBarCodeDetectorIfSupported: true,
         qrbox: (viewfinderWidth, viewfinderHeight) => {
           const vw = Math.max(1, viewfinderWidth);
           const vh = Math.max(1, viewfinderHeight);
@@ -3765,7 +3894,7 @@ def home() -> str:
       const onDecode = (decodedText, decodedResult) => {
         if (scanLooksLikeQr(decodedResult)) return;
         const now = Date.now();
-        if (now - locScanSession.lastCbMs < 45) return;
+        if (now - locScanSession.lastCbMs < 30) return;
         locScanSession.lastCbMs = now;
         const raw = sanitizeScanResult(decodedText);
         if (!raw) return;
@@ -3785,41 +3914,49 @@ def home() -> str:
         locScanSession.pendingCanon = canon;
         locScanSession.pendingRaw = raw;
         if (confirmBtn) confirmBtn.disabled = false;
-        setBarcodeScanStatus('جاري التحقق… ثبّت الكاميرا');
+        setBarcodeScanStatus('تم التقاط القراءة');
         locScanSession.window.push({ t: now, c: canon });
-        locScanSession.window = locScanSession.window.filter((x) => now - x.t < 850);
+        locScanSession.window = locScanSession.window.filter((x) => now - x.t < 400);
         const sameInWindow = locScanSession.window.filter((x) => x.c === canon).length;
-        if (locScanSession.streak >= 2 || sameInWindow >= 2) {
+        const confident = canon.length >= 8;
+        if (confident || locScanSession.streak >= 2 || sameInWindow >= 2) {
           acceptLocationScanAndSearch(canon, raw);
         }
       };
       const noopScan = () => {};
       try {
-        await scanner.start({ facingMode: 'environment' }, cfg, onDecode, noopScan);
+        await scanner.start({ facingMode: { exact: 'environment' } }, cfg, onDecode, noopScan);
         locationBarcodeRunning = true;
-      } catch (e1) {
+      } catch (e0) {
         try {
-          const cfgLite = Object.assign({}, cfg);
-          delete cfgLite.videoConstraints;
-          cfgLite.fps = 18;
-          await scanner.start({ facingMode: 'environment' }, cfgLite, onDecode, noopScan);
+          await scanner.start({ facingMode: 'environment' }, cfg, onDecode, noopScan);
           locationBarcodeRunning = true;
-        } catch (e2) {
-          modal.classList.remove('active');
-          modal.setAttribute('aria-hidden', 'true');
-          html5QrLocationScanner = null;
-          const msg = (e2 && e2.message) ? e2.message : String(e2);
-          alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا. ' + msg);
+        } catch (e1) {
+          try {
+            const cfgLite = Object.assign({}, cfg);
+            cfgLite.fps = 12;
+            await scanner.start({ facingMode: 'environment' }, cfgLite, onDecode, noopScan);
+            locationBarcodeRunning = true;
+          } catch (e2) {
+            modal.classList.remove('active');
+            modal.setAttribute('aria-hidden', 'true');
+            html5QrLocationScanner = null;
+            unlockScanOrientation();
+            const msg = (e2 && e2.message) ? e2.message : String(e2);
+            alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا. ' + msg);
+          }
         }
       }
     }
 
     async function closeBarcodeScanner() {
+      locScanSession.accepted = true;
       const modal = document.getElementById('barcodeModal');
       if (modal) {
         modal.classList.remove('active');
         modal.setAttribute('aria-hidden', 'true');
       }
+      unlockScanOrientation();
       if (html5QrLocationScanner && locationBarcodeRunning) {
         try { await html5QrLocationScanner.stop(); } catch (_) {}
         try { await html5QrLocationScanner.clear(); } catch (_) {}
@@ -3833,7 +3970,7 @@ def home() -> str:
         confirmBtn.disabled = true;
         confirmBtn.onclick = null;
       }
-      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [] };
+      locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [], accepted: false };
     }
 
     async function uploadWiperExcelFromInput(inputId, statusId) {
@@ -3953,23 +4090,12 @@ def home() -> str:
         if (!serverVersion) return;
 
         const localVersion = localStorage.getItem('app_version') || '';
-        if (!localVersion) {
-          localStorage.setItem('app_version', serverVersion);
-          return;
-        }
-
-        if (localVersion !== serverVersion) {
-          localStorage.setItem('app_version', serverVersion);
-          if ('serviceWorker' in navigator) {
-            try {
-              const regs = await navigator.serviceWorker.getRegistrations();
-              await Promise.all(regs.map(r => r.update()));
-            } catch (_) {}
-          }
-          if (!window.location.search.includes(`av=${encodeURIComponent(serverVersion)}`)) {
-            const next = `/?av=${encodeURIComponent(serverVersion)}&ts=${Date.now()}`;
-            window.location.replace(next);
-          }
+        localStorage.setItem('app_version', serverVersion);
+        if (localVersion && localVersion !== serverVersion && 'serviceWorker' in navigator) {
+          try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map(r => r.update()));
+          } catch (_) {}
         }
       } catch (_) {
         // ignore version-check errors
@@ -3988,6 +4114,16 @@ def home() -> str:
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
+    }
+
+    async function ensureLocalSnapshotLoaded() {
+      if (snapshotLoadPromise) return snapshotLoadPromise;
+      snapshotLoadPromise = loadLocalSnapshot();
+      try {
+        await snapshotLoadPromise;
+      } catch (_) {
+        snapshotLoadPromise = null;
+      }
     }
 
     async function loadLocalSnapshot() {
@@ -4401,6 +4537,7 @@ def home() -> str:
     }
 
     async function parseLocationRowsForChunkUpload(file) {
+      await ensureXlsxLib();
       const arrayBuffer = await file.arrayBuffer();
       const wb = XLSX.read(arrayBuffer, { type: 'array' });
       const rows = [];
@@ -4448,6 +4585,7 @@ def home() -> str:
     }
 
     async function parseWiperRowsForChunkUpload(file) {
+      await ensureXlsxLib();
       const arrayBuffer = await file.arrayBuffer();
       const wb = XLSX.read(arrayBuffer, { type: 'array' });
       const sourceKey = sourceKeyForFile(file);
@@ -4613,6 +4751,7 @@ def home() -> str:
     }
 
     async function parseExcelRowsForChunkUpload(file) {
+      await ensureXlsxLib();
       const arrayBuffer = await file.arrayBuffer();
       const wb = XLSX.read(arrayBuffer, { type: 'array' });
       const sourceKey = sourceKeyForFile(file);
@@ -5614,6 +5753,7 @@ def home() -> str:
 
     async function restoreServerFromLocalSnapshotIfEmpty() {
       try {
+        await ensureLocalSnapshotLoaded();
         if (!localSnapshot || !Array.isArray(localSnapshot.rows) || !localSnapshot.rows.length) return;
 
         const statsRes = await fetch('/stats', { cache: 'no-store' });
@@ -5664,6 +5804,7 @@ def home() -> str:
 
     async function checkSnapshotUpdate(showNoUpdate, askUser = false) {
       try {
+        await ensureLocalSnapshotLoaded();
         const res = await fetch('/sync/meta', { cache: 'no-store' });
         if (!res.ok) throw new Error('sync-meta-failed');
         const meta = await res.json();  
@@ -5994,6 +6135,7 @@ def home() -> str:
         if (!parsed || typeof parsed !== 'object') throw new Error('search-bad-json');
         data = parsed;
       } catch (_) {
+        await ensureLocalSnapshotLoaded();
         data = searchOfflineSnapshot(q, qNumbers, sizeType, sizeWidth, sizeDiameter, sizeHeight);
         sourceLabel = 'النسخة المحلية';
 
@@ -6162,6 +6304,7 @@ def home() -> str:
         document.getElementById('locationBarcodeQueryInput').value = localStorage.getItem('lastLocationBarcodeQuery') || '';
       }
       updateSizeInputsLayout();
+      if (activeSearchTab === 'location') ensureQrLib().catch(() => {});
 
       queryInput.addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
@@ -6353,15 +6496,14 @@ def home() -> str:
     updateSelectionInfo();
     setUploadProgress(0, '');
     registerServiceWorker();
-    (async () => {
-      await ensureLatestClientVersion();
-      await loadLocalSnapshot();
-      initAutoSearch();
-      loadStats();
-      searchNow();
+    initAutoSearch();
+    loadStats();
+    searchNow();
+    ensureLatestClientVersion();
+    setTimeout(() => {
       restoreServerFromLocalSnapshotIfEmpty();
       autoSyncGoogleDriveIfServerEmpty();
-    })();
+    }, 12000);
   </script>
 </body>
 </html>
@@ -6369,6 +6511,10 @@ def home() -> str:
     ).replace('href="/app-icon.png"', f'href="/app-icon.png?v={_icon_q}"').replace(
         'href="/apple-touch-icon.png"', f'href="/apple-touch-icon.png?v={_at_q}"', 1
     ).replace("{APP_VERSION}", APP_VERSION)
+    return HTMLResponse(
+        content=html,
+        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=86400"},
+    )
 
 
 @app.post("/upload")
@@ -7394,13 +7540,19 @@ self.addEventListener('fetch', (event) => {{
   }}
 
   if (req.mode === 'navigate') {{
-    event.respondWith(
-      fetch(req).then((res) => {{
+    event.respondWith((async () => {{
+      const cached = await caches.match('/');
+      const net = fetch(req).then((res) => {{
         const copy = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
         return res;
-      }}).catch(() => caches.match('/'))
-    );
+      }});
+      if (cached) {{
+        net.catch(() => {{}});
+        return cached;
+      }}
+      return net.catch(() => caches.match('/'));
+    }})());
     return;
   }}
 
@@ -7413,7 +7565,11 @@ self.addEventListener('fetch', (event) => {{
   );
 }});
 """
-    return HTMLResponse(content=js, media_type="application/javascript")
+    return HTMLResponse(
+        content=js,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/health")

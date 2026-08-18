@@ -68,8 +68,8 @@ final class BarcodeDebouncer {
     private var recent: [String] = []
     private let queue = DispatchQueue(label: "barcode.debounce")
 
-    init(requiredMatches: Int = 3) {
-        self.requiredMatches = max(2, requiredMatches)
+    init(requiredMatches: Int = 2) {
+        self.requiredMatches = max(1, requiredMatches)
     }
 
     /// Returns payload when the same string was seen `requiredMatches` times in a row.
@@ -110,13 +110,13 @@ final class BarcodeScannerViewController: UIViewController {
     /// Minimum characters to accept (after trim).
     var minimumBarcodeLength: Int = 6
     /// Same payload must repeat this many times consecutively.
-    var requiredConsecutiveMatches: Int = 3 {
+    var requiredConsecutiveMatches: Int = 2 {
         didSet { debouncer = BarcodeDebouncer(requiredMatches: requiredConsecutiveMatches) }
     }
     /// Vision ROI in normalized coords (origin bottom-left). Wide horizontal band in center.
     var scanRegionOfInterest: CGRect = CGRect(x: 0.06, y: 0.38, width: 0.88, height: 0.28)
     /// Target max processing rate (approximate).
-    var maxProcessingFPS: Double = 8
+    var maxProcessingFPS: Double = 18
     /// Enable extra edge emphasis (heavier CPU).
     var enableEdgeBlend: Bool = false
     /// Default ~1.6x for large labels (clamped to device limits).
@@ -146,13 +146,17 @@ final class BarcodeScannerViewController: UIViewController {
 
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private var barcodeRequest = VNDetectBarcodesRequest()
-    private var debouncer = BarcodeDebouncer(requiredMatches: 3)
+    private var debouncer = BarcodeDebouncer(requiredMatches: 2)
     private var lastProcessTime: CFTimeInterval = 0
     private let lockedState = LockState()
     /// Vision orientation for video buffers (updated from window scene).
     private var bufferVisionOrientation: CGImagePropertyOrientation = .right
 
     // MARK: Lifecycle
+
+    override var shouldAutorotate: Bool { false }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .portrait }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -314,9 +318,11 @@ final class BarcodeScannerViewController: UIViewController {
 
     private func configureSessionIfNeeded() {
         session.beginConfiguration()
-        session.sessionPreset = .hd1920x1080
-        if session.canSetSessionPreset(.hd4K3840x2160) {
-            session.sessionPreset = .hd4K3840x2160
+        session.sessionPreset = .hd1280x720
+        if session.canSetSessionPreset(.hd1280x720) {
+            session.sessionPreset = .hd1280x720
+        } else if session.canSetSessionPreset(.high) {
+            session.sessionPreset = .high
         }
 
         guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
@@ -539,7 +545,7 @@ extension BarcodeScannerViewController: AVCaptureVideoDataOutputSampleBufferDele
         lastProcessTime = now
 
         guard let buf = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let processed = preprocess(buf)
+        let processed = enableEdgeBlend ? preprocess(buf) : buf
 
         barcodeRequest.regionOfInterest = scanRegionOfInterest
         let handler = VNImageRequestHandler(cvPixelBuffer: processed, orientation: bufferVisionOrientation, options: [:])
