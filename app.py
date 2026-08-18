@@ -3654,12 +3654,13 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">وجّه الكاميرا على <strong>اسم القطعة</strong> أو <strong>الرقم الأصلي</strong> ثم اضغط «اقرأ النص». أول مرة قد يتأخر التحميل قليلاً.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">وجّه الكاميرا ثم اضغط اقرأ النص</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">وجّه الكاميرا على الملصق. النص يُكتب كما هو في الصورة: عربي يبقى عربي وإنجليزي يبقى إنجليزي. الاسم والرقم قد يحتويان أحرفاً وأرقاماً.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">وجّه الكاميرا ثم اختر اقرأ الاسم أو اقرأ الرقم</p>
       <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
-      <input id="ocrTextPreview" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
+      <input id="ocrTextPreview" dir="auto" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
       <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
-        <button type="button" id="ocrCaptureBtn" onclick="captureLocationOcr()">اقرأ النص</button>
+        <button type="button" id="ocrNameBtn" onclick="captureLocationOcr('name')">اقرأ الاسم</button>
+        <button type="button" id="ocrNumberBtn" onclick="captureLocationOcr('number')">اقرأ الرقم</button>
         <button type="button" id="ocrSearchBtn" class="btn-secondary" onclick="searchLocationOcrText()">بحث بهذا النص</button>
         <button type="button" class="btn-secondary" onclick="closeLocationOcrScanner()">إغلاق</button>
       </div>
@@ -4128,39 +4129,143 @@ def home() -> HTMLResponse:
       document.getElementById('wiperSearchPanel').classList.toggle('active', false);
       document.getElementById('locationSearchPanel').classList.toggle('active', true);
     }
-    function pickOcrQuery(raw) {
-      const lines = String(raw || '')
-        .replace(/[|]/g, ' ')
-        .split(/\\n+|\\r+/)
-        .map((s) => s.replace(/\\s+/g, ' ').trim())
-        .filter((s) => s.length >= 2);
-      if (!lines.length) return String(raw || '').replace(/\\s+/g, ' ').trim();
-      function score(s) {
-        const letters = (s.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
-        const digits = (s.match(/\\d/g) || []).length;
-        const junk = (s.match(/[^A-Za-z0-9\u0600-\u06FF\\s.\\-\\/]/g) || []).length;
-        return letters * 2 + digits * 3 - junk * 2 + Math.min(s.length, 28);
-      }
-      lines.sort((a, b) => score(b) - score(a));
-      return lines[0];
+    function ocrHasArabic(s) {
+      return /[\u0600-\u06FF]/.test(String(s || ''));
     }
-    async function recognizeTextFromCanvas(canvas) {
+    function ocrHasLatin(s) {
+      return /[A-Za-z]/.test(String(s || ''));
+    }
+    function ocrCleanPiece(s) {
+      return String(s || '').replace(/[|]/g, ' ').replace(/\\s+/g, ' ').trim();
+    }
+    function ocrIsBarcodeLike(s) {
+      const t = ocrCleanPiece(s);
+      const digits = (t.match(/\\d/g) || []).length;
+      const letters = (t.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
+      return digits >= 10 && letters <= 1 && digits / Math.max(t.replace(/\\s/g, '').length, 1) > 0.8;
+    }
+    function ocrLetterCount(s) {
+      return (String(s || '').match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
+    }
+    function ocrDigitCount(s) {
+      return (String(s || '').match(/\\d/g) || []).length;
+    }
+    function ocrIsNumberLike(s) {
+      const t = ocrCleanPiece(s);
+      const compact = t.replace(/\\s/g, '');
+      if (compact.length < 3 || compact.length > 28) return false;
+      if (ocrIsBarcodeLike(t)) return false;
+      const spaces = (t.match(/ /g) || []).length;
+      if (spaces >= 3) return false;
+      const digits = ocrDigitCount(compact);
+      const letters = ocrLetterCount(compact);
+      return digits >= 1 || (letters >= 2 && compact.length <= 16);
+    }
+    function ocrIsNameLike(s) {
+      const t = ocrCleanPiece(s);
+      if (!t || ocrIsBarcodeLike(t)) return false;
+      return ocrLetterCount(t) >= 1 || t.length >= 3;
+    }
+    function ocrLinesFromWords(words) {
+      const items = (words || []).map((w) => {
+        const box = w.bbox || w.boundingBox || {};
+        const x = Number(box.x0 != null ? box.x0 : (box.x || 0));
+        const y = Number(box.y0 != null ? box.y0 : (box.y || 0));
+        const x1 = Number(box.x1 != null ? box.x1 : (x + (box.width || 0)));
+        const y1 = Number(box.y1 != null ? box.y1 : (y + (box.height || 0)));
+        return { text: ocrCleanPiece(w.text || w.rawValue || ''), x: x, y: y, x1: x1, y1: y1 };
+      }).filter((w) => w.text);
+      if (!items.length) return [];
+      items.sort((a, b) => a.y - b.y || a.x - b.x);
+      const lines = [];
+      items.forEach((w) => {
+        const mid = (w.y + w.y1) / 2;
+        const h = Math.max(12, w.y1 - w.y);
+        const last = lines.length ? lines[lines.length - 1] : null;
+        if (last && Math.abs(mid - last.mid) <= Math.max(14, last.h * 0.7)) {
+          last.words.push(w);
+          last.mid = (last.mid * (last.words.length - 1) + mid) / last.words.length;
+        } else {
+          lines.push({ words: [w], mid: mid, h: h });
+        }
+      });
+      return lines.map((line) => {
+        const ws = line.words.slice().sort((a, b) => a.x - b.x);
+        const arabic = ws.filter((w) => ocrHasArabic(w.text)).length;
+        const latin = ws.filter((w) => ocrHasLatin(w.text) && !ocrHasArabic(w.text)).length;
+        if (arabic > latin) ws.sort((a, b) => b.x - a.x);
+        return ocrCleanPiece(ws.map((w) => w.text).join(' '));
+      }).filter(Boolean);
+    }
+    function pickOcrName(lines) {
+      const keep = (lines || []).filter(ocrIsNameLike);
+      const use = keep.length ? keep : (lines || []).filter((s) => !ocrIsBarcodeLike(s));
+      return ocrCleanPiece(use.join(' '));
+    }
+    function pickOcrNumber(lines) {
+      const candidates = [];
+      (lines || []).forEach((line) => {
+        if (ocrIsNumberLike(line)) candidates.push(line);
+        String(line || '').split(' ').forEach((tok) => {
+          if (ocrIsNumberLike(tok)) candidates.push(tok);
+        });
+      });
+      if (!candidates.length) {
+        const fallback = (lines || []).filter((s) => !ocrIsBarcodeLike(s) && ocrDigitCount(s) > 0);
+        return ocrCleanPiece(fallback[0] || '');
+      }
+      candidates.sort((a, b) => {
+        const sa = ocrDigitCount(a) * 2 + ocrLetterCount(a) - String(a).length * 0.05;
+        const sb = ocrDigitCount(b) * 2 + ocrLetterCount(b) - String(b).length * 0.05;
+        return sb - sa;
+      });
+      return ocrCleanPiece(candidates[0]);
+    }
+    function pickOcrQuery(raw, mode) {
+      const fallbackLines = String(raw || '')
+        .split(/\\n+|\\r+/)
+        .map(ocrCleanPiece)
+        .filter((s) => s.length >= 2);
+      if (mode === 'number') return pickOcrNumber(fallbackLines);
+      return pickOcrName(fallbackLines);
+    }
+    async function recognizeOcrStructured(canvas) {
       if (typeof TextDetector === 'function') {
         try {
           const detector = new TextDetector();
           const bitmap = await createImageBitmap(canvas);
           const hits = await detector.detect(bitmap);
-          const joined = (hits || []).map((h) => String(h.rawValue || '').trim()).filter(Boolean).join('\\n');
-          if (pickOcrQuery(joined).length >= 2) return joined;
+          const words = (hits || []).map((h) => {
+            const b = h.boundingBox || {};
+            return {
+              text: String(h.rawValue || ''),
+              bbox: { x0: b.x || 0, y0: b.y || 0, x1: (b.x || 0) + (b.width || 0), y1: (b.y || 0) + (b.height || 0) }
+            };
+          });
+          const lines = ocrLinesFromWords(words);
+          if (lines.length) return { lines: lines, raw: lines.join(' ') };
         } catch (_) {}
       }
       await ensureTesseractLib();
       if (typeof Tesseract === 'undefined') throw new Error('tesseract-missing');
       if (!ocrWorker) {
-        ocrWorker = await Tesseract.createWorker('eng+ara');
+        ocrWorker = await Tesseract.createWorker('ara+eng');
+        try {
+          await ocrWorker.setParameters({
+            tessedit_pageseg_mode: '6',
+            preserve_interword_spaces: '1'
+          });
+        } catch (_) {}
       }
       const result = await ocrWorker.recognize(canvas);
-      return String((result && result.data && result.data.text) || '');
+      const data = (result && result.data) || {};
+      const lines = ocrLinesFromWords(data.words || []);
+      const raw = String(data.text || '');
+      if (lines.length) return { lines: lines, raw: raw };
+      return {
+        lines: raw.split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean),
+        raw: raw
+      };
     }
     async function openLocationOcrScanner() {
       activateLocationTabQuiet();
@@ -4194,7 +4299,7 @@ def home() -> HTMLResponse:
       video.setAttribute('playsinline', 'true');
       video.muted = true;
       try { await video.play(); } catch (_) {}
-      setOcrScanStatus('وجّه الكاميرا على الاسم أو الرقم ثم اضغط اقرأ النص');
+      setOcrScanStatus('وجّه الكاميرا ثم اضغط اقرأ الاسم أو اقرأ الرقم');
       ensureTesseractLib().catch(() => {});
     }
     async function closeLocationOcrScanner() {
@@ -4215,32 +4320,40 @@ def home() -> HTMLResponse:
       }
       if (wasOpen) unlockScanOrientation();
     }
-    async function captureLocationOcr() {
+    async function captureLocationOcr(mode) {
       if (ocrBusy) return;
+      const kind = mode === 'number' ? 'number' : 'name';
       const video = document.getElementById('ocrVideo');
       const preview = document.getElementById('ocrTextPreview');
-      const capBtn = document.getElementById('ocrCaptureBtn');
+      const nameBtn = document.getElementById('ocrNameBtn');
+      const numberBtn = document.getElementById('ocrNumberBtn');
       if (!video || !video.videoWidth) {
         setOcrScanStatus('الكاميرا لم تجهز بعد. انتظر لحظة.');
         return;
       }
       ocrBusy = true;
-      if (capBtn) capBtn.disabled = true;
-      setOcrScanStatus('جاري قراءة النص... قد تستغرق أول مرة تحميل القواميس.');
+      if (nameBtn) nameBtn.disabled = true;
+      if (numberBtn) numberBtn.disabled = true;
+      setOcrScanStatus(kind === 'number'
+        ? 'جاري قراءة الرقم... أول مرة قد يتأخر تحميل القواميس.'
+        : 'جاري قراءة الاسم... أول مرة قد يتأخر تحميل القواميس.');
       try {
         const canvas = document.createElement('canvas');
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const raw = await recognizeTextFromCanvas(canvas);
-        const query = pickOcrQuery(raw);
+        const structured = await recognizeOcrStructured(canvas);
+        const lines = (structured && structured.lines && structured.lines.length)
+          ? structured.lines
+          : String((structured && structured.raw) || '').split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
+        const query = kind === 'number' ? pickOcrNumber(lines) : pickOcrName(lines);
         if (preview) preview.value = query;
         if (!query || query.length < 2) {
           setOcrScanStatus('ما انقرأ نص واضح. قرّب الكاميرا أو حسّن الإضاءة ثم أعد المحاولة.');
           return;
         }
-        setOcrScanStatus('تمت القراءة — جاري البحث...');
+        setOcrScanStatus('تمت القراءة كما في الصورة — جاري البحث...');
         try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
         await applyLocationOcrSearch(query);
       } catch (err) {
@@ -4248,7 +4361,8 @@ def home() -> HTMLResponse:
         setOcrScanStatus('تعذر قراءة النص. تحقق من الإنترنت ثم أعد المحاولة.' + (m ? ' (' + m + ')' : ''));
       } finally {
         ocrBusy = false;
-        if (capBtn) capBtn.disabled = false;
+        if (nameBtn) nameBtn.disabled = false;
+        if (numberBtn) numberBtn.disabled = false;
       }
     }
     async function applyLocationOcrSearch(query) {
