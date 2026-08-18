@@ -3687,12 +3687,12 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">ضع <strong>اللزقة الصغيرة الداخلية</strong> داخل الإطار الأخضر فقط. لا تُقرأ الكتابة اللي برّا اللزقة.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة الداخلية داخل الإطار ثم اقرأ الاسم أو الرقم</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط <strong>لزقتك</strong> داخل الإطار الأخضر. <strong>اقرأ الاسم</strong> يأخذ سطر الاسم فقط، و<strong>اقرأ الرقم</strong> يأخذ سطر الرقم اللي تحته فقط — بدون الباركود أو اسم الشركة.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار ثم اقرأ الاسم أو الرقم</p>
       <div id="ocrVideoWrap">
         <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
         <div id="ocrGuide"></div>
-        <div id="ocrGuideHint">اللزقة الداخلية هنا</div>
+        <div id="ocrGuideHint">اللزقة هنا</div>
       </div>
       <input id="ocrTextPreview" dir="auto" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
       <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
@@ -4188,7 +4188,45 @@ def home() -> HTMLResponse:
       const t = ocrCleanPiece(s).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, '');
       if (!t) return false;
       if (t.indexOf('bhgroup') >= 0 || t.indexOf('westbank') >= 0 || t.indexOf('israel') >= 0) return true;
-      return t === 'ring' || t === 'ma' || t === 'min';
+      if (t.indexOf('highquality') >= 0 || t.indexOf('manufactur') >= 0) return true;
+      if (t.indexOf('leading') >= 0 && t.indexOf('technolog') >= 0) return true;
+      return t === 'ring' || t === 'ma' || t === 'min' || t === 'high' || t === 'quality' || t === 'manufacturing' || t === 'leading' || t === 'technology';
+    }
+    function ocrIsCompactPartCode(s) {
+      const t = ocrCleanPiece(s);
+      const compact = t.replace(/\\s/g, '');
+      if (compact.length < 7 || compact.length > 22) return false;
+      if (ocrIsBarcodeLike(t) || ocrIsOuterLabelJunk(t)) return false;
+      const spaces = (t.match(/ /g) || []).length;
+      if (spaces >= 2) return false;
+      if (/^[A-Za-z]{3,}[\\-]?\\d{1,3}$/.test(compact)) return false;
+      const digits = ocrDigitCount(compact);
+      const letters = ocrLetterCount(compact);
+      return letters >= 1 && digits >= 3;
+    }
+    function splitStickerFields(lines) {
+      const content = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s));
+      const nameParts = [];
+      let number = '';
+      for (let i = 0; i < content.length; i++) {
+        if (number) break;
+        const toks = content[i].split(' ').filter(Boolean);
+        const before = [];
+        for (let j = 0; j < toks.length; j++) {
+          const t = toks[j];
+          if (!number && ocrIsCompactPartCode(t)) {
+            number = t.replace(/\\s/g, '');
+            continue;
+          }
+          if (!number) before.push(t);
+        }
+        if (!number && !before.length && ocrIsCompactPartCode(content[i])) {
+          number = content[i].replace(/\\s/g, '');
+          break;
+        }
+        if (before.length) nameParts.push(before.join(' '));
+      }
+      return { name: ocrCleanPiece(nameParts.join(' ')), number: number };
     }
     function ocrLetterCount(s) {
       return (String(s || '').match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
@@ -4281,7 +4319,7 @@ def home() -> HTMLResponse:
       }
       try {
         await ocrWorker.setParameters({
-          tessedit_pageseg_mode: '3',
+          tessedit_pageseg_mode: '6',
           preserve_interword_spaces: '1'
         });
       } catch (_) {}
@@ -4293,7 +4331,7 @@ def home() -> HTMLResponse:
           await ocrWorker.initialize(lang);
           ocrWorkerLang = lang;
           await ocrWorker.setParameters({
-            tessedit_pageseg_mode: '3',
+            tessedit_pageseg_mode: '6',
             preserve_interword_spaces: '1'
           });
         } catch (_) {}
@@ -4315,22 +4353,17 @@ def home() -> HTMLResponse:
       return out;
     }
     function pickOcrName(lines) {
-      const cleaned = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s));
-      const mixed = cleaned.filter((s) => ocrHasArabic(s) && (ocrHasLatin(s) || ocrDigitCount(s) > 0));
-      if (mixed.length) return ocrCleanPiece(mixed.join(' '));
-      const ara = cleaned.filter(ocrHasArabic);
-      if (ara.length) {
-        const extraLatin = cleaned.filter((s) => !ocrHasArabic(s) && ocrHasLatin(s) && !ocrIsNumberLike(s));
-        return ocrCleanPiece(ara.concat(extraLatin).join(' '));
-      }
-      const keep = cleaned.filter(ocrIsNameLike);
-      return ocrCleanPiece((keep.length ? keep : cleaned).join(' '));
+      const fields = splitStickerFields(lines);
+      if (fields.name) return fields.name;
+      const cleaned = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s) && !ocrIsCompactPartCode(s));
+      return ocrCleanPiece(cleaned[0] || '');
     }
     function ocrNumberScore(s) {
       const compact = ocrCleanPiece(s).replace(/\\s/g, '');
       const digits = ocrDigitCount(compact);
       const letters = ocrLetterCount(compact);
       let score = digits * 2 + letters;
+      if (ocrIsCompactPartCode(compact)) score += 30;
       if (letters >= 1 && digits >= 2) score += 22;
       if (letters === 0) score -= 6;
       if (letters === 0 && /^0+/.test(compact)) score -= 16;
@@ -4338,20 +4371,19 @@ def home() -> HTMLResponse:
       return score;
     }
     function pickOcrNumber(lines) {
+      const fields = splitStickerFields(lines);
+      if (fields.number) return fields.number;
       const candidates = [];
       (lines || []).forEach((line) => {
         if (ocrIsOuterLabelJunk(line) || ocrIsBarcodeLike(line)) return;
-        if (ocrIsNumberLike(line)) candidates.push(line);
+        if (ocrIsCompactPartCode(line) || ocrIsNumberLike(line)) candidates.push(line);
         String(line || '').split(' ').forEach((tok) => {
-          if (ocrIsNumberLike(tok) && !ocrIsBarcodeLike(tok)) candidates.push(tok);
+          if (ocrIsCompactPartCode(tok) || (ocrIsNumberLike(tok) && !ocrIsBarcodeLike(tok))) candidates.push(tok);
         });
       });
-      if (!candidates.length) {
-        const fallback = (lines || []).filter((s) => !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s) && ocrDigitCount(s) > 0);
-        return ocrCleanPiece(fallback[0] || '');
-      }
+      if (!candidates.length) return '';
       candidates.sort((a, b) => ocrNumberScore(b) - ocrNumberScore(a));
-      return ocrCleanPiece(candidates[0]);
+      return ocrCleanPiece(candidates[0]).replace(/\\s/g, '');
     }
     function pickOcrQuery(raw, mode) {
       const fallbackLines = String(raw || '')
@@ -4394,12 +4426,7 @@ def home() -> HTMLResponse:
       const engText = String(engData.text || '');
       const mergedWords = mergeAraEngWords(araData.words || [], engData.words || []);
       let lines = ocrLinesFromWords(mergedWords);
-      if (ocrHasArabic(araText)) {
-        const araLines = araText.split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
-        const latinLines = lines.filter((l) => ocrHasLatin(l) && !ocrHasArabic(l));
-        const extraLatin = latinLines.filter((l) => araText.indexOf(l) < 0);
-        lines = araLines.concat(extraLatin);
-      } else if (!lines.length) {
+      if (!lines.length) {
         lines = (araText + '\\n' + engText).split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
       }
       lines = lines.filter((s) => s && !ocrIsOuterLabelJunk(s));
@@ -4437,7 +4464,7 @@ def home() -> HTMLResponse:
       video.setAttribute('playsinline', 'true');
       video.muted = true;
       try { await video.play(); } catch (_) {}
-      setOcrScanStatus('ضع اللزقة الداخلية داخل الإطار الأخضر ثم اقرأ الاسم أو الرقم');
+      setOcrScanStatus('ضع اللزقة داخل الإطار الأخضر ثم اقرأ الاسم أو الرقم');
       ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
