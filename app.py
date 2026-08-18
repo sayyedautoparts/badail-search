@@ -3434,21 +3434,67 @@ def home() -> HTMLResponse:
     .barcode-modal-overlay.active { display: flex; }
     .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: min(98vw, 640px); width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); box-sizing: border-box; }
     #barcodeScannerRegion { min-height: 280px; width: 100%; margin: 10px 0; border-radius: 10px; overflow: hidden; background: #111; }
-    html.barcode-scan-open, html.barcode-scan-open body { overflow: hidden; }
-    html.barcode-scan-open body { position: fixed; width: 100%; left: 0; right: 0; }
-    .barcode-modal-overlay.force-portrait {
-      width: 100vh; height: 100vw;
-      transform: rotate(-90deg) translateX(-100%);
-      transform-origin: top left;
+    html.barcode-scan-open, html.barcode-scan-open body { overflow: hidden !important; }
+    html.barcode-scan-open body { position: fixed !important; width: 100%; left: 0; right: 0; }
+    html.barcode-scan-open #barcodeScannerRegion video,
+    html.barcode-scan-open #ocrVideo {
+      object-fit: cover !important;
+      width: 100% !important;
+      height: 100% !important;
     }
-    .barcode-modal-overlay.force-portrait-left {
-      width: 100vh; height: 100vw;
-      transform: rotate(90deg) translateY(-100%);
-      transform-origin: top left;
+    #ocrVideo {
+      width: 100%;
+      min-height: 240px;
+      max-height: 48vh;
+      margin: 10px 0;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #111;
+      object-fit: cover;
     }
-    .barcode-modal-overlay.force-portrait .barcode-modal-box,
-    .barcode-modal-overlay.force-portrait-left .barcode-modal-box {
-      max-width: min(96vh, 640px);
+    #ocrTextPreview { font-size: 16px; text-align: right; }
+    @media screen and (orientation: landscape) {
+      html.barcode-scan-open .barcode-modal-overlay.active {
+        inset: auto;
+        position: fixed;
+        top: 100%;
+        left: 0;
+        width: 100vh;
+        height: 100vw;
+        max-width: none;
+        transform: rotate(-90deg);
+        transform-origin: left top;
+        padding: 12px;
+      }
+    }
+    html.barcode-scan-open.scan-is-landscape .barcode-modal-overlay.active.force-portrait {
+      inset: auto;
+      position: fixed;
+      top: 100%;
+      left: 0;
+      width: 100vh;
+      height: 100vw;
+      max-width: none;
+      transform: rotate(-90deg);
+      transform-origin: left top;
+      padding: 12px;
+    }
+    html.barcode-scan-open.scan-is-landscape .barcode-modal-overlay.active.force-portrait-left {
+      inset: auto;
+      position: fixed;
+      top: 0;
+      left: 100%;
+      width: 100vh;
+      height: 100vw;
+      max-width: none;
+      transform: rotate(90deg);
+      transform-origin: left top;
+      padding: 12px;
+    }
+    html.barcode-scan-open.scan-is-landscape .barcode-modal-overlay.active .barcode-modal-box {
+      max-width: min(92vh, 640px);
+      max-height: 96vw;
+      overflow: auto;
     }
     .btn-camera { background: #1a2744; color: #fff; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -3534,9 +3580,12 @@ def home() -> HTMLResponse:
         <p class="muted" style="font-size:12px;margin:4px 0 0;">يمكن كتابة الباركود مع أو بدون <strong>-</strong> أو مسافات — التطبيع يتم تلقائياً عند البحث.</p>
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث الموقع</button>
-          <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">📷 كاميرا الباركود</button>
         </div>
-        <p class="muted" style="font-size:12px;">إن وُجد نص في مربع الباركود يُستخدم <strong>هو</strong> فقط للبحث (ويُتجاهل المربع الأول). الكاميرا تقرأ <strong>باركوداً خطّياً فقط</strong> (ليس QR). على iPhone: Safari + HTTPS + السماح بالكاميرا.</p>
+        <div class="btn-row">
+          <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">📷 كاميرا الباركود</button>
+          <button type="button" class="btn-camera" onclick="openLocationOcrScanner()">📝 كاميرا الاسم / الرقم</button>
+        </div>
+        <p class="muted" style="font-size:12px;">إن وُجد نص في مربع الباركود يُستخدم <strong>هو</strong> فقط للبحث (ويُتجاهل المربع الأول). كاميرا الباركود تقرأ <strong>باركوداً خطّياً</strong>. كاميرا الاسم/الرقم تقرأ الكتابة على الملصق ثم تبحث في مربع الصنف/الرقم.</p>
       </div>
 
       <div id="stats" class="muted"></div>
@@ -3602,6 +3651,21 @@ def home() -> HTMLResponse:
     </div>
   </div>
 
+  <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
+    <div class="barcode-modal-box">
+      <strong>قراءة الاسم أو الرقم</strong>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">وجّه الكاميرا على <strong>اسم القطعة</strong> أو <strong>الرقم الأصلي</strong> ثم اضغط «اقرأ النص». أول مرة قد يتأخر التحميل قليلاً.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">وجّه الكاميرا ثم اضغط اقرأ النص</p>
+      <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
+      <input id="ocrTextPreview" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
+        <button type="button" id="ocrCaptureBtn" onclick="captureLocationOcr()">اقرأ النص</button>
+        <button type="button" id="ocrSearchBtn" class="btn-secondary" onclick="searchLocationOcrText()">بحث بهذا النص</button>
+        <button type="button" class="btn-secondary" onclick="closeLocationOcrScanner()">إغلاق</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let autoRefreshTimer = null;
     let searchDebounceTimer = null;
@@ -3617,6 +3681,7 @@ def home() -> HTMLResponse:
     const LOCATION_TAB_SOURCE_FILE = 'مواقع_من_التطبيق.xlsx';
     const SCRIPT_XLSX = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
     const SCRIPT_QR = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+    const SCRIPT_TESSERACT = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
     const loadedScripts = {};
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
     let snapshotLoadPromise = null;
@@ -3644,6 +3709,10 @@ def home() -> HTMLResponse:
     async function ensureQrLib() {
       if (typeof Html5Qrcode !== 'undefined') return;
       await loadExternalScript(SCRIPT_QR);
+    }
+    async function ensureTesseractLib() {
+      if (typeof Tesseract !== 'undefined') return;
+      await loadExternalScript(SCRIPT_TESSERACT);
     }
 
     function setSyncInfo(message) {
@@ -3674,54 +3743,118 @@ def home() -> HTMLResponse:
     const LOCATION_BARCODE_SEARCH_KEYS_MAX_JS = 6;
     let locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [], accepted: false };
     let scanLockScrollY = 0;
+    let scanLockTimers = [];
 
+    function getScanScreenAngle() {
+      try {
+        if (screen.orientation && typeof screen.orientation.angle === 'number') {
+          return ((screen.orientation.angle % 360) + 360) % 360;
+        }
+      } catch (_) {}
+      if (typeof window.orientation === 'number') {
+        return ((window.orientation % 360) + 360) % 360;
+      }
+      return window.innerWidth > window.innerHeight ? 90 : 0;
+    }
     function scanOrientationIsLandscape() {
+      if (window.innerWidth > window.innerHeight) return true;
       try {
         const type = String((screen.orientation && screen.orientation.type) || '');
         if (type.indexOf('landscape') >= 0) return true;
       } catch (_) {}
-      const ang = typeof window.orientation === 'number' ? window.orientation : 0;
-      return Math.abs(ang) === 90;
+      const ang = getScanScreenAngle();
+      return ang === 90 || ang === 270;
     }
     function keepScanPortrait() {
-      const modal = document.getElementById('barcodeModal');
-      if (!modal || !document.documentElement.classList.contains('barcode-scan-open')) return;
-      const ang = typeof window.orientation === 'number' ? window.orientation : 0;
+      const html = document.documentElement;
+      if (!html.classList.contains('barcode-scan-open')) return;
       const landscape = scanOrientationIsLandscape();
-      if (!landscape) {
+      const ang = getScanScreenAngle();
+      html.classList.toggle('scan-is-landscape', landscape);
+      document.querySelectorAll('.barcode-modal-overlay').forEach((modal) => {
         modal.classList.remove('force-portrait', 'force-portrait-left');
-        return;
+        if (!landscape || !modal.classList.contains('active')) return;
+        if (ang === 270 || ang === -90) modal.classList.add('force-portrait-left');
+        else modal.classList.add('force-portrait');
+      });
+    }
+    function scheduleKeepScanPortrait() {
+      keepScanPortrait();
+      scanLockTimers.forEach((id) => clearTimeout(id));
+      scanLockTimers = [50, 150, 350, 700].map((ms) => setTimeout(keepScanPortrait, ms));
+    }
+    async function tryNativePortraitLock() {
+      const ori = (typeof screen !== 'undefined') ? screen.orientation : null;
+      if (ori && typeof ori.lock === 'function') {
+        for (const mode of ['portrait', 'portrait-primary']) {
+          try {
+            await ori.lock(mode);
+            return true;
+          } catch (_) {}
+        }
       }
-      if (ang === -90 || ang === 270) {
-        modal.classList.add('force-portrait-left');
-        modal.classList.remove('force-portrait');
-      } else {
-        modal.classList.add('force-portrait');
-        modal.classList.remove('force-portrait-left');
-      }
+      const modal = document.querySelector('.barcode-modal-overlay.active') || document.getElementById('barcodeModal');
+      try {
+        if (modal && modal.requestFullscreen) {
+          await modal.requestFullscreen();
+          if (ori && typeof ori.lock === 'function') {
+            await ori.lock('portrait');
+            return true;
+          }
+        }
+      } catch (_) {}
+      try {
+        if (document.documentElement.webkitRequestFullscreen) {
+          document.documentElement.webkitRequestFullscreen();
+        }
+      } catch (_) {}
+      return false;
     }
     async function lockScanOrientation() {
       scanLockScrollY = window.scrollY || document.documentElement.scrollTop || 0;
       document.documentElement.classList.add('barcode-scan-open');
       document.body.style.top = '-' + scanLockScrollY + 'px';
+      await tryNativePortraitLock();
+      window.addEventListener('orientationchange', scheduleKeepScanPortrait);
+      window.addEventListener('resize', scheduleKeepScanPortrait);
       try {
-        if (screen.orientation && screen.orientation.lock) {
-          await screen.orientation.lock('portrait').catch(() => {});
+        if (screen.orientation && screen.orientation.addEventListener) {
+          screen.orientation.addEventListener('change', scheduleKeepScanPortrait);
         }
       } catch (_) {}
-      window.addEventListener('orientationchange', keepScanPortrait);
-      window.addEventListener('resize', keepScanPortrait);
-      keepScanPortrait();
+      try {
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', scheduleKeepScanPortrait);
+        }
+      } catch (_) {}
+      scheduleKeepScanPortrait();
     }
     function unlockScanOrientation() {
       if (!document.documentElement.classList.contains('barcode-scan-open')) return;
-      document.documentElement.classList.remove('barcode-scan-open');
+      scanLockTimers.forEach((id) => clearTimeout(id));
+      scanLockTimers = [];
+      document.documentElement.classList.remove('barcode-scan-open', 'scan-is-landscape');
       document.body.style.top = '';
-      window.removeEventListener('orientationchange', keepScanPortrait);
-      window.removeEventListener('resize', keepScanPortrait);
-      const modal = document.getElementById('barcodeModal');
-      if (modal) modal.classList.remove('force-portrait', 'force-portrait-left');
+      window.removeEventListener('orientationchange', scheduleKeepScanPortrait);
+      window.removeEventListener('resize', scheduleKeepScanPortrait);
+      try {
+        if (screen.orientation && screen.orientation.removeEventListener) {
+          screen.orientation.removeEventListener('change', scheduleKeepScanPortrait);
+        }
+      } catch (_) {}
+      try {
+        if (window.visualViewport) {
+          window.visualViewport.removeEventListener('resize', scheduleKeepScanPortrait);
+        }
+      } catch (_) {}
+      document.querySelectorAll('.barcode-modal-overlay').forEach((modal) => {
+        modal.classList.remove('force-portrait', 'force-portrait-left');
+      });
       try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+      try {
+        if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+        else if (document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
+      } catch (_) {}
       window.scrollTo(0, scanLockScrollY || 0);
     }
 
@@ -3824,6 +3957,7 @@ def home() -> HTMLResponse:
         document.getElementById('wiperSearchPanel').classList.toggle('active', false);
         document.getElementById('locationSearchPanel').classList.toggle('active', true);
       }
+      await closeLocationOcrScanner();
       const modal = document.getElementById('barcodeModal');
       const regionId = 'barcodeScannerRegion';
       setBarcodeScanStatus('جاري تحميل قارئ الباركود...');
@@ -3971,6 +4105,175 @@ def home() -> HTMLResponse:
         confirmBtn.onclick = null;
       }
       locScanSession = { lastCanon: null, streak: 0, pendingCanon: '', pendingRaw: '', lastCbMs: 0, window: [], accepted: false };
+    }
+
+    let ocrStream = null;
+    let ocrWorker = null;
+    let ocrBusy = false;
+
+    function setOcrScanStatus(text) {
+      const el = document.getElementById('ocrScanStatus');
+      if (el) el.innerText = text || '';
+    }
+    function activateLocationTabQuiet() {
+      if (activeSearchTab === 'location') return;
+      activeSearchTab = 'location';
+      try { localStorage.setItem('activeSearchTab', 'location'); } catch (_) {}
+      document.getElementById('tabMainBtn').classList.toggle('active', false);
+      document.getElementById('tabSizeBtn').classList.toggle('active', false);
+      document.getElementById('tabWiperBtn').classList.toggle('active', false);
+      document.getElementById('tabLocBtn').classList.toggle('active', true);
+      document.getElementById('mainSearchPanel').classList.toggle('active', false);
+      document.getElementById('sizeSearchPanel').classList.toggle('active', false);
+      document.getElementById('wiperSearchPanel').classList.toggle('active', false);
+      document.getElementById('locationSearchPanel').classList.toggle('active', true);
+    }
+    function pickOcrQuery(raw) {
+      const lines = String(raw || '')
+        .replace(/[|]/g, ' ')
+        .split(/[\n\r]+/)
+        .map((s) => s.replace(/\\s+/g, ' ').trim())
+        .filter((s) => s.length >= 2);
+      if (!lines.length) return String(raw || '').replace(/\\s+/g, ' ').trim();
+      function score(s) {
+        const letters = (s.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
+        const digits = (s.match(/\\d/g) || []).length;
+        const junk = (s.match(/[^A-Za-z0-9\u0600-\u06FF\\s.\\-\\/]/g) || []).length;
+        return letters * 2 + digits * 3 - junk * 2 + Math.min(s.length, 28);
+      }
+      lines.sort((a, b) => score(b) - score(a));
+      return lines[0];
+    }
+    async function recognizeTextFromCanvas(canvas) {
+      if (typeof TextDetector === 'function') {
+        try {
+          const detector = new TextDetector();
+          const bitmap = await createImageBitmap(canvas);
+          const hits = await detector.detect(bitmap);
+          const joined = (hits || []).map((h) => String(h.rawValue || '').trim()).filter(Boolean).join('\n');
+          if (pickOcrQuery(joined).length >= 2) return joined;
+        } catch (_) {}
+      }
+      await ensureTesseractLib();
+      if (typeof Tesseract === 'undefined') throw new Error('tesseract-missing');
+      if (!ocrWorker) {
+        ocrWorker = await Tesseract.createWorker('eng+ara');
+      }
+      const result = await ocrWorker.recognize(canvas);
+      return String((result && result.data && result.data.text) || '');
+    }
+    async function openLocationOcrScanner() {
+      activateLocationTabQuiet();
+      await closeBarcodeScanner();
+      const modal = document.getElementById('ocrModal');
+      const video = document.getElementById('ocrVideo');
+      const preview = document.getElementById('ocrTextPreview');
+      if (!modal || !video) return;
+      if (preview) preview.value = '';
+      setOcrScanStatus('جاري فتح الكاميرا...');
+      modal.classList.add('active');
+      modal.setAttribute('aria-hidden', 'false');
+      await lockScanOrientation();
+      try {
+        ocrStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+      } catch (_) {
+        try {
+          ocrStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+        } catch (e2) {
+          modal.classList.remove('active');
+          modal.setAttribute('aria-hidden', 'true');
+          unlockScanOrientation();
+          alert('تعذر فتح الكاميرا. استخدم HTTPS واسمح بالكاميرا.');
+          return;
+        }
+      }
+      video.srcObject = ocrStream;
+      video.setAttribute('playsinline', 'true');
+      video.muted = true;
+      try { await video.play(); } catch (_) {}
+      setOcrScanStatus('وجّه الكاميرا على الاسم أو الرقم ثم اضغط اقرأ النص');
+      ensureTesseractLib().catch(() => {});
+    }
+    async function closeLocationOcrScanner() {
+      const modal = document.getElementById('ocrModal');
+      const wasOpen = !!(modal && modal.classList.contains('active'));
+      if (modal) {
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+      const video = document.getElementById('ocrVideo');
+      if (video) {
+        try { video.pause(); } catch (_) {}
+        video.srcObject = null;
+      }
+      if (ocrStream) {
+        try { ocrStream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+        ocrStream = null;
+      }
+      if (wasOpen) unlockScanOrientation();
+    }
+    async function captureLocationOcr() {
+      if (ocrBusy) return;
+      const video = document.getElementById('ocrVideo');
+      const preview = document.getElementById('ocrTextPreview');
+      const capBtn = document.getElementById('ocrCaptureBtn');
+      if (!video || !video.videoWidth) {
+        setOcrScanStatus('الكاميرا لم تجهز بعد. انتظر لحظة.');
+        return;
+      }
+      ocrBusy = true;
+      if (capBtn) capBtn.disabled = true;
+      setOcrScanStatus('جاري قراءة النص... قد تستغرق أول مرة تحميل القواميس.');
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const raw = await recognizeTextFromCanvas(canvas);
+        const query = pickOcrQuery(raw);
+        if (preview) preview.value = query;
+        if (!query || query.length < 2) {
+          setOcrScanStatus('ما انقرأ نص واضح. قرّب الكاميرا أو حسّن الإضاءة ثم أعد المحاولة.');
+          return;
+        }
+        setOcrScanStatus('تمت القراءة — جاري البحث...');
+        try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
+        await applyLocationOcrSearch(query);
+      } catch (err) {
+        const m = (err && err.message) ? String(err.message) : '';
+        setOcrScanStatus('تعذر قراءة النص. تحقق من الإنترنت ثم أعد المحاولة.' + (m ? ' (' + m + ')' : ''));
+      } finally {
+        ocrBusy = false;
+        if (capBtn) capBtn.disabled = false;
+      }
+    }
+    async function applyLocationOcrSearch(query) {
+      const q = String(query || '').trim();
+      if (!q) {
+        setOcrScanStatus('اكتب أو اقرأ نصاً أولاً.');
+        return;
+      }
+      const textEl = document.getElementById('locationTextQueryInput');
+      const bcEl = document.getElementById('locationBarcodeQueryInput');
+      if (textEl) textEl.value = q;
+      if (bcEl) bcEl.value = '';
+      try { localStorage.setItem('lastLocationTextQuery', q); } catch (_) {}
+      try { localStorage.setItem('lastLocationBarcodeQuery', ''); } catch (_) {}
+      await closeLocationOcrScanner();
+      await searchNow('location');
+    }
+    async function searchLocationOcrText() {
+      const preview = document.getElementById('ocrTextPreview');
+      const q = preview ? String(preview.value || '').trim() : '';
+      if (!q) {
+        setOcrScanStatus('اقرأ النص أولاً أو اكتبه في المربع.');
+        return;
+      }
+      await applyLocationOcrSearch(q);
     }
 
     async function uploadWiperExcelFromInput(inputId, statusId) {
@@ -7476,6 +7779,7 @@ def manifest() -> HTMLResponse:
         "short_name": "تبديل الأصناف",
         "start_url": "/",
         "display": "standalone",
+        "orientation": "portrait",
         "background_color": "#ffffff",
         "theme_color": "#1a2744",
         "lang": "ar",
