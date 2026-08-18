@@ -4131,7 +4131,7 @@ def home() -> HTMLResponse:
     function pickOcrQuery(raw) {
       const lines = String(raw || '')
         .replace(/[|]/g, ' ')
-        .split(/[\n\r]+/)
+        .split(/\\n+|\\r+/)
         .map((s) => s.replace(/\\s+/g, ' ').trim())
         .filter((s) => s.length >= 2);
       if (!lines.length) return String(raw || '').replace(/\\s+/g, ' ').trim();
@@ -4150,7 +4150,7 @@ def home() -> HTMLResponse:
           const detector = new TextDetector();
           const bitmap = await createImageBitmap(canvas);
           const hits = await detector.detect(bitmap);
-          const joined = (hits || []).map((h) => String(h.rawValue || '').trim()).filter(Boolean).join('\n');
+          const joined = (hits || []).map((h) => String(h.rawValue || '').trim()).filter(Boolean).join('\\n');
           if (pickOcrQuery(joined).length >= 2) return joined;
         } catch (_) {}
       }
