@@ -3442,15 +3442,48 @@ def home() -> HTMLResponse:
       width: 100% !important;
       height: 100% !important;
     }
-    #ocrVideo {
+    #ocrVideoWrap {
+      position: relative;
       width: 100%;
+      height: min(48vh, 360px);
       min-height: 240px;
       max-height: 48vh;
       margin: 10px 0;
       border-radius: 10px;
       overflow: hidden;
       background: #111;
+    }
+    #ocrVideoWrap #ocrVideo {
+      margin: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 240px;
+      max-height: 48vh;
       object-fit: cover;
+    }
+    #ocrGuide {
+      position: absolute;
+      left: 7%;
+      right: 7%;
+      top: 16%;
+      bottom: 16%;
+      border: 2px solid #4dff88;
+      border-radius: 8px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.48);
+      pointer-events: none;
+    }
+    #ocrGuideHint {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 6px;
+      text-align: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      text-shadow: 0 1px 3px #000;
+      pointer-events: none;
     }
     #ocrTextPreview { font-size: 16px; text-align: right; }
     @media screen and (orientation: landscape) {
@@ -3654,9 +3687,13 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">وجّه الكاميرا على الملصق. النص يُكتب كما هو في الصورة: عربي يبقى عربي وإنجليزي يبقى إنجليزي. الاسم والرقم قد يحتويان أحرفاً وأرقاماً.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">وجّه الكاميرا ثم اختر اقرأ الاسم أو اقرأ الرقم</p>
-      <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">ضع <strong>اللزقة الصغيرة الداخلية</strong> داخل الإطار الأخضر فقط. لا تُقرأ الكتابة اللي برّا اللزقة.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة الداخلية داخل الإطار ثم اقرأ الاسم أو الرقم</p>
+      <div id="ocrVideoWrap">
+        <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
+        <div id="ocrGuide"></div>
+        <div id="ocrGuideHint">اللزقة الداخلية هنا</div>
+      </div>
       <input id="ocrTextPreview" dir="auto" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
       <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
         <button type="button" id="ocrNameBtn" onclick="captureLocationOcr('name')">اقرأ الاسم</button>
@@ -4141,9 +4178,17 @@ def home() -> HTMLResponse:
     }
     function ocrIsBarcodeLike(s) {
       const t = ocrCleanPiece(s);
+      const compact = t.replace(/\\s/g, '');
       const digits = (t.match(/\\d/g) || []).length;
       const letters = (t.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
-      return digits >= 10 && letters <= 1 && digits / Math.max(t.replace(/\\s/g, '').length, 1) > 0.8;
+      if (letters === 0 && digits >= 8 && digits === compact.length) return true;
+      return digits >= 10 && letters <= 1 && digits / Math.max(compact.length, 1) > 0.8;
+    }
+    function ocrIsOuterLabelJunk(s) {
+      const t = ocrCleanPiece(s).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, '');
+      if (!t) return false;
+      if (t.indexOf('bhgroup') >= 0 || t.indexOf('westbank') >= 0 || t.indexOf('israel') >= 0) return true;
+      return t === 'ring' || t === 'ma' || t === 'min';
     }
     function ocrLetterCount(s) {
       return (String(s || '').match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
@@ -4270,27 +4315,42 @@ def home() -> HTMLResponse:
       return out;
     }
     function pickOcrName(lines) {
-      const keep = (lines || []).filter(ocrIsNameLike);
-      const use = keep.length ? keep : (lines || []).filter((s) => !ocrIsBarcodeLike(s));
-      return ocrCleanPiece(use.join(' '));
+      const cleaned = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s));
+      const mixed = cleaned.filter((s) => ocrHasArabic(s) && (ocrHasLatin(s) || ocrDigitCount(s) > 0));
+      if (mixed.length) return ocrCleanPiece(mixed.join(' '));
+      const ara = cleaned.filter(ocrHasArabic);
+      if (ara.length) {
+        const extraLatin = cleaned.filter((s) => !ocrHasArabic(s) && ocrHasLatin(s) && !ocrIsNumberLike(s));
+        return ocrCleanPiece(ara.concat(extraLatin).join(' '));
+      }
+      const keep = cleaned.filter(ocrIsNameLike);
+      return ocrCleanPiece((keep.length ? keep : cleaned).join(' '));
+    }
+    function ocrNumberScore(s) {
+      const compact = ocrCleanPiece(s).replace(/\\s/g, '');
+      const digits = ocrDigitCount(compact);
+      const letters = ocrLetterCount(compact);
+      let score = digits * 2 + letters;
+      if (letters >= 1 && digits >= 2) score += 22;
+      if (letters === 0) score -= 6;
+      if (letters === 0 && /^0+/.test(compact)) score -= 16;
+      score -= compact.length * 0.05;
+      return score;
     }
     function pickOcrNumber(lines) {
       const candidates = [];
       (lines || []).forEach((line) => {
+        if (ocrIsOuterLabelJunk(line) || ocrIsBarcodeLike(line)) return;
         if (ocrIsNumberLike(line)) candidates.push(line);
         String(line || '').split(' ').forEach((tok) => {
-          if (ocrIsNumberLike(tok)) candidates.push(tok);
+          if (ocrIsNumberLike(tok) && !ocrIsBarcodeLike(tok)) candidates.push(tok);
         });
       });
       if (!candidates.length) {
-        const fallback = (lines || []).filter((s) => !ocrIsBarcodeLike(s) && ocrDigitCount(s) > 0);
+        const fallback = (lines || []).filter((s) => !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s) && ocrDigitCount(s) > 0);
         return ocrCleanPiece(fallback[0] || '');
       }
-      candidates.sort((a, b) => {
-        const sa = ocrDigitCount(a) * 2 + ocrLetterCount(a) - String(a).length * 0.05;
-        const sb = ocrDigitCount(b) * 2 + ocrLetterCount(b) - String(b).length * 0.05;
-        return sb - sa;
-      });
+      candidates.sort((a, b) => ocrNumberScore(b) - ocrNumberScore(a));
       return ocrCleanPiece(candidates[0]);
     }
     function pickOcrQuery(raw, mode) {
@@ -4342,6 +4402,7 @@ def home() -> HTMLResponse:
       } else if (!lines.length) {
         lines = (araText + '\\n' + engText).split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
       }
+      lines = lines.filter((s) => s && !ocrIsOuterLabelJunk(s));
       return { lines: lines, raw: lines.join(' ') };
     }
     async function openLocationOcrScanner() {
@@ -4376,7 +4437,7 @@ def home() -> HTMLResponse:
       video.setAttribute('playsinline', 'true');
       video.muted = true;
       try { await video.play(); } catch (_) {}
-      setOcrScanStatus('وجّه الكاميرا ثم اضغط اقرأ الاسم أو اقرأ الرقم');
+      setOcrScanStatus('ضع اللزقة الداخلية داخل الإطار الأخضر ثم اقرأ الاسم أو الرقم');
       ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
@@ -4397,6 +4458,205 @@ def home() -> HTMLResponse:
       }
       if (wasOpen) unlockScanOrientation();
     }
+    function cropCanvasRect(src, rect) {
+      const x = Math.max(0, Math.floor(rect.x || 0));
+      const y = Math.max(0, Math.floor(rect.y || 0));
+      const w = Math.max(8, Math.min(src.width - x, Math.floor(rect.w || src.width)));
+      const h = Math.max(8, Math.min(src.height - y, Math.floor(rect.h || src.height)));
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      out.getContext('2d').drawImage(src, x, y, w, h, 0, 0, w, h);
+      return out;
+    }
+    function mapGuideRectToVideo(video, wrap, guide) {
+      const wrapRect = wrap.getBoundingClientRect();
+      const guideRect = guide.getBoundingClientRect();
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const rw = wrapRect.width;
+      const rh = wrapRect.height;
+      if (!vw || !vh || !rw || !rh) return null;
+      const videoAspect = vw / vh;
+      const boxAspect = rw / rh;
+      let dispW = rw;
+      let dispH = rh;
+      let offX = 0;
+      let offY = 0;
+      if (boxAspect > videoAspect) {
+        dispW = rw;
+        dispH = rw / videoAspect;
+        offY = (rh - dispH) / 2;
+      } else {
+        dispH = rh;
+        dispW = rh * videoAspect;
+        offX = (rw - dispW) / 2;
+      }
+      const gx = guideRect.left - wrapRect.left;
+      const gy = guideRect.top - wrapRect.top;
+      const scaleX = vw / dispW;
+      const scaleY = vh / dispH;
+      return {
+        x: Math.max(0, (gx - offX) * scaleX),
+        y: Math.max(0, (gy - offY) * scaleY),
+        w: Math.min(vw, guideRect.width * scaleX),
+        h: Math.min(vh, guideRect.height * scaleY)
+      };
+    }
+    function floodFillBestRect(mask, gw, gh, opts) {
+      const seen = new Uint8Array(gw * gh);
+      let best = null;
+      const minCount = opts.minCount || 4;
+      const maxArea = opts.maxArea || 0.85;
+      const minArea = opts.minArea || 0;
+      const minFill = opts.minFill || 0.28;
+      const minAspect = opts.minAspect || 0.7;
+      const maxAspect = opts.maxAspect || 8;
+      const maxEdges = opts.maxEdges != null ? opts.maxEdges : 4;
+      for (let i = 0; i < gw * gh; i++) {
+        if (!mask[i] || seen[i]) continue;
+        const stack = [i];
+        seen[i] = 1;
+        let minx = gw, miny = gh, maxx = 0, maxy = 0, count = 0;
+        while (stack.length) {
+          const p = stack.pop();
+          const x = p % gw;
+          const y = (p / gw) | 0;
+          count += 1;
+          if (x < minx) minx = x;
+          if (y < miny) miny = y;
+          if (x > maxx) maxx = x;
+          if (y > maxy) maxy = y;
+          if (x > 0 && mask[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; stack.push(p - 1); }
+          if (x + 1 < gw && mask[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; stack.push(p + 1); }
+          if (y > 0 && mask[p - gw] && !seen[p - gw]) { seen[p - gw] = 1; stack.push(p - gw); }
+          if (y + 1 < gh && mask[p + gw] && !seen[p + gw]) { seen[p + gw] = 1; stack.push(p + gw); }
+        }
+        const bw = maxx - minx + 1;
+        const bh = maxy - miny + 1;
+        const areaFrac = count / (gw * gh);
+        const fill = count / Math.max(bw * bh, 1);
+        const aspect = bw / Math.max(bh, 1);
+        let edges = 0;
+        if (minx <= 1) edges += 1;
+        if (maxx >= gw - 2) edges += 1;
+        if (miny <= 1) edges += 1;
+        if (maxy >= gh - 2) edges += 1;
+        if (count < minCount || areaFrac < minArea || areaFrac > maxArea) continue;
+        if (fill < minFill || aspect < minAspect || aspect > maxAspect || edges > maxEdges) continue;
+        const cx = (minx + maxx) / 2 / gw;
+        const cy = (miny + maxy) / 2 / gh;
+        const center = 1 - Math.hypot(cx - 0.5, cy - 0.5);
+        const score = count * 0.04 + fill * 2 + center + Math.min(aspect, 3) * 0.2;
+        if (!best || score > best.score) best = { minx: minx, miny: miny, maxx: maxx, maxy: maxy, score: score };
+      }
+      return best;
+    }
+    function gridRectToCanvas(best, cell, w, h, padX, padY) {
+      if (!best) return null;
+      const x = Math.max(0, best.minx * cell - padX);
+      const y = Math.max(0, best.miny * cell - padY);
+      const rw = Math.min(w - x, (best.maxx + 1) * cell - best.minx * cell + padX * 2);
+      const rh = Math.min(h - y, (best.maxy + 1) * cell - best.miny * cell + padY * 2);
+      if (rw < 24 || rh < 16) return null;
+      return { x: x, y: y, w: rw, h: rh };
+    }
+    function detectDenseTextRect(canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w < 20 || h < 20) return null;
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const cell = Math.max(6, Math.floor(Math.min(w, h) / 28));
+      const gw = Math.ceil(w / cell);
+      const gh = Math.ceil(h / cell);
+      const act = new Float32Array(gw * gh);
+      for (let gy = 0; gy < gh; gy++) {
+        for (let gx = 0; gx < gw; gx++) {
+          let sum = 0, sum2 = 0, n = 0;
+          const x0 = gx * cell, y0 = gy * cell;
+          const x1 = Math.min(w, x0 + cell), y1 = Math.min(h, y0 + cell);
+          for (let y = y0; y < y1; y++) {
+            for (let x = x0; x < x1; x++) {
+              const i = (y * w + x) * 4;
+              const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+              sum += g; sum2 += g * g; n += 1;
+            }
+          }
+          act[gy * gw + gx] = n ? (sum2 / n - (sum / n) * (sum / n)) : 0;
+        }
+      }
+      const vals = [];
+      for (let i = 0; i < act.length; i++) { if (act[i] > 8) vals.push(act[i]); }
+      if (vals.length < 4) return null;
+      vals.sort(function(a, b) { return a - b; });
+      const thr = vals[Math.min(vals.length - 1, Math.floor(vals.length * 0.58))];
+      const mask = new Uint8Array(gw * gh);
+      for (let i = 0; i < act.length; i++) mask[i] = act[i] >= thr ? 1 : 0;
+      const best = floodFillBestRect(mask, gw, gh, { minCount: 4, maxArea: 0.82, minFill: 0.28, minAspect: 0.7, maxAspect: 8 });
+      return gridRectToCanvas(best, cell, w, h, cell * 1.2, cell * 1.1);
+    }
+    function detectBrightStickerRect(canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w < 20 || h < 20) return null;
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const step = Math.max(2, Math.floor(Math.min(w, h) / 160));
+      const samples = [];
+      for (let y = 0; y < h; y += step) {
+        for (let x = 0; x < w; x += step) {
+          const i = (y * w + x) * 4;
+          samples.push(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+        }
+      }
+      samples.sort(function(a, b) { return a - b; });
+      const thr = samples[Math.floor(samples.length * 0.62)] + 6;
+      const gw = Math.ceil(w / step);
+      const gh = Math.ceil(h / step);
+      const mask = new Uint8Array(gw * gh);
+      for (let gy = 0; gy < gh; gy++) {
+        for (let gx = 0; gx < gw; gx++) {
+          const x = Math.min(w - 1, gx * step);
+          const y = Math.min(h - 1, gy * step);
+          const i = (y * w + x) * 4;
+          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          mask[gy * gw + gx] = g >= thr ? 1 : 0;
+        }
+      }
+      const best = floodFillBestRect(mask, gw, gh, {
+        minCount: 12, minArea: 0.06, maxArea: 0.72, minFill: 0.45,
+        minAspect: 1.15, maxAspect: 6.5, maxEdges: 2
+      });
+      return gridRectToCanvas(best, step, w, h, step * 4, step * 3);
+    }
+    function chooseInnerStickerRect(dense, bright) {
+      if (bright && dense) {
+        const densInside = dense.x >= bright.x - 10 && dense.y >= bright.y - 10
+          && dense.x + dense.w <= bright.x + bright.w + 10
+          && dense.y + dense.h <= bright.y + bright.h + 10;
+        return densInside ? bright : dense;
+      }
+      return dense || bright || null;
+    }
+    function captureOcrStickerCanvas(video) {
+      const full = document.createElement('canvas');
+      full.width = video.videoWidth;
+      full.height = video.videoHeight;
+      full.getContext('2d').drawImage(video, 0, 0);
+      const wrap = document.getElementById('ocrVideoWrap');
+      const guide = document.getElementById('ocrGuide');
+      let crop = full;
+      if (wrap && guide) {
+        const r = mapGuideRectToVideo(video, wrap, guide);
+        if (r && r.w > 40 && r.h > 30) crop = cropCanvasRect(full, r);
+      }
+      const inner = chooseInnerStickerRect(detectDenseTextRect(crop), detectBrightStickerRect(crop));
+      if (inner && inner.w > 30 && inner.h > 18) return cropCanvasRect(crop, inner);
+      return crop;
+    }
     async function captureLocationOcr(mode) {
       if (ocrBusy) return;
       const kind = mode === 'number' ? 'number' : 'name';
@@ -4415,11 +4675,7 @@ def home() -> HTMLResponse:
         ? 'جاري قراءة الرقم... أول مرة قد يتأخر تحميل القواميس.'
         : 'جاري قراءة الاسم... أول مرة قد يتأخر تحميل القواميس.');
       try {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const canvas = captureOcrStickerCanvas(video);
         const structured = await recognizeOcrStructured(canvas, kind);
         const lines = (structured && structured.lines && structured.lines.length)
           ? structured.lines
