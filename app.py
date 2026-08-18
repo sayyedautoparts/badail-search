@@ -4110,6 +4110,7 @@ def home() -> HTMLResponse:
 
     let ocrStream = null;
     let ocrWorker = null;
+    let ocrWorkerLang = '';
     let ocrBusy = false;
 
     function setOcrScanStatus(text) {
@@ -4190,12 +4191,83 @@ def home() -> HTMLResponse:
         }
       });
       return lines.map((line) => {
-        const ws = line.words.slice().sort((a, b) => a.x - b.x);
+        const ws = line.words.slice();
         const arabic = ws.filter((w) => ocrHasArabic(w.text)).length;
         const latin = ws.filter((w) => ocrHasLatin(w.text) && !ocrHasArabic(w.text)).length;
-        if (arabic > latin) ws.sort((a, b) => b.x - a.x);
+        ws.sort((a, b) => (arabic > latin ? (b.x - a.x) : (a.x - b.x)));
         return ocrCleanPiece(ws.map((w) => w.text).join(' '));
       }).filter(Boolean);
+    }
+    function prepareOcrCanvas(src) {
+      const scale = Math.min(2.6, Math.max(1.5, 1700 / Math.max(src.width, 1)));
+      const w = Math.max(1, Math.round(src.width * scale));
+      const h = Math.max(1, Math.round(src.height * scale));
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(src, 0, 0, w, h);
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      for (let i = 0; i < d.length; i += 4) {
+        let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        y = (y - 128) * 1.55 + 140;
+        if (y < 0) y = 0;
+        if (y > 255) y = 255;
+        d[i] = d[i + 1] = d[i + 2] = y;
+      }
+      ctx.putImageData(img, 0, 0);
+      return c;
+    }
+    async function ensureOcrWorker() {
+      await ensureTesseractLib();
+      if (typeof Tesseract === 'undefined') throw new Error('tesseract-missing');
+      if (ocrWorker) return;
+      setOcrScanStatus('جاري تحميل قاموس العربية (مرة واحدة)...');
+      ocrWorker = await Tesseract.createWorker('ara+eng', 1, {
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
+      });
+      try {
+        await ocrWorker.initialize('ara');
+        ocrWorkerLang = 'ara';
+      } catch (_) {
+        ocrWorkerLang = 'ara+eng';
+      }
+      try {
+        await ocrWorker.setParameters({
+          tessedit_pageseg_mode: '3',
+          preserve_interword_spaces: '1'
+        });
+      } catch (_) {}
+    }
+    async function ocrRecognizeWithLang(canvas, lang) {
+      await ensureOcrWorker();
+      if (ocrWorkerLang !== lang) {
+        try {
+          await ocrWorker.initialize(lang);
+          ocrWorkerLang = lang;
+          await ocrWorker.setParameters({
+            tessedit_pageseg_mode: '3',
+            preserve_interword_spaces: '1'
+          });
+        } catch (_) {}
+      }
+      const result = await ocrWorker.recognize(canvas);
+      return (result && result.data) || {};
+    }
+    function mergeAraEngWords(araWords, engWords) {
+      const out = [];
+      (araWords || []).forEach((w) => {
+        const t = ocrCleanPiece(w.text);
+        if (t && ocrHasArabic(t)) out.push(w);
+      });
+      (engWords || []).forEach((w) => {
+        const t = ocrCleanPiece(w.text);
+        if (!t || ocrHasArabic(t)) return;
+        if (ocrHasLatin(t) || ocrDigitCount(t) > 0) out.push(w);
+      });
+      return out;
     }
     function pickOcrName(lines) {
       const keep = (lines || []).filter(ocrIsNameLike);
@@ -4229,11 +4301,13 @@ def home() -> HTMLResponse:
       if (mode === 'number') return pickOcrNumber(fallbackLines);
       return pickOcrName(fallbackLines);
     }
-    async function recognizeOcrStructured(canvas) {
-      if (typeof TextDetector === 'function') {
+    async function recognizeOcrStructured(canvas, mode) {
+      const prepared = prepareOcrCanvas(canvas);
+      const kind = mode === 'number' ? 'number' : 'name';
+      if (kind === 'number' && typeof TextDetector === 'function') {
         try {
           const detector = new TextDetector();
-          const bitmap = await createImageBitmap(canvas);
+          const bitmap = await createImageBitmap(prepared);
           const hits = await detector.detect(bitmap);
           const words = (hits || []).map((h) => {
             const b = h.boundingBox || {};
@@ -4243,29 +4317,32 @@ def home() -> HTMLResponse:
             };
           });
           const lines = ocrLinesFromWords(words);
-          if (lines.length) return { lines: lines, raw: lines.join(' ') };
+          const q = pickOcrNumber(lines);
+          if (q && ocrDigitCount(q) >= 2) return { lines: lines, raw: lines.join(' ') };
         } catch (_) {}
       }
-      await ensureTesseractLib();
-      if (typeof Tesseract === 'undefined') throw new Error('tesseract-missing');
-      if (!ocrWorker) {
-        ocrWorker = await Tesseract.createWorker('ara+eng');
-        try {
-          await ocrWorker.setParameters({
-            tessedit_pageseg_mode: '6',
-            preserve_interword_spaces: '1'
-          });
-        } catch (_) {}
+      setOcrScanStatus(kind === 'number' ? 'جاري قراءة الرقم بالعربية والإنجليزية...' : 'جاري قراءة الاسم بالعربية...');
+      const araData = await ocrRecognizeWithLang(prepared, 'ara');
+      setOcrScanStatus('جاري قراءة الجزء الإنجليزي...');
+      let engData = {};
+      try {
+        engData = await ocrRecognizeWithLang(prepared, 'eng');
+      } catch (_) {
+        engData = {};
       }
-      const result = await ocrWorker.recognize(canvas);
-      const data = (result && result.data) || {};
-      const lines = ocrLinesFromWords(data.words || []);
-      const raw = String(data.text || '');
-      if (lines.length) return { lines: lines, raw: raw };
-      return {
-        lines: raw.split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean),
-        raw: raw
-      };
+      const araText = String(araData.text || '');
+      const engText = String(engData.text || '');
+      const mergedWords = mergeAraEngWords(araData.words || [], engData.words || []);
+      let lines = ocrLinesFromWords(mergedWords);
+      if (ocrHasArabic(araText)) {
+        const araLines = araText.split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
+        const latinLines = lines.filter((l) => ocrHasLatin(l) && !ocrHasArabic(l));
+        const extraLatin = latinLines.filter((l) => araText.indexOf(l) < 0);
+        lines = araLines.concat(extraLatin);
+      } else if (!lines.length) {
+        lines = (araText + '\\n' + engText).split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
+      }
+      return { lines: lines, raw: lines.join(' ') };
     }
     async function openLocationOcrScanner() {
       activateLocationTabQuiet();
@@ -4300,7 +4377,7 @@ def home() -> HTMLResponse:
       video.muted = true;
       try { await video.play(); } catch (_) {}
       setOcrScanStatus('وجّه الكاميرا ثم اضغط اقرأ الاسم أو اقرأ الرقم');
-      ensureTesseractLib().catch(() => {});
+      ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
       const modal = document.getElementById('ocrModal');
@@ -4343,7 +4420,7 @@ def home() -> HTMLResponse:
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const structured = await recognizeOcrStructured(canvas);
+        const structured = await recognizeOcrStructured(canvas, kind);
         const lines = (structured && structured.lines && structured.lines.length)
           ? structured.lines
           : String((structured && structured.raw) || '').split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
