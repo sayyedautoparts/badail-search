@@ -3710,8 +3710,8 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط اللزقة داخل الإطار. لما ينقفش عليها إطار أخضر زي الـ QR، اضغط اقرأ الاسم أو اقرأ الرقم. رح تشوف صورة اللزقة المحددة قبل البحث.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار حتى يظهر التحديد</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط <strong>لزقتك</strong> داخل الإطار الثابت. عند القراءة ينقفل عليها مرة واحدة، ويُهمل كل شي برّاها والباركود داخلها. <strong>اقرأ الاسم</strong> = السطر الأول، <strong>اقرأ الرقم</strong> = السطر الثاني.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم</p>
       <div id="ocrVideoWrap">
         <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
         <div id="ocrGuide"></div>
@@ -3720,7 +3720,7 @@ def home() -> HTMLResponse:
       </div>
       <div id="ocrLockPreviewWrap">
         <img id="ocrLockPreview" alt="اللزقة المحددة" />
-        <div class="muted" style="font-size:12px;margin-top:4px;">هذي اللزقة اللي رح تنقرأ — إذا مش هي، أعد الكاميرا</div>
+        <div class="muted" style="font-size:12px;margin-top:4px;">هذي منطقة الاسم والرقم — الباركود برّا القراءة. إذا مش لزقتك، أعد الكاميرا</div>
       </div>
       <input id="ocrTextPreview" dir="auto" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
       <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
@@ -4585,8 +4585,14 @@ def home() -> HTMLResponse:
       video.muted = true;
       try { await video.play(); } catch (_) {}
       hideOcrLockPreview();
-      setOcrScanStatus('ضع اللزقة داخل الإطار حتى يظهر التحديد مثل الـ QR');
-      startOcrStickerTracking();
+      const canvas = document.getElementById('ocrLockCanvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      const hint = document.getElementById('ocrGuideHint');
+      if (hint) hint.textContent = 'اللزقة هنا';
+      setOcrScanStatus('ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم');
       ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
@@ -4736,26 +4742,69 @@ def home() -> HTMLResponse:
       if (wrap) wrap.classList.remove('active');
       if (img) img.removeAttribute('src');
     }
-    function locateOcrSticker(video, fullRes) {
+    function findStickerBarcodeTop(canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w < 20 || h < 20) return Math.floor(h * 0.62);
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const rowScore = new Float32Array(h);
+      const step = Math.max(1, Math.floor(w / 140));
+      for (let y = 0; y < h; y++) {
+        let acc = 0;
+        let n = 0;
+        for (let x = step; x < w; x += step) {
+          const i = (y * w + x) * 4;
+          const j = (y * w + (x - step)) * 4;
+          const g1 = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          const g0 = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+          acc += Math.abs(g1 - g0);
+          n += 1;
+        }
+        rowScore[y] = n ? acc / n : 0;
+      }
+      const smooth = new Float32Array(h);
+      const win = Math.max(2, Math.floor(h * 0.025));
+      for (let y = 0; y < h; y++) {
+        let s = 0;
+        let c = 0;
+        for (let k = y - win; k <= y + win; k++) {
+          if (k >= 0 && k < h) { s += rowScore[k]; c += 1; }
+        }
+        smooth[y] = s / Math.max(c, 1);
+      }
+      const y0 = Math.floor(h * 0.3);
+      const y1 = Math.floor(h * 0.95);
+      let bestY = y0;
+      let best = 0;
+      for (let y = y0; y < y1; y++) {
+        if (smooth[y] > best) { best = smooth[y]; bestY = y; }
+      }
+      const thr = best * 0.52;
+      let top = bestY;
+      while (top > y0 && smooth[top] > thr) top -= 1;
+      if (top < Math.floor(h * 0.28)) return Math.floor(h * 0.6);
+      return Math.max(Math.floor(h * 0.32), top - Math.floor(h * 0.03));
+    }
+    function cropStickerWithoutBarcode(sticker) {
+      const cut = findStickerBarcodeTop(sticker);
+      return cropCanvasRect(sticker, { x: 0, y: 0, w: sticker.width, h: Math.max(28, cut) });
+    }
+    function locateOcrSticker(video) {
       const wrap = document.getElementById('ocrVideoWrap');
       const guide = document.getElementById('ocrGuide');
       if (!video || !video.videoWidth) return null;
-      const grabScale = fullRes ? 1 : Math.min(1, 640 / video.videoWidth);
+      const grabScale = 1;
       const grab = document.createElement('canvas');
-      grab.width = Math.max(1, Math.round(video.videoWidth * grabScale));
-      grab.height = Math.max(1, Math.round(video.videoHeight * grabScale));
-      grab.getContext('2d').drawImage(video, 0, 0, grab.width, grab.height);
+      grab.width = video.videoWidth;
+      grab.height = video.videoHeight;
+      grab.getContext('2d').drawImage(video, 0, 0);
       let rectVideo = wrap && guide ? mapGuideRectToVideo(video, wrap, guide) : null;
       if (!rectVideo || rectVideo.w < 40 || rectVideo.h < 30) {
         rectVideo = { x: 0, y: 0, w: video.videoWidth, h: video.videoHeight };
       }
-      const guideScaled = {
-        x: rectVideo.x * grabScale,
-        y: rectVideo.y * grabScale,
-        w: rectVideo.w * grabScale,
-        h: rectVideo.h * grabScale
-      };
-      const zone = cropCanvasRect(grab, guideScaled);
+      const zone = cropCanvasRect(grab, rectVideo);
       const inner = chooseInnerStickerRect(detectDenseTextRect(zone), detectBrightStickerRect(zone));
       const zoneArea = zone.width * zone.height;
       let snapped = false;
@@ -4763,31 +4812,19 @@ def home() -> HTMLResponse:
         const innerArea = inner.w * inner.h;
         if (innerArea > zoneArea * 0.12 && innerArea < zoneArea * 0.9) {
           rectVideo = {
-            x: rectVideo.x + inner.x / grabScale,
-            y: rectVideo.y + inner.y / grabScale,
-            w: inner.w / grabScale,
-            h: inner.h / grabScale
+            x: rectVideo.x + inner.x,
+            y: rectVideo.y + inner.y,
+            w: inner.w,
+            h: inner.h
           };
           snapped = true;
         }
       }
-      let crop = null;
-      if (fullRes) {
-        const full = document.createElement('canvas');
-        full.width = video.videoWidth;
-        full.height = video.videoHeight;
-        full.getContext('2d').drawImage(video, 0, 0);
-        crop = cropCanvasRect(full, rectVideo);
-      } else {
-        crop = cropCanvasRect(grab, {
-          x: rectVideo.x * grabScale,
-          y: rectVideo.y * grabScale,
-          w: rectVideo.w * grabScale,
-          h: rectVideo.h * grabScale
-        });
-      }
+      const sticker = cropCanvasRect(grab, rectVideo);
+      const crop = cropStickerWithoutBarcode(sticker);
       return {
         crop: crop,
+        sticker: sticker,
         rectVideo: rectVideo,
         displayRect: wrap ? mapVideoRectToDisplay(video, wrap, rectVideo) : null,
         snapped: snapped
@@ -4802,40 +4839,22 @@ def home() -> HTMLResponse:
     function startOcrStickerTracking() {
       stopOcrStickerTracking();
       ocrFrozen = false;
-      const tick = () => {
-        const modal = document.getElementById('ocrModal');
-        if (ocrFrozen || !modal || !modal.classList.contains('active')) return;
-        const video = document.getElementById('ocrVideo');
-        const hint = document.getElementById('ocrGuideHint');
-        if (video && video.videoWidth) {
-          try {
-            const info = locateOcrSticker(video, false);
-            if (info && info.displayRect) {
-              drawOcrLockOverlay(info.displayRect, !!info.snapped);
-              if (hint) hint.textContent = info.snapped ? 'تم تحديد اللزقة' : 'ضع اللزقة داخل الإطار';
-            } else if (hint) {
-              hint.textContent = 'ضع اللزقة داخل الإطار';
-            }
-          } catch (_) {}
-        }
-        ocrTrackTimer = setTimeout(tick, 240);
-      };
-      tick();
     }
     function resumeOcrCamera() {
       ocrFrozen = false;
       hideOcrLockPreview();
       const video = document.getElementById('ocrVideo');
       const canvas = document.getElementById('ocrLockCanvas');
+      const hint = document.getElementById('ocrGuideHint');
       if (canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
+      if (hint) hint.textContent = 'اللزقة هنا';
       if (video) {
         try { video.play(); } catch (_) {}
       }
-      setOcrScanStatus('ضع اللزقة داخل الإطار حتى يظهر التحديد مثل الـ QR');
-      startOcrStickerTracking();
+      setOcrScanStatus('ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم');
     }
     function floodFillBestRect(mask, gw, gh, opts) {
       const seen = new Uint8Array(gw * gh);
@@ -5001,7 +5020,6 @@ def home() -> HTMLResponse:
         const info = locateOcrSticker(video, true);
         if (!info || !info.crop) {
           setOcrScanStatus('ما قدر يحدد اللزقة. حطها داخل الإطار ثم أعد المحاولة.');
-          startOcrStickerTracking();
           return;
         }
         ocrFrozen = true;
@@ -5011,8 +5029,8 @@ def home() -> HTMLResponse:
         const hint = document.getElementById('ocrGuideHint');
         if (hint) hint.textContent = 'تم قفل اللزقة';
         setOcrScanStatus(kind === 'number'
-          ? 'تم تحديد اللزقة — جاري قراءة الرقم...'
-          : 'تم تحديد اللزقة — جاري قراءة الاسم...');
+          ? 'تم قفل اللزقة — قراءة السطر الثاني (الرقم) فقط...'
+          : 'تم قفل اللزقة — قراءة السطر الأول (الاسم) فقط...');
         try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
         const structured = await recognizeOcrStructured(info.crop, kind);
         const lines = (structured && structured.lines && structured.lines.length)
@@ -5029,7 +5047,6 @@ def home() -> HTMLResponse:
         const m = (err && err.message) ? String(err.message) : '';
         setOcrScanStatus('تعذر قراءة النص. تحقق من الإنترنت ثم أعد المحاولة.' + (m ? ' (' + m + ')' : ''));
         ocrFrozen = false;
-        startOcrStickerTracking();
       } finally {
         ocrBusy = false;
         if (nameBtn) nameBtn.disabled = false;
