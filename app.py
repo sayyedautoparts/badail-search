@@ -3465,14 +3465,31 @@ def home() -> HTMLResponse:
     #ocrGuide {
       position: absolute;
       left: 7%;
-      right: 7%;
       top: 16%;
-      bottom: 16%;
+      width: 86%;
+      height: 68%;
       border: 2px solid #4dff88;
       border-radius: 8px;
       box-shadow: 0 0 0 9999px rgba(0,0,0,.48);
-      pointer-events: none;
+      pointer-events: auto;
+      cursor: move;
+      touch-action: none;
+      z-index: 5;
     }
+    .ocr-handle {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      background: #00e676;
+      border: 2px solid #fff;
+      border-radius: 4px;
+      box-sizing: border-box;
+      z-index: 6;
+    }
+    .ocr-handle.nw { left: -2px; top: -2px; cursor: nwse-resize; }
+    .ocr-handle.ne { right: -2px; top: -2px; cursor: nesw-resize; }
+    .ocr-handle.sw { left: -2px; bottom: -2px; cursor: nesw-resize; }
+    .ocr-handle.se { right: -2px; bottom: -2px; cursor: nwse-resize; }
     #ocrLockCanvas {
       position: absolute;
       inset: 0;
@@ -3710,13 +3727,18 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط <strong>لزقتك</strong> داخل الإطار الثابت. عند القراءة ينقفل عليها مرة واحدة، ويُهمل كل شي برّاها والباركود داخلها. <strong>اقرأ الاسم</strong> = السطر الأول، <strong>اقرأ الرقم</strong> = السطر الثاني.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط اللزقة داخل الإطار الأخضر. إذا التحديد غلط، <strong>اسحب الإطار</strong> أو كبّر/صغّر من الزوايا حتى يغطي اللزقة بالزبط. القراءة من داخل المربع فقط.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">حرّك الإطار الأخضر على اللزقة ثم اقرأ الاسم أو الرقم</p>
       <div id="ocrVideoWrap">
         <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
-        <div id="ocrGuide"></div>
+        <div id="ocrGuide">
+          <span class="ocr-handle nw" data-handle="nw"></span>
+          <span class="ocr-handle ne" data-handle="ne"></span>
+          <span class="ocr-handle sw" data-handle="sw"></span>
+          <span class="ocr-handle se" data-handle="se"></span>
+        </div>
         <canvas id="ocrLockCanvas"></canvas>
-        <div id="ocrGuideHint">اللزقة هنا</div>
+        <div id="ocrGuideHint">اسحب الإطار على اللزقة</div>
       </div>
       <div id="ocrLockPreviewWrap">
         <img id="ocrLockPreview" alt="اللزقة المحددة" />
@@ -4180,10 +4202,100 @@ def home() -> HTMLResponse:
     let ocrBusy = false;
     let ocrTrackTimer = null;
     let ocrFrozen = false;
+    let ocrGuideUserMoved = false;
+    let ocrGuideDrag = null;
+    let ocrGuideBound = false;
 
     function setOcrScanStatus(text) {
       const el = document.getElementById('ocrScanStatus');
       if (el) el.innerText = text || '';
+    }
+    function resetOcrGuideBox() {
+      ocrGuideUserMoved = false;
+      ocrGuideDrag = null;
+      const guide = document.getElementById('ocrGuide');
+      if (!guide) return;
+      guide.style.left = '7%';
+      guide.style.top = '16%';
+      guide.style.width = '86%';
+      guide.style.height = '68%';
+      guide.style.right = 'auto';
+      guide.style.bottom = 'auto';
+    }
+    function bindOcrGuideInteract() {
+      const wrap = document.getElementById('ocrVideoWrap');
+      const guide = document.getElementById('ocrGuide');
+      if (!wrap || !guide || ocrGuideBound) return;
+      ocrGuideBound = true;
+      const point = (e) => (e.touches && e.touches[0]) ? e.touches[0] : e;
+      const applyBox = (left, top, w, h, wrapW, wrapH) => {
+        const minW = 56;
+        const minH = 36;
+        if (w < minW) w = minW;
+        if (h < minH) h = minH;
+        if (left < 0) left = 0;
+        if (top < 0) top = 0;
+        if (left + w > wrapW) left = Math.max(0, wrapW - w);
+        if (top + h > wrapH) top = Math.max(0, wrapH - h);
+        w = Math.min(w, wrapW - left);
+        h = Math.min(h, wrapH - top);
+        guide.style.left = ((left / wrapW) * 100) + '%';
+        guide.style.top = ((top / wrapH) * 100) + '%';
+        guide.style.width = ((w / wrapW) * 100) + '%';
+        guide.style.height = ((h / wrapH) * 100) + '%';
+        guide.style.right = 'auto';
+        guide.style.bottom = 'auto';
+      };
+      const onDown = (e) => {
+        const t = e.target;
+        const handle = (t && t.getAttribute) ? (t.getAttribute('data-handle') || '') : '';
+        const wrapR = wrap.getBoundingClientRect();
+        const gR = guide.getBoundingClientRect();
+        const pt = point(e);
+        ocrGuideDrag = {
+          handle: handle || 'move',
+          startX: pt.clientX,
+          startY: pt.clientY,
+          left: gR.left - wrapR.left,
+          top: gR.top - wrapR.top,
+          w: gR.width,
+          h: gR.height,
+          wrapW: wrapR.width,
+          wrapH: wrapR.height
+        };
+        try { e.preventDefault(); } catch (_) {}
+        try { if (e.pointerId != null && guide.setPointerCapture) guide.setPointerCapture(e.pointerId); } catch (_) {}
+      };
+      const onMove = (e) => {
+        if (!ocrGuideDrag) return;
+        const pt = point(e);
+        const dx = pt.clientX - ocrGuideDrag.startX;
+        const dy = pt.clientY - ocrGuideDrag.startY;
+        let left = ocrGuideDrag.left;
+        let top = ocrGuideDrag.top;
+        let w = ocrGuideDrag.w;
+        let h = ocrGuideDrag.h;
+        const mode = ocrGuideDrag.handle;
+        if (mode === 'move') {
+          left += dx;
+          top += dy;
+        } else {
+          if (mode.indexOf('w') >= 0) { left += dx; w -= dx; }
+          if (mode.indexOf('e') >= 0) { w += dx; }
+          if (mode.indexOf('n') >= 0) { top += dy; h -= dy; }
+          if (mode.indexOf('s') >= 0) { h += dy; }
+        }
+        applyBox(left, top, w, h, ocrGuideDrag.wrapW, ocrGuideDrag.wrapH);
+        ocrGuideUserMoved = true;
+        const hint = document.getElementById('ocrGuideHint');
+        if (hint) hint.textContent = 'تم تحديد المنطقة يدوياً';
+        try { e.preventDefault(); } catch (_) {}
+      };
+      const onUp = () => { ocrGuideDrag = null; };
+      guide.addEventListener('pointerdown', onDown);
+      window.addEventListener('pointermove', onMove, { passive: false });
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
     }
     function activateLocationTabQuiet() {
       if (activeSearchTab === 'location') return;
@@ -4602,32 +4714,102 @@ def home() -> HTMLResponse:
       if (span > canvas.height * 0.72 && transitions >= 14) return true;
       return false;
     }
-    async function ocrReadNameStrip(strip) {
-      const pre = prepareOcrCanvas(strip, 'colorline');
-      const ara = await ocrRecognizeWithLang(pre, 'ara', { psm: '7' });
-      let eng = {};
-      try { eng = await ocrRecognizeWithLang(pre, 'eng', { psm: '7' }); } catch (_) { eng = {}; }
-      const merged = mergeAraEngWords(ara.words || [], eng.words || []);
-      const words = ocrFilterWords(merged);
-      let text = words.length ? ocrFormatLineWords(words) : '';
-      if (!text) text = ocrCleanPiece(String(ara.text || '').replace(/\\n+/g, ' '));
-      if (!ocrHasArabic(text) && ocrHasArabic(String(ara.text || ''))) {
-        const araOnly = ocrFilterWords(ara.words || []).filter((w) => ocrHasArabic(w.text));
-        const engOnly = ocrFilterWords(eng.words || []).filter((w) => ocrHasLatin(w.text) || ocrDigitCount(w.text) > 0);
-        text = ocrFormatLineWords(araOnly.concat(engOnly));
+    function findBilingualSplitX(canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w < 24) return Math.floor(w * 0.5);
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const colInk = new Float32Array(w);
+      for (let x = 0; x < w; x++) {
+        let dark = 0;
+        for (let y = 0; y < h; y++) {
+          const i = (y * w + x) * 4;
+          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          if (g < 150) dark += 1;
+        }
+        colInk[x] = dark / h;
       }
-      return ocrDropIgnoredText(text);
+      const x0 = Math.floor(w * 0.28);
+      const x1 = Math.floor(w * 0.72);
+      let bestX = Math.floor(w * 0.5);
+      let best = 99;
+      const win = Math.max(3, Math.floor(w * 0.02));
+      for (let x = x0; x < x1; x++) {
+        let s = 0;
+        let c = 0;
+        for (let k = x - win; k <= x + win; k++) {
+          if (k >= 0 && k < w) { s += colInk[k]; c += 1; }
+        }
+        const v = s / Math.max(c, 1);
+        if (v < best) { best = v; bestX = x; }
+      }
+      return bestX;
+    }
+    async function ocrReadNameStrip(strip) {
+      const splitX = findBilingualSplitX(strip);
+      const overlap = Math.max(10, Math.floor(strip.width * 0.07));
+      const right = cropCanvasRect(strip, {
+        x: Math.max(0, splitX - overlap),
+        y: 0,
+        w: strip.width - Math.max(0, splitX - overlap),
+        h: strip.height
+      });
+      const left = cropCanvasRect(strip, {
+        x: 0,
+        y: 0,
+        w: Math.min(strip.width, splitX + overlap),
+        h: strip.height
+      });
+      const araPre = prepareOcrCanvas(right, 'colorline');
+      const engPre = prepareOcrCanvas(left, 'colorline');
+      setOcrScanStatus('جاري قراءة العربي على اليمين والإنجليزي على اليسار...');
+      const ara = await ocrRecognizeWithLang(araPre, 'ara', { psm: '7' });
+      let eng = {};
+      try { eng = await ocrRecognizeWithLang(engPre, 'eng', { psm: '7' }); } catch (_) { eng = {}; }
+      const araWords = ocrDropIgnoredText(String(ara.text || '').replace(/\\n+/g, ' '))
+        .split(' ')
+        .filter((t) => t && ocrHasArabic(t) && !ocrIsOuterLabelJunk(t))
+        .join(' ');
+      const engWords = ocrDropIgnoredText(String(eng.text || '').replace(/\\n+/g, ' '))
+        .split(' ')
+        .filter((t) => t && (ocrHasLatin(t) || ocrDigitCount(t) > 0) && !ocrHasArabic(t))
+        .filter((t) => !ocrIsOuterLabelJunk(t) && !ocrIsBarcodeLike(t) && !ocrIsCompactPartCode(t))
+        .join(' ');
+      let text = ocrDropIgnoredText((araWords + ' ' + engWords).trim());
+      if (ocrHasArabic(text) && ocrHasLatin(text)) return text;
+      if (araWords && !engWords) {
+        const engFull = await ocrRecognizeWithLang(prepareOcrCanvas(strip, 'colorline'), 'eng', { psm: '7' });
+        const extra = ocrDropIgnoredText(String(engFull.text || '').replace(/\\n+/g, ' '))
+          .split(' ')
+          .filter((t) => ocrHasLatin(t) || ocrDigitCount(t) > 0)
+          .filter((t) => !ocrIsOuterLabelJunk(t) && !ocrIsBarcodeLike(t) && !ocrIsCompactPartCode(t))
+          .join(' ');
+        text = ocrDropIgnoredText((araWords + ' ' + extra).trim());
+      }
+      if (text) return text;
+      const merged = mergeAraEngWords(ara.words || [], eng.words || []);
+      return ocrDropIgnoredText(ocrFormatLineWords(ocrFilterWords(merged)));
     }
     async function ocrReadNumberStrip(strip) {
       const pre = prepareOcrCanvas(strip, 'line');
-      const data = await ocrRecognizeWithLang(pre, 'eng', {
-        psm: '7',
-        whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-'
-      });
-      const words = ocrFilterWords(data.words);
-      let text = words.length ? words.map((w) => w.text).join('') : String(data.text || '');
-      text = ocrDropIgnoredText(text).replace(/\\s/g, '').toUpperCase();
-      return text;
+      const opts = { psm: '7', whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-' };
+      const data7 = await ocrRecognizeWithLang(pre, 'eng', opts);
+      let data8 = {};
+      try { data8 = await ocrRecognizeWithLang(pre, 'eng', { psm: '8', whitelist: opts.whitelist }); } catch (_) { data8 = {}; }
+      function cleanNum(data) {
+        const words = ocrFilterWords(data.words);
+        let text = words.length ? words.map((w) => w.text).join('') : String(data.text || '');
+        return ocrDropIgnoredText(text).replace(/\\s/g, '').toUpperCase();
+      }
+      const a = cleanNum(data7);
+      const b = cleanNum(data8);
+      if (ocrIsBarcodeLike(a) && !ocrIsBarcodeLike(b)) return b;
+      if (ocrIsBarcodeLike(b) && !ocrIsBarcodeLike(a)) return a;
+      if (ocrIsCompactPartCode(b) && !ocrIsCompactPartCode(a)) return b;
+      if (ocrNumberScore(b) > ocrNumberScore(a)) return b;
+      return a;
     }
     async function ocrReadStickerByBands(srcCanvas, kind) {
       let work = srcCanvas;
@@ -4762,19 +4944,22 @@ def home() -> HTMLResponse:
       video.muted = true;
       try { await video.play(); } catch (_) {}
       hideOcrLockPreview();
+      resetOcrGuideBox();
+      bindOcrGuideInteract();
       const canvas = document.getElementById('ocrLockCanvas');
       if (canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
       const hint = document.getElementById('ocrGuideHint');
-      if (hint) hint.textContent = 'اللزقة هنا';
-      setOcrScanStatus('ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم');
+      if (hint) hint.textContent = 'اسحب الإطار على اللزقة';
+      setOcrScanStatus('حرّك الإطار الأخضر على اللزقة ثم اقرأ الاسم أو الرقم');
       ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
       stopOcrStickerTracking();
       ocrFrozen = false;
+      resetOcrGuideBox();
       hideOcrLockPreview();
       const modal = document.getElementById('ocrModal');
       const wasOpen = !!(modal && modal.classList.contains('active'));
@@ -4983,23 +5168,25 @@ def home() -> HTMLResponse:
         rectVideo = { x: 0, y: 0, w: video.videoWidth, h: video.videoHeight };
       }
       const zone = cropCanvasRect(grab, rectVideo);
-      const inner = chooseInnerStickerRect(detectDenseTextRect(zone), detectBrightStickerRect(zone));
-      const zoneArea = zone.width * zone.height;
       let snapped = false;
-      if (inner && inner.w > 40 && inner.h > 24) {
-        const innerArea = inner.w * inner.h;
-        if (innerArea > zoneArea * 0.12 && innerArea < zoneArea * 0.9) {
-          rectVideo = {
-            x: rectVideo.x + inner.x,
-            y: rectVideo.y + inner.y,
-            w: inner.w,
-            h: inner.h
-          };
-          snapped = true;
+      if (!ocrGuideUserMoved) {
+        const inner = chooseInnerStickerRect(detectDenseTextRect(zone), detectBrightStickerRect(zone));
+        const zoneArea = zone.width * zone.height;
+        if (inner && inner.w > 40 && inner.h > 24) {
+          const innerArea = inner.w * inner.h;
+          if (innerArea > zoneArea * 0.12 && innerArea < zoneArea * 0.9) {
+            rectVideo = {
+              x: rectVideo.x + inner.x,
+              y: rectVideo.y + inner.y,
+              w: inner.w,
+              h: inner.h
+            };
+            snapped = true;
+          }
         }
       }
       const sticker = cropCanvasRect(grab, rectVideo);
-      const crop = cropStickerWithoutBarcode(sticker);
+      const crop = ocrGuideUserMoved ? sticker : cropStickerWithoutBarcode(sticker);
       return {
         crop: crop,
         sticker: sticker,
@@ -5028,11 +5215,11 @@ def home() -> HTMLResponse:
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
-      if (hint) hint.textContent = 'اللزقة هنا';
+      if (hint) hint.textContent = ocrGuideUserMoved ? 'تم تحديد المنطقة يدوياً' : 'اسحب الإطار على اللزقة';
       if (video) {
         try { video.play(); } catch (_) {}
       }
-      setOcrScanStatus('ضع اللزقة داخل الإطار ثم اضغط اقرأ الاسم أو اقرأ الرقم');
+      setOcrScanStatus('حرّك الإطار الأخضر على اللزقة ثم اقرأ الاسم أو الرقم');
     }
     function floodFillBestRect(mask, gw, gh, opts) {
       const seen = new Uint8Array(gw * gh);
