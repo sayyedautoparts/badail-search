@@ -4356,9 +4356,9 @@ def home() -> HTMLResponse:
       return ocrBuildLines(words).map((l) => l.text);
     }
     function prepareOcrCanvas(src, strength) {
-      const isLine = strength === 'line';
+      const isLine = strength === 'line' || strength === 'colorline';
       const scale = isLine
-        ? Math.min(4.5, Math.max(2.4, 140 / Math.max(src.height, 1)))
+        ? Math.min(5.2, Math.max(2.8, 110 / Math.max(src.height, 1)))
         : Math.min(3.1, Math.max(1.8, 1700 / Math.max(src.width, src.height, 1)));
       const w = Math.max(1, Math.round(src.width * scale));
       const h = Math.max(1, Math.round(src.height * scale));
@@ -4369,9 +4369,10 @@ def home() -> HTMLResponse:
       ctx.imageSmoothingEnabled = true;
       try { ctx.imageSmoothingQuality = 'high'; } catch (_) {}
       ctx.drawImage(src, 0, 0, w, h);
+      if (strength === 'colorline') return c;
       const img = ctx.getImageData(0, 0, w, h);
       const d = img.data;
-      const contrast = isLine ? 1.18 : 1.08;
+      const contrast = isLine ? 1.12 : 1.06;
       for (let i = 0; i < d.length; i += 4) {
         let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
         y = (y - 128) * contrast + 128;
@@ -4506,6 +4507,142 @@ def home() -> HTMLResponse:
       candidates.sort((a, b) => ocrNumberScore(b) - ocrNumberScore(a));
       return ocrDropIgnoredText(candidates[0]).replace(/\\s/g, '');
     }
+    function mergeAraEngWords(araWords, engWords) {
+      const out = [];
+      (araWords || []).forEach((w) => {
+        const t = ocrCleanPiece(w.text);
+        const conf = Number(w.confidence || 0);
+        if (t && ocrHasArabic(t) && (conf === 0 || conf >= 38)) out.push(w);
+      });
+      (engWords || []).forEach((w) => {
+        const t = ocrCleanPiece(w.text);
+        const conf = Number(w.confidence || 0);
+        if (!t || ocrHasArabic(t)) return;
+        if (!(ocrHasLatin(t) || ocrDigitCount(t) > 0)) return;
+        if (conf > 0 && conf < 38) return;
+        out.push(w);
+      });
+      return out;
+    }
+    function findInkTextBands(canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w < 12 || h < 12) return [{ y: 0, h: h }];
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const ink = new Float32Array(h);
+      let maxInk = 0;
+      for (let y = 0; y < h; y++) {
+        let dark = 0;
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          if (g < 150) dark += 1;
+        }
+        ink[y] = dark / w;
+        if (ink[y] > maxInk) maxInk = ink[y];
+      }
+      const thr = Math.max(0.028, maxInk * 0.2);
+      const raw = [];
+      let y = 0;
+      while (y < h) {
+        while (y < h && ink[y] < thr) y += 1;
+        if (y >= h) break;
+        const y0 = y;
+        while (y < h && ink[y] >= thr) y += 1;
+        if (y - y0 >= Math.max(5, Math.floor(h * 0.028))) raw.push({ y: y0, h: y - y0 });
+      }
+      const bands = [];
+      raw.forEach((b) => {
+        const last = bands.length ? bands[bands.length - 1] : null;
+        if (last && b.y - (last.y + last.h) < Math.max(3, last.h * 0.45)) {
+          last.h = b.y + b.h - last.y;
+        } else {
+          bands.push({ y: b.y, h: b.h });
+        }
+      });
+      return bands.length ? bands : [{ y: 0, h: h }];
+    }
+    function bandLooksLikeBarcode(canvas, band) {
+      if (band.h > canvas.height * 0.16 && band.y > canvas.height * 0.28) {
+        const step = Math.max(1, Math.floor(canvas.width / 100));
+        const ctx = canvas.getContext('2d');
+        const img = ctx.getImageData(0, Math.max(0, band.y), canvas.width, Math.max(1, band.h));
+        const d = img.data;
+        const bw = canvas.width;
+        const bh = Math.max(1, band.h);
+        let acc = 0;
+        let n = 0;
+        const mid = Math.floor(bh / 2);
+        for (let x = step; x < bw; x += step) {
+          const i = (mid * bw + x) * 4;
+          const j = (mid * bw + (x - step)) * 4;
+          const g1 = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          const g0 = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+          acc += Math.abs(g1 - g0);
+          n += 1;
+        }
+        return n && (acc / n) > 28;
+      }
+      return false;
+    }
+    async function ocrReadNameStrip(strip) {
+      const pre = prepareOcrCanvas(strip, 'colorline');
+      const ara = await ocrRecognizeWithLang(pre, 'ara', { psm: '7' });
+      let eng = {};
+      try { eng = await ocrRecognizeWithLang(pre, 'eng', { psm: '7' }); } catch (_) { eng = {}; }
+      const merged = mergeAraEngWords(ara.words || [], eng.words || []);
+      const words = ocrFilterWords(merged);
+      let text = words.length ? ocrFormatLineWords(words) : '';
+      if (!text) text = ocrCleanPiece(String(ara.text || '').replace(/\\n+/g, ' '));
+      if (!ocrHasArabic(text) && ocrHasArabic(String(ara.text || ''))) {
+        const araOnly = ocrFilterWords(ara.words || []).filter((w) => ocrHasArabic(w.text));
+        const engOnly = ocrFilterWords(eng.words || []).filter((w) => ocrHasLatin(w.text) || ocrDigitCount(w.text) > 0);
+        text = ocrFormatLineWords(araOnly.concat(engOnly));
+      }
+      return ocrDropIgnoredText(text);
+    }
+    async function ocrReadNumberStrip(strip) {
+      const pre = prepareOcrCanvas(strip, 'line');
+      const data = await ocrRecognizeWithLang(pre, 'eng', {
+        psm: '7',
+        whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-'
+      });
+      const words = ocrFilterWords(data.words);
+      let text = words.length ? words.map((w) => w.text).join('') : String(data.text || '');
+      text = ocrDropIgnoredText(text).replace(/\\s/g, '').toUpperCase();
+      return text;
+    }
+    async function ocrReadStickerByBands(srcCanvas, kind) {
+      const bands = findInkTextBands(srcCanvas);
+      const lines = [];
+      for (let i = 0; i < bands.length; i++) {
+        const b = bands[i];
+        if (bandLooksLikeBarcode(srcCanvas, b)) continue;
+        const padY = Math.max(8, Math.round(b.h * 0.55));
+        const strip = cropCanvasRect(srcCanvas, {
+          x: 0,
+          y: Math.max(0, b.y - padY),
+          w: srcCanvas.width,
+          h: Math.min(srcCanvas.height - Math.max(0, b.y - padY), b.h + padY * 2)
+        });
+        if (strip.height < 10 || strip.width < 20) continue;
+        setOcrScanStatus(kind === 'number'
+          ? 'جاري قراءة سطر الرقم...'
+          : 'جاري قراءة سطر الاسم بالعربي والإنجليزي...');
+        const text = kind === 'number' ? await ocrReadNumberStrip(strip) : await ocrReadNameStrip(strip);
+        if (!text || text.length < 2) continue;
+        if (ocrIsOuterLabelJunk(text) || ocrIsBarcodeLike(text)) continue;
+        lines.push(text);
+      }
+      try {
+        await ocrWorker.initialize('ara+eng');
+        ocrWorkerLang = 'ara+eng';
+        await ocrWorker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+      } catch (_) {}
+      return lines;
+    }
     function pickOcrQuery(raw, mode) {
       const fallbackLines = String(raw || '')
         .split(/\\n+|\\r+/)
@@ -4515,8 +4652,16 @@ def home() -> HTMLResponse:
       return pickOcrName(fallbackLines);
     }
     async function recognizeOcrStructured(canvas, mode) {
-      const prepared = prepareOcrCanvas(canvas);
       const kind = mode === 'number' ? 'number' : 'name';
+      setOcrScanStatus(kind === 'number' ? 'جاري قراءة سطر الرقم...' : 'جاري قراءة سطر الاسم...');
+      let lines = [];
+      try {
+        lines = await ocrReadStickerByBands(canvas, kind);
+      } catch (_) {
+        lines = [];
+      }
+      if (lines.length) return { lines: lines, raw: lines.join(' ') };
+      const prepared = prepareOcrCanvas(canvas);
       if (kind === 'number' && typeof TextDetector === 'function') {
         try {
           const detector = new TextDetector();
@@ -4530,12 +4675,11 @@ def home() -> HTMLResponse:
               confidence: 80
             };
           });
-          const lines = ocrLinesFromWords(words);
-          const q = pickOcrNumber(lines);
-          if (q && ocrDigitCount(q) >= 2 && !ocrHasArabic(q)) return { lines: lines, raw: lines.join(' ') };
+          const detLines = ocrLinesFromWords(words);
+          const q = pickOcrNumber(detLines);
+          if (q && ocrDigitCount(q) >= 2 && !ocrHasArabic(q)) return { lines: detLines, raw: detLines.join(' ') };
         } catch (_) {}
       }
-      setOcrScanStatus(kind === 'number' ? 'جاري قراءة الرقم...' : 'جاري قراءة الاسم بالعربي والإنجليزي معاً...');
       const mixed = await ocrRecognizeWithLang(prepared, 'ara+eng', { psm: '6' });
       let lineObjs = ocrBuildLines(mixed.words);
       if (!lineObjs.length) {
@@ -4546,11 +4690,7 @@ def home() -> HTMLResponse:
       lineObjs = lineObjs.filter((l) => l.text && !ocrIsOuterLabelJunk(l.text));
       lineObjs.forEach((l) => { l.text = ocrDropIgnoredText(l.text); });
       lineObjs = lineObjs.filter((l) => l.text);
-      try {
-        lineObjs = await ocrRefineTargetLine(prepared, lineObjs, kind);
-      } catch (_) {}
-      const lines = lineObjs.map((l) => l.text).filter(Boolean);
-      return { lines: lines, raw: lines.join(' ') };
+      return { lines: lineObjs.map((l) => l.text).filter(Boolean), raw: lineObjs.map((l) => l.text).join(' ') };
     }
     async function openLocationOcrScanner() {
       activateLocationTabQuiet();
