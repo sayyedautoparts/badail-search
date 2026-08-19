@@ -3473,6 +3473,28 @@ def home() -> HTMLResponse:
       box-shadow: 0 0 0 9999px rgba(0,0,0,.48);
       pointer-events: none;
     }
+    #ocrLockCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 3;
+    }
+    #ocrLockPreviewWrap {
+      display: none;
+      margin: 8px 0 4px;
+      text-align: center;
+    }
+    #ocrLockPreviewWrap.active { display: block; }
+    #ocrLockPreview {
+      max-width: 100%;
+      max-height: 130px;
+      border: 3px solid #00e676;
+      border-radius: 8px;
+      background: #fff;
+      object-fit: contain;
+    }
     #ocrGuideHint {
       position: absolute;
       left: 0;
@@ -3484,6 +3506,7 @@ def home() -> HTMLResponse:
       font-weight: 700;
       text-shadow: 0 1px 3px #000;
       pointer-events: none;
+      z-index: 4;
     }
     #ocrTextPreview { font-size: 16px; text-align: right; }
     @media screen and (orientation: landscape) {
@@ -3687,18 +3710,24 @@ def home() -> HTMLResponse:
   <div id="ocrModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>قراءة الاسم أو الرقم</strong>
-      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط <strong>لزقتك</strong> داخل الإطار الأخضر. <strong>اقرأ الاسم</strong> يأخذ سطر الاسم فقط، و<strong>اقرأ الرقم</strong> يأخذ سطر الرقم اللي تحته فقط — بدون الباركود أو اسم الشركة.</p>
-      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار ثم اقرأ الاسم أو الرقم</p>
+      <p class="muted" style="margin:8px 0;font-size:13px;line-height:1.45;">حط اللزقة داخل الإطار. لما ينقفش عليها إطار أخضر زي الـ QR، اضغط اقرأ الاسم أو اقرأ الرقم. رح تشوف صورة اللزقة المحددة قبل البحث.</p>
+      <p id="ocrScanStatus" style="margin:10px 0 6px;font-size:14px;font-weight:600;color:#1a237e;">ضع اللزقة داخل الإطار حتى يظهر التحديد</p>
       <div id="ocrVideoWrap">
         <video id="ocrVideo" playsinline webkit-playsinline muted autoplay></video>
         <div id="ocrGuide"></div>
+        <canvas id="ocrLockCanvas"></canvas>
         <div id="ocrGuideHint">اللزقة هنا</div>
+      </div>
+      <div id="ocrLockPreviewWrap">
+        <img id="ocrLockPreview" alt="اللزقة المحددة" />
+        <div class="muted" style="font-size:12px;margin-top:4px;">هذي اللزقة اللي رح تنقرأ — إذا مش هي، أعد الكاميرا</div>
       </div>
       <input id="ocrTextPreview" dir="auto" placeholder="النص المقروء يظهر هنا — يمكن تعديله" autocomplete="off" />
       <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px;">
         <button type="button" id="ocrNameBtn" onclick="captureLocationOcr('name')">اقرأ الاسم</button>
         <button type="button" id="ocrNumberBtn" onclick="captureLocationOcr('number')">اقرأ الرقم</button>
         <button type="button" id="ocrSearchBtn" class="btn-secondary" onclick="searchLocationOcrText()">بحث بهذا النص</button>
+        <button type="button" class="btn-secondary" onclick="resumeOcrCamera()">إعادة الكاميرا</button>
         <button type="button" class="btn-secondary" onclick="closeLocationOcrScanner()">إغلاق</button>
       </div>
     </div>
@@ -4149,6 +4178,8 @@ def home() -> HTMLResponse:
     let ocrWorker = null;
     let ocrWorkerLang = '';
     let ocrBusy = false;
+    let ocrTrackTimer = null;
+    let ocrFrozen = false;
 
     function setOcrScanStatus(text) {
       const el = document.getElementById('ocrScanStatus');
@@ -4553,10 +4584,15 @@ def home() -> HTMLResponse:
       video.setAttribute('playsinline', 'true');
       video.muted = true;
       try { await video.play(); } catch (_) {}
-      setOcrScanStatus('ضع اللزقة داخل الإطار الأخضر ثم اقرأ الاسم أو الرقم');
+      hideOcrLockPreview();
+      setOcrScanStatus('ضع اللزقة داخل الإطار حتى يظهر التحديد مثل الـ QR');
+      startOcrStickerTracking();
       ensureOcrWorker().catch(() => {});
     }
     async function closeLocationOcrScanner() {
+      stopOcrStickerTracking();
+      ocrFrozen = false;
+      hideOcrLockPreview();
       const modal = document.getElementById('ocrModal');
       const wasOpen = !!(modal && modal.classList.contains('active'));
       if (modal) {
@@ -4618,6 +4654,188 @@ def home() -> HTMLResponse:
         w: Math.min(vw, guideRect.width * scaleX),
         h: Math.min(vh, guideRect.height * scaleY)
       };
+    }
+    function mapVideoRectToDisplay(video, wrap, rect) {
+      const wrapRect = wrap.getBoundingClientRect();
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const rw = wrapRect.width;
+      const rh = wrapRect.height;
+      if (!vw || !vh || !rw || !rh || !rect) return null;
+      const videoAspect = vw / vh;
+      const boxAspect = rw / rh;
+      let dispW = rw;
+      let dispH = rh;
+      let offX = 0;
+      let offY = 0;
+      if (boxAspect > videoAspect) {
+        dispH = rw / videoAspect;
+        offY = (rh - dispH) / 2;
+      } else {
+        dispW = rh * videoAspect;
+        offX = (rw - dispW) / 2;
+      }
+      return {
+        x: offX + rect.x * (dispW / vw),
+        y: offY + rect.y * (dispH / vh),
+        w: rect.w * (dispW / vw),
+        h: rect.h * (dispH / vh)
+      };
+    }
+    function drawOcrCornerBox(ctx, x, y, w, h, color, locked) {
+      const len = Math.max(18, Math.min(40, w * 0.22, h * 0.3));
+      ctx.strokeStyle = color;
+      ctx.lineWidth = locked ? 5 : 3;
+      ctx.lineCap = 'square';
+      ctx.beginPath();
+      ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y);
+      ctx.moveTo(x + w - len, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + len);
+      ctx.moveTo(x, y + h - len); ctx.lineTo(x, y + h); ctx.lineTo(x + len, y + h);
+      ctx.moveTo(x + w - len, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - len);
+      ctx.stroke();
+    }
+    function drawOcrLockOverlay(displayRect, locked) {
+      const canvas = document.getElementById('ocrLockCanvas');
+      const wrap = document.getElementById('ocrVideoWrap');
+      if (!canvas || !wrap) return;
+      const rw = Math.max(1, Math.round(wrap.clientWidth));
+      const rh = Math.max(1, Math.round(wrap.clientHeight));
+      if (canvas.width !== rw || canvas.height !== rh) {
+        canvas.width = rw;
+        canvas.height = rh;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!displayRect || displayRect.w < 8 || displayRect.h < 8) return;
+      const x = displayRect.x;
+      const y = displayRect.y;
+      const w = displayRect.w;
+      const h = displayRect.h;
+      if (locked) {
+        ctx.fillStyle = 'rgba(0,0,0,0.42)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.clearRect(x, y, w, h);
+      }
+      drawOcrCornerBox(ctx, x, y, w, h, locked ? '#00e676' : '#7CFFB2', locked);
+      if (locked) {
+        ctx.strokeStyle = 'rgba(255,255,255,.85)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 2, y + 2, Math.max(1, w - 4), Math.max(1, h - 4));
+      }
+    }
+    function showOcrLockPreview(cropCanvas) {
+      const wrap = document.getElementById('ocrLockPreviewWrap');
+      const img = document.getElementById('ocrLockPreview');
+      if (!wrap || !img || !cropCanvas) return;
+      try { img.src = cropCanvas.toDataURL('image/jpeg', 0.82); } catch (_) { return; }
+      wrap.classList.add('active');
+    }
+    function hideOcrLockPreview() {
+      const wrap = document.getElementById('ocrLockPreviewWrap');
+      const img = document.getElementById('ocrLockPreview');
+      if (wrap) wrap.classList.remove('active');
+      if (img) img.removeAttribute('src');
+    }
+    function locateOcrSticker(video, fullRes) {
+      const wrap = document.getElementById('ocrVideoWrap');
+      const guide = document.getElementById('ocrGuide');
+      if (!video || !video.videoWidth) return null;
+      const grabScale = fullRes ? 1 : Math.min(1, 640 / video.videoWidth);
+      const grab = document.createElement('canvas');
+      grab.width = Math.max(1, Math.round(video.videoWidth * grabScale));
+      grab.height = Math.max(1, Math.round(video.videoHeight * grabScale));
+      grab.getContext('2d').drawImage(video, 0, 0, grab.width, grab.height);
+      let rectVideo = wrap && guide ? mapGuideRectToVideo(video, wrap, guide) : null;
+      if (!rectVideo || rectVideo.w < 40 || rectVideo.h < 30) {
+        rectVideo = { x: 0, y: 0, w: video.videoWidth, h: video.videoHeight };
+      }
+      const guideScaled = {
+        x: rectVideo.x * grabScale,
+        y: rectVideo.y * grabScale,
+        w: rectVideo.w * grabScale,
+        h: rectVideo.h * grabScale
+      };
+      const zone = cropCanvasRect(grab, guideScaled);
+      const inner = chooseInnerStickerRect(detectDenseTextRect(zone), detectBrightStickerRect(zone));
+      const zoneArea = zone.width * zone.height;
+      let snapped = false;
+      if (inner && inner.w > 40 && inner.h > 24) {
+        const innerArea = inner.w * inner.h;
+        if (innerArea > zoneArea * 0.12 && innerArea < zoneArea * 0.9) {
+          rectVideo = {
+            x: rectVideo.x + inner.x / grabScale,
+            y: rectVideo.y + inner.y / grabScale,
+            w: inner.w / grabScale,
+            h: inner.h / grabScale
+          };
+          snapped = true;
+        }
+      }
+      let crop = null;
+      if (fullRes) {
+        const full = document.createElement('canvas');
+        full.width = video.videoWidth;
+        full.height = video.videoHeight;
+        full.getContext('2d').drawImage(video, 0, 0);
+        crop = cropCanvasRect(full, rectVideo);
+      } else {
+        crop = cropCanvasRect(grab, {
+          x: rectVideo.x * grabScale,
+          y: rectVideo.y * grabScale,
+          w: rectVideo.w * grabScale,
+          h: rectVideo.h * grabScale
+        });
+      }
+      return {
+        crop: crop,
+        rectVideo: rectVideo,
+        displayRect: wrap ? mapVideoRectToDisplay(video, wrap, rectVideo) : null,
+        snapped: snapped
+      };
+    }
+    function stopOcrStickerTracking() {
+      if (ocrTrackTimer) {
+        clearTimeout(ocrTrackTimer);
+        ocrTrackTimer = null;
+      }
+    }
+    function startOcrStickerTracking() {
+      stopOcrStickerTracking();
+      ocrFrozen = false;
+      const tick = () => {
+        const modal = document.getElementById('ocrModal');
+        if (ocrFrozen || !modal || !modal.classList.contains('active')) return;
+        const video = document.getElementById('ocrVideo');
+        const hint = document.getElementById('ocrGuideHint');
+        if (video && video.videoWidth) {
+          try {
+            const info = locateOcrSticker(video, false);
+            if (info && info.displayRect) {
+              drawOcrLockOverlay(info.displayRect, !!info.snapped);
+              if (hint) hint.textContent = info.snapped ? 'تم تحديد اللزقة' : 'ضع اللزقة داخل الإطار';
+            } else if (hint) {
+              hint.textContent = 'ضع اللزقة داخل الإطار';
+            }
+          } catch (_) {}
+        }
+        ocrTrackTimer = setTimeout(tick, 240);
+      };
+      tick();
+    }
+    function resumeOcrCamera() {
+      ocrFrozen = false;
+      hideOcrLockPreview();
+      const video = document.getElementById('ocrVideo');
+      const canvas = document.getElementById('ocrLockCanvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      if (video) {
+        try { video.play(); } catch (_) {}
+      }
+      setOcrScanStatus('ضع اللزقة داخل الإطار حتى يظهر التحديد مثل الـ QR');
+      startOcrStickerTracking();
     }
     function floodFillBestRect(mask, gw, gh, opts) {
       const seen = new Uint8Array(gw * gh);
@@ -4758,20 +4976,8 @@ def home() -> HTMLResponse:
       return dense || bright || null;
     }
     function captureOcrStickerCanvas(video) {
-      const full = document.createElement('canvas');
-      full.width = video.videoWidth;
-      full.height = video.videoHeight;
-      full.getContext('2d').drawImage(video, 0, 0);
-      const wrap = document.getElementById('ocrVideoWrap');
-      const guide = document.getElementById('ocrGuide');
-      let crop = full;
-      if (wrap && guide) {
-        const r = mapGuideRectToVideo(video, wrap, guide);
-        if (r && r.w > 40 && r.h > 30) crop = cropCanvasRect(full, r);
-      }
-      const inner = chooseInnerStickerRect(detectDenseTextRect(crop), detectBrightStickerRect(crop));
-      if (inner && inner.w > 30 && inner.h > 18) return cropCanvasRect(crop, inner);
-      return crop;
+      const info = locateOcrSticker(video, true);
+      return (info && info.crop) ? info.crop : null;
     }
     async function captureLocationOcr(mode) {
       if (ocrBusy) return;
@@ -4791,23 +4997,39 @@ def home() -> HTMLResponse:
         ? 'جاري قراءة الرقم... أول مرة قد يتأخر تحميل القواميس.'
         : 'جاري قراءة الاسم... أول مرة قد يتأخر تحميل القواميس.');
       try {
-        const canvas = captureOcrStickerCanvas(video);
-        const structured = await recognizeOcrStructured(canvas, kind);
+        stopOcrStickerTracking();
+        const info = locateOcrSticker(video, true);
+        if (!info || !info.crop) {
+          setOcrScanStatus('ما قدر يحدد اللزقة. حطها داخل الإطار ثم أعد المحاولة.');
+          startOcrStickerTracking();
+          return;
+        }
+        ocrFrozen = true;
+        try { video.pause(); } catch (_) {}
+        drawOcrLockOverlay(info.displayRect, true);
+        showOcrLockPreview(info.crop);
+        const hint = document.getElementById('ocrGuideHint');
+        if (hint) hint.textContent = 'تم قفل اللزقة';
+        setOcrScanStatus(kind === 'number'
+          ? 'تم تحديد اللزقة — جاري قراءة الرقم...'
+          : 'تم تحديد اللزقة — جاري قراءة الاسم...');
+        try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
+        const structured = await recognizeOcrStructured(info.crop, kind);
         const lines = (structured && structured.lines && structured.lines.length)
           ? structured.lines
           : String((structured && structured.raw) || '').split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
         const query = ocrDropIgnoredText(kind === 'number' ? pickOcrNumber(lines) : pickOcrName(lines));
         if (preview) preview.value = query;
         if (!query || query.length < 2) {
-          setOcrScanStatus('ما انقرأ نص واضح. قرّب الكاميرا أو حسّن الإضاءة ثم أعد المحاولة.');
+          setOcrScanStatus('اللزقة تحددت، بس النص مش واضح. راجع الصورة أو أعد الكاميرا.');
           return;
         }
-        setOcrScanStatus('تمت القراءة كما في الصورة — جاري البحث...');
-        try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
-        await applyLocationOcrSearch(query);
+        setOcrScanStatus('راجع صورة اللزقة والنص، ثم اضغط بحث بهذا النص');
       } catch (err) {
         const m = (err && err.message) ? String(err.message) : '';
         setOcrScanStatus('تعذر قراءة النص. تحقق من الإنترنت ثم أعد المحاولة.' + (m ? ' (' + m + ')' : ''));
+        ocrFrozen = false;
+        startOcrStickerTracking();
       } finally {
         ocrBusy = false;
         if (nameBtn) nameBtn.disabled = false;
