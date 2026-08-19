@@ -4176,6 +4176,16 @@ def home() -> HTMLResponse:
     function ocrCleanPiece(s) {
       return String(s || '').replace(/[|]/g, ' ').replace(/\\s+/g, ' ').trim();
     }
+    function ocrDropIgnoredText(s) {
+      let t = String(s || '');
+      for (let i = 0; i < 6; i++) {
+        const next = t.replace(/\\([^()]*\\)/g, ' ');
+        if (next === t) break;
+        t = next;
+      }
+      t = t.replace(/[()@]/g, ' ');
+      return ocrCleanPiece(t);
+    }
     function ocrIsBarcodeLike(s) {
       const t = ocrCleanPiece(s);
       const compact = t.replace(/\\s/g, '');
@@ -4205,7 +4215,7 @@ def home() -> HTMLResponse:
       return letters >= 1 && digits >= 3;
     }
     function splitStickerFields(lines) {
-      const content = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s));
+      const content = (lines || []).map(ocrDropIgnoredText).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s));
       const nameParts = [];
       let number = '';
       for (let i = 0; i < content.length; i++) {
@@ -4226,7 +4236,7 @@ def home() -> HTMLResponse:
         }
         if (before.length) nameParts.push(before.join(' '));
       }
-      return { name: ocrCleanPiece(nameParts.join(' ')), number: number };
+      return { name: ocrDropIgnoredText(nameParts.join(' ')), number: ocrDropIgnoredText(number) };
     }
     function ocrLetterCount(s) {
       return (String(s || '').match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
@@ -4250,15 +4260,39 @@ def home() -> HTMLResponse:
       if (!t || ocrIsBarcodeLike(t)) return false;
       return ocrLetterCount(t) >= 1 || t.length >= 3;
     }
-    function ocrLinesFromWords(words) {
-      const items = (words || []).map((w) => {
-        const box = w.bbox || w.boundingBox || {};
-        const x = Number(box.x0 != null ? box.x0 : (box.x || 0));
-        const y = Number(box.y0 != null ? box.y0 : (box.y || 0));
-        const x1 = Number(box.x1 != null ? box.x1 : (x + (box.width || 0)));
-        const y1 = Number(box.y1 != null ? box.y1 : (y + (box.height || 0)));
-        return { text: ocrCleanPiece(w.text || w.rawValue || ''), x: x, y: y, x1: x1, y1: y1 };
-      }).filter((w) => w.text);
+    function ocrWordBox(w) {
+      const box = w.bbox || w.boundingBox || {};
+      const x = Number(box.x0 != null ? box.x0 : (box.x || 0));
+      const y = Number(box.y0 != null ? box.y0 : (box.y || 0));
+      const x1 = Number(box.x1 != null ? box.x1 : (x + (box.width || 0)));
+      const y1 = Number(box.y1 != null ? box.y1 : (y + (box.height || 0)));
+      return {
+        text: ocrCleanPiece(w.text || w.rawValue || ''),
+        x: x, y: y, x1: x1, y1: y1,
+        confidence: Number(w.confidence || 0)
+      };
+    }
+    function ocrFilterWords(words) {
+      return (words || []).map(ocrWordBox).filter((w) => {
+        if (!w.text) return false;
+        if (w.confidence > 0 && w.confidence < 34) return false;
+        return true;
+      });
+    }
+    function ocrFormatLineWords(ws) {
+      const ara = ws.filter((w) => ocrHasArabic(w.text));
+      const other = ws.filter((w) => !ocrHasArabic(w.text));
+      ara.sort((a, b) => b.x - a.x);
+      other.sort((a, b) => a.x - b.x);
+      if (ara.length && other.length) {
+        return ocrCleanPiece(ara.map((w) => w.text).join(' ') + ' ' + other.map((w) => w.text).join(' '));
+      }
+      const rtl = ara.length > other.length;
+      const ordered = ws.slice().sort((a, b) => (rtl ? (b.x - a.x) : (a.x - b.x)));
+      return ocrCleanPiece(ordered.map((w) => w.text).join(' '));
+    }
+    function ocrBuildLines(words) {
+      const items = ocrFilterWords(words);
       if (!items.length) return [];
       items.sort((a, b) => a.y - b.y || a.x - b.x);
       const lines = [];
@@ -4269,20 +4303,32 @@ def home() -> HTMLResponse:
         if (last && Math.abs(mid - last.mid) <= Math.max(14, last.h * 0.7)) {
           last.words.push(w);
           last.mid = (last.mid * (last.words.length - 1) + mid) / last.words.length;
+          last.h = Math.max(last.h, h);
         } else {
           lines.push({ words: [w], mid: mid, h: h });
         }
       });
       return lines.map((line) => {
-        const ws = line.words.slice();
-        const arabic = ws.filter((w) => ocrHasArabic(w.text)).length;
-        const latin = ws.filter((w) => ocrHasLatin(w.text) && !ocrHasArabic(w.text)).length;
-        ws.sort((a, b) => (arabic > latin ? (b.x - a.x) : (a.x - b.x)));
-        return ocrCleanPiece(ws.map((w) => w.text).join(' '));
-      }).filter(Boolean);
+        const ws = line.words;
+        let x = ws[0].x, y = ws[0].y, x1 = ws[0].x1, y1 = ws[0].y1, confSum = 0;
+        ws.forEach((w) => {
+          if (w.x < x) x = w.x;
+          if (w.y < y) y = w.y;
+          if (w.x1 > x1) x1 = w.x1;
+          if (w.y1 > y1) y1 = w.y1;
+          confSum += w.confidence;
+        });
+        return { text: ocrFormatLineWords(ws), x: x, y: y, x1: x1, y1: y1, conf: confSum / ws.length, words: ws };
+      }).filter((l) => l.text);
     }
-    function prepareOcrCanvas(src) {
-      const scale = Math.min(2.6, Math.max(1.5, 1700 / Math.max(src.width, 1)));
+    function ocrLinesFromWords(words) {
+      return ocrBuildLines(words).map((l) => l.text);
+    }
+    function prepareOcrCanvas(src, strength) {
+      const isLine = strength === 'line';
+      const scale = isLine
+        ? Math.min(4.5, Math.max(2.4, 140 / Math.max(src.height, 1)))
+        : Math.min(3.1, Math.max(1.8, 1700 / Math.max(src.width, src.height, 1)));
       const w = Math.max(1, Math.round(src.width * scale));
       const h = Math.max(1, Math.round(src.height * scale));
       const c = document.createElement('canvas');
@@ -4290,12 +4336,14 @@ def home() -> HTMLResponse:
       c.height = h;
       const ctx = c.getContext('2d');
       ctx.imageSmoothingEnabled = true;
+      try { ctx.imageSmoothingQuality = 'high'; } catch (_) {}
       ctx.drawImage(src, 0, 0, w, h);
       const img = ctx.getImageData(0, 0, w, h);
       const d = img.data;
+      const contrast = isLine ? 1.18 : 1.08;
       for (let i = 0; i < d.length; i += 4) {
         let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        y = (y - 128) * 1.55 + 140;
+        y = (y - 128) * contrast + 128;
         if (y < 0) y = 0;
         if (y > 255) y = 255;
         d[i] = d[i + 1] = d[i + 2] = y;
@@ -4307,56 +4355,98 @@ def home() -> HTMLResponse:
       await ensureTesseractLib();
       if (typeof Tesseract === 'undefined') throw new Error('tesseract-missing');
       if (ocrWorker) return;
-      setOcrScanStatus('جاري تحميل قاموس العربية (مرة واحدة)...');
-      ocrWorker = await Tesseract.createWorker('ara+eng', 1, {
-        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
-      });
-      try {
-        await ocrWorker.initialize('ara');
-        ocrWorkerLang = 'ara';
-      } catch (_) {
-        ocrWorkerLang = 'ara+eng';
-      }
+      setOcrScanStatus('جاري تحميل قاموس العربية والإنجليزية (مرة واحدة)...');
+      ocrWorker = await Tesseract.createWorker('ara+eng', 1);
+      ocrWorkerLang = 'ara+eng';
       try {
         await ocrWorker.setParameters({
           tessedit_pageseg_mode: '6',
-          preserve_interword_spaces: '1'
+          preserve_interword_spaces: '1',
+          user_defined_dpi: '300'
         });
       } catch (_) {}
     }
-    async function ocrRecognizeWithLang(canvas, lang) {
+    async function ocrRecognizeWithLang(canvas, lang, opts) {
+      opts = opts || {};
       await ensureOcrWorker();
+      const psm = String(opts.psm || '6');
+      const whitelist = opts.whitelist ? String(opts.whitelist) : '';
       if (ocrWorkerLang !== lang) {
         try {
           await ocrWorker.initialize(lang);
           ocrWorkerLang = lang;
-          await ocrWorker.setParameters({
-            tessedit_pageseg_mode: '6',
-            preserve_interword_spaces: '1'
-          });
         } catch (_) {}
       }
+      try {
+        await ocrWorker.setParameters({
+          tessedit_pageseg_mode: psm,
+          preserve_interword_spaces: '1',
+          user_defined_dpi: '300',
+          tessedit_char_whitelist: whitelist
+        });
+      } catch (_) {}
       const result = await ocrWorker.recognize(canvas);
       return (result && result.data) || {};
     }
-    function mergeAraEngWords(araWords, engWords) {
-      const out = [];
-      (araWords || []).forEach((w) => {
-        const t = ocrCleanPiece(w.text);
-        if (t && ocrHasArabic(t)) out.push(w);
+    async function ocrRefineTargetLine(prepared, lineObjs, kind) {
+      if (!lineObjs || !lineObjs.length) return lineObjs;
+      const texts = lineObjs.map((l) => l.text);
+      const targetText = kind === 'number' ? pickOcrNumber(texts) : pickOcrName(texts);
+      let best = null;
+      let bestScore = -1;
+      lineObjs.forEach((l) => {
+        let score = 0;
+        if (targetText && l.text === targetText) score += 6;
+        if (kind === 'number' && (ocrIsCompactPartCode(l.text) || ocrIsNumberLike(l.text))) score += 3;
+        if (kind === 'name' && ocrHasArabic(l.text) && !ocrIsCompactPartCode(l.text) && !ocrIsBarcodeLike(l.text)) score += 4;
+        if (kind === 'name' && ocrHasLatin(l.text) && ocrHasArabic(l.text)) score += 2;
+        if (score > bestScore) { bestScore = score; best = l; }
       });
-      (engWords || []).forEach((w) => {
-        const t = ocrCleanPiece(w.text);
-        if (!t || ocrHasArabic(t)) return;
-        if (ocrHasLatin(t) || ocrDigitCount(t) > 0) out.push(w);
+      if (!best) return lineObjs;
+      const padX = 22;
+      const padY = Math.max(16, Math.round((best.y1 - best.y) * 0.5));
+      const crop = cropCanvasRect(prepared, {
+        x: best.x - padX,
+        y: best.y - padY,
+        w: (best.x1 - best.x) + padX * 2,
+        h: (best.y1 - best.y) + padY * 2
       });
-      return out;
+      const lineCanvas = prepareOcrCanvas(crop, 'line');
+      setOcrScanStatus(kind === 'number' ? 'جاري تحسين قراءة الرقم...' : 'جاري تحسين قراءة الاسم بالعربي والإنجليزي...');
+      let data = {};
+      if (kind === 'number') {
+        data = await ocrRecognizeWithLang(lineCanvas, 'eng', {
+          psm: '7',
+          whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-'
+        });
+      } else {
+        data = await ocrRecognizeWithLang(lineCanvas, 'ara+eng', { psm: '7' });
+      }
+      const refinedWords = ocrFilterWords(data.words);
+      let refined = refinedWords.length ? ocrFormatLineWords(refinedWords) : ocrCleanPiece(String(data.text || '').replace(/\\n+/g, ' '));
+      if (kind === 'number') refined = refined.replace(/\\s/g, '').toUpperCase();
+      const newConf = refinedWords.length
+        ? refinedWords.reduce((s, w) => s + w.confidence, 0) / refinedWords.length
+        : Number(data.confidence || 0);
+      const betterScript = kind === 'name' && ocrHasArabic(refined) && !ocrHasArabic(best.text);
+      const lostArabic = kind === 'name' && ocrHasArabic(best.text) && !ocrHasArabic(refined);
+      if (refined && refined.length >= 2 && !lostArabic && (newConf + 4 >= (best.conf || 0) || betterScript)) {
+        best.text = ocrDropIgnoredText(refined);
+      }
+      if (ocrWorkerLang !== 'ara+eng') {
+        try {
+          await ocrWorker.initialize('ara+eng');
+          ocrWorkerLang = 'ara+eng';
+          await ocrWorker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+        } catch (_) {}
+      }
+      return lineObjs;
     }
     function pickOcrName(lines) {
       const fields = splitStickerFields(lines);
-      if (fields.name) return fields.name;
-      const cleaned = (lines || []).map(ocrCleanPiece).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s) && !ocrIsCompactPartCode(s));
-      return ocrCleanPiece(cleaned[0] || '');
+      if (fields.name) return ocrDropIgnoredText(fields.name);
+      const cleaned = (lines || []).map(ocrDropIgnoredText).filter((s) => s && !ocrIsBarcodeLike(s) && !ocrIsOuterLabelJunk(s) && !ocrIsCompactPartCode(s));
+      return ocrDropIgnoredText(cleaned[0] || '');
     }
     function ocrNumberScore(s) {
       const compact = ocrCleanPiece(s).replace(/\\s/g, '');
@@ -4372,7 +4462,7 @@ def home() -> HTMLResponse:
     }
     function pickOcrNumber(lines) {
       const fields = splitStickerFields(lines);
-      if (fields.number) return fields.number;
+      if (fields.number) return ocrDropIgnoredText(fields.number).replace(/\\s/g, '');
       const candidates = [];
       (lines || []).forEach((line) => {
         if (ocrIsOuterLabelJunk(line) || ocrIsBarcodeLike(line)) return;
@@ -4383,7 +4473,7 @@ def home() -> HTMLResponse:
       });
       if (!candidates.length) return '';
       candidates.sort((a, b) => ocrNumberScore(b) - ocrNumberScore(a));
-      return ocrCleanPiece(candidates[0]).replace(/\\s/g, '');
+      return ocrDropIgnoredText(candidates[0]).replace(/\\s/g, '');
     }
     function pickOcrQuery(raw, mode) {
       const fallbackLines = String(raw || '')
@@ -4405,31 +4495,30 @@ def home() -> HTMLResponse:
             const b = h.boundingBox || {};
             return {
               text: String(h.rawValue || ''),
-              bbox: { x0: b.x || 0, y0: b.y || 0, x1: (b.x || 0) + (b.width || 0), y1: (b.y || 0) + (b.height || 0) }
+              bbox: { x0: b.x || 0, y0: b.y || 0, x1: (b.x || 0) + (b.width || 0), y1: (b.y || 0) + (b.height || 0) },
+              confidence: 80
             };
           });
           const lines = ocrLinesFromWords(words);
           const q = pickOcrNumber(lines);
-          if (q && ocrDigitCount(q) >= 2) return { lines: lines, raw: lines.join(' ') };
+          if (q && ocrDigitCount(q) >= 2 && !ocrHasArabic(q)) return { lines: lines, raw: lines.join(' ') };
         } catch (_) {}
       }
-      setOcrScanStatus(kind === 'number' ? 'جاري قراءة الرقم بالعربية والإنجليزية...' : 'جاري قراءة الاسم بالعربية...');
-      const araData = await ocrRecognizeWithLang(prepared, 'ara');
-      setOcrScanStatus('جاري قراءة الجزء الإنجليزي...');
-      let engData = {};
+      setOcrScanStatus(kind === 'number' ? 'جاري قراءة الرقم...' : 'جاري قراءة الاسم بالعربي والإنجليزي معاً...');
+      const mixed = await ocrRecognizeWithLang(prepared, 'ara+eng', { psm: '6' });
+      let lineObjs = ocrBuildLines(mixed.words);
+      if (!lineObjs.length) {
+        lineObjs = String(mixed.text || '').split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean).map((t) => ({
+          text: t, x: 0, y: 0, x1: 0, y1: 0, conf: Number(mixed.confidence || 0), words: []
+        }));
+      }
+      lineObjs = lineObjs.filter((l) => l.text && !ocrIsOuterLabelJunk(l.text));
+      lineObjs.forEach((l) => { l.text = ocrDropIgnoredText(l.text); });
+      lineObjs = lineObjs.filter((l) => l.text);
       try {
-        engData = await ocrRecognizeWithLang(prepared, 'eng');
-      } catch (_) {
-        engData = {};
-      }
-      const araText = String(araData.text || '');
-      const engText = String(engData.text || '');
-      const mergedWords = mergeAraEngWords(araData.words || [], engData.words || []);
-      let lines = ocrLinesFromWords(mergedWords);
-      if (!lines.length) {
-        lines = (araText + '\\n' + engText).split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
-      }
-      lines = lines.filter((s) => s && !ocrIsOuterLabelJunk(s));
+        lineObjs = await ocrRefineTargetLine(prepared, lineObjs, kind);
+      } catch (_) {}
+      const lines = lineObjs.map((l) => l.text).filter(Boolean);
       return { lines: lines, raw: lines.join(' ') };
     }
     async function openLocationOcrScanner() {
@@ -4447,7 +4536,7 @@ def home() -> HTMLResponse:
       try {
         ocrStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
         });
       } catch (_) {
         try {
@@ -4707,7 +4796,7 @@ def home() -> HTMLResponse:
         const lines = (structured && structured.lines && structured.lines.length)
           ? structured.lines
           : String((structured && structured.raw) || '').split(/\\n+|\\r+/).map(ocrCleanPiece).filter(Boolean);
-        const query = kind === 'number' ? pickOcrNumber(lines) : pickOcrName(lines);
+        const query = ocrDropIgnoredText(kind === 'number' ? pickOcrNumber(lines) : pickOcrName(lines));
         if (preview) preview.value = query;
         if (!query || query.length < 2) {
           setOcrScanStatus('ما انقرأ نص واضح. قرّب الكاميرا أو حسّن الإضاءة ثم أعد المحاولة.');
@@ -4726,7 +4815,7 @@ def home() -> HTMLResponse:
       }
     }
     async function applyLocationOcrSearch(query) {
-      const q = String(query || '').trim();
+      const q = ocrDropIgnoredText(query);
       if (!q) {
         setOcrScanStatus('اكتب أو اقرأ نصاً أولاً.');
         return;
@@ -4742,7 +4831,7 @@ def home() -> HTMLResponse:
     }
     async function searchLocationOcrText() {
       const preview = document.getElementById('ocrTextPreview');
-      const q = preview ? String(preview.value || '').trim() : '';
+      const q = preview ? ocrDropIgnoredText(preview.value) : '';
       if (!q) {
         setOcrScanStatus('اقرأ النص أولاً أو اكتبه في المربع.');
         return;
