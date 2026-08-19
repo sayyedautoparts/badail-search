@@ -4222,7 +4222,9 @@ def home() -> HTMLResponse:
       const compact = t.replace(/\\s/g, '');
       const digits = (t.match(/\\d/g) || []).length;
       const letters = (t.match(/[A-Za-z\u0600-\u06FF]/g) || []).length;
-      if (letters === 0 && digits >= 8 && digits === compact.length) return true;
+      if (!compact) return false;
+      if (letters === 0 && digits >= 6 && digits === compact.length) return true;
+      if (/^0+\\d+$/.test(compact) && compact.length >= 6) return true;
       return digits >= 10 && letters <= 1 && digits / Math.max(compact.length, 1) > 0.8;
     }
     function ocrIsOuterLabelJunk(s) {
@@ -4556,7 +4558,9 @@ def home() -> HTMLResponse:
       const bands = [];
       raw.forEach((b) => {
         const last = bands.length ? bands[bands.length - 1] : null;
-        if (last && b.y - (last.y + last.h) < Math.max(3, last.h * 0.45)) {
+        const gap = last ? b.y - (last.y + last.h) : 999;
+        const tall = last && ((b.y + b.h) - last.y) > canvas.height * 0.26;
+        if (last && !tall && gap < Math.max(2, last.h * 0.22)) {
           last.h = b.y + b.h - last.y;
         } else {
           bands.push({ y: b.y, h: b.h });
@@ -4565,26 +4569,37 @@ def home() -> HTMLResponse:
       return bands.length ? bands : [{ y: 0, h: h }];
     }
     function bandLooksLikeBarcode(canvas, band) {
-      if (band.h > canvas.height * 0.16 && band.y > canvas.height * 0.28) {
-        const step = Math.max(1, Math.floor(canvas.width / 100));
-        const ctx = canvas.getContext('2d');
-        const img = ctx.getImageData(0, Math.max(0, band.y), canvas.width, Math.max(1, band.h));
-        const d = img.data;
-        const bw = canvas.width;
-        const bh = Math.max(1, band.h);
-        let acc = 0;
-        let n = 0;
-        const mid = Math.floor(bh / 2);
-        for (let x = step; x < bw; x += step) {
-          const i = (mid * bw + x) * 4;
-          const j = (mid * bw + (x - step)) * 4;
-          const g1 = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          const g0 = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
-          acc += Math.abs(g1 - g0);
-          n += 1;
-        }
-        return n && (acc / n) > 28;
+      const w = canvas.width;
+      const bh = Math.max(1, Math.floor(band.h));
+      const y0 = Math.max(0, Math.floor(band.y));
+      if (bh < 6 || w < 20) return false;
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, y0, w, bh);
+      const d = img.data;
+      const mid = Math.floor(bh / 2);
+      let transitions = 0;
+      let prevDark = null;
+      let energy = 0;
+      let n = 0;
+      const step = Math.max(1, Math.floor(w / 220));
+      for (let x = step; x < w; x += step) {
+        const i = (mid * w + x) * 4;
+        const j = (mid * w + (x - step)) * 4;
+        const g1 = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const g0 = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+        energy += Math.abs(g1 - g0);
+        n += 1;
+        const dark = g1 < 145;
+        if (prevDark !== null && dark !== prevDark) transitions += 1;
+        prevDark = dark;
       }
+      const meanE = n ? energy / n : 0;
+      const span = band.y + band.h;
+      const lower = band.y > canvas.height * 0.22;
+      if (lower && transitions >= 18 && meanE > 16) return true;
+      if (lower && transitions >= 26) return true;
+      if (lower && meanE > 24 && band.h > canvas.height * 0.08) return true;
+      if (span > canvas.height * 0.72 && transitions >= 14) return true;
       return false;
     }
     async function ocrReadNameStrip(strip) {
@@ -4615,19 +4630,41 @@ def home() -> HTMLResponse:
       return text;
     }
     async function ocrReadStickerByBands(srcCanvas, kind) {
-      const bands = findInkTextBands(srcCanvas);
+      let work = srcCanvas;
+      const firstBands = findInkTextBands(srcCanvas);
+      let barTop = -1;
+      for (let i = 0; i < firstBands.length; i++) {
+        if (bandLooksLikeBarcode(srcCanvas, firstBands[i])) {
+          barTop = firstBands[i].y;
+          break;
+        }
+      }
+      if (barTop < 0) barTop = findStickerBarcodeTop(srcCanvas);
+      if (barTop > srcCanvas.height * 0.22) {
+        work = cropCanvasRect(srcCanvas, {
+          x: 0,
+          y: 0,
+          w: srcCanvas.width,
+          h: Math.max(24, barTop - 6)
+        });
+      }
+      const bands = findInkTextBands(work);
       const lines = [];
       for (let i = 0; i < bands.length; i++) {
         const b = bands[i];
-        if (bandLooksLikeBarcode(srcCanvas, b)) continue;
-        const padY = Math.max(8, Math.round(b.h * 0.55));
-        const strip = cropCanvasRect(srcCanvas, {
-          x: 0,
-          y: Math.max(0, b.y - padY),
-          w: srcCanvas.width,
-          h: Math.min(srcCanvas.height - Math.max(0, b.y - padY), b.h + padY * 2)
-        });
+        if (bandLooksLikeBarcode(work, b)) break;
+        const padUp = Math.max(8, Math.round(b.h * 0.55));
+        const padDown = Math.max(2, Math.round(b.h * 0.12));
+        let y = Math.max(0, b.y - padUp);
+        let h = b.h + padUp + padDown;
+        const next = bands[i + 1];
+        if (next) {
+          const limit = bandLooksLikeBarcode(work, next) ? next.y - 4 : next.y - 1;
+          if (y + h > limit) h = Math.max(8, limit - y);
+        }
+        const strip = cropCanvasRect(work, { x: 0, y: y, w: work.width, h: h });
         if (strip.height < 10 || strip.width < 20) continue;
+        if (bandLooksLikeBarcode(strip, { y: 0, h: strip.height })) continue;
         setOcrScanStatus(kind === 'number'
           ? 'جاري قراءة سطر الرقم...'
           : 'جاري قراءة سطر الاسم بالعربي والإنجليزي...');
@@ -4687,7 +4724,7 @@ def home() -> HTMLResponse:
           text: t, x: 0, y: 0, x1: 0, y1: 0, conf: Number(mixed.confidence || 0), words: []
         }));
       }
-      lineObjs = lineObjs.filter((l) => l.text && !ocrIsOuterLabelJunk(l.text));
+      lineObjs = lineObjs.filter((l) => l.text && !ocrIsOuterLabelJunk(l.text) && !ocrIsBarcodeLike(l.text));
       lineObjs.forEach((l) => { l.text = ocrDropIgnoredText(l.text); });
       lineObjs = lineObjs.filter((l) => l.text);
       return { lines: lineObjs.map((l) => l.text).filter(Boolean), raw: lineObjs.map((l) => l.text).join(' ') };
@@ -4929,7 +4966,8 @@ def home() -> HTMLResponse:
     }
     function cropStickerWithoutBarcode(sticker) {
       const cut = findStickerBarcodeTop(sticker);
-      return cropCanvasRect(sticker, { x: 0, y: 0, w: sticker.width, h: Math.max(28, cut) });
+      const keep = Math.min(Math.floor(sticker.height * 0.72), Math.max(Math.floor(sticker.height * 0.38), cut - 8));
+      return cropCanvasRect(sticker, { x: 0, y: 0, w: sticker.width, h: Math.max(28, keep) });
     }
     function locateOcrSticker(video) {
       const wrap = document.getElementById('ocrVideoWrap');
