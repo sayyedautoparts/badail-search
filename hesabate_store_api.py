@@ -295,6 +295,97 @@ def _product_location(prod: Dict[str, Any], models: Optional[Dict[str, str]] = N
     return ""
 
 
+def _compact_code(v: Any) -> str:
+    s = _text(v).upper()
+    if not s:
+        return ""
+    return re.sub(r"[\s\-_./\\]+", "", s)
+
+
+def row_matches_barcode_keys(row: Dict[str, str], barcode_keys: List[str]) -> bool:
+    if not barcode_keys:
+        return False
+    keys = {_compact_code(k) for k in barcode_keys if _compact_code(k)}
+    if not keys:
+        return False
+    candidates = [
+        _compact_code(row.get("barcode")),
+        _compact_code(row.get("original_number")),
+        _compact_code(row.get("product_id")),
+    ]
+    notes = _text(row.get("notes"))
+    if notes:
+        candidates.append(_compact_code(notes))
+    for c in candidates:
+        if not c:
+            continue
+        if c in keys:
+            return True
+        for k in keys:
+            # تجنّب تطابق أجزاء قصيرة جداً (مثل id=1 داخل رقم أطول)
+            if k and len(k) >= 4 and len(c) >= 4 and (k in c or c in k):
+                return True
+    return False
+
+
+def row_matches_text_query(row: Dict[str, str], query: str) -> bool:
+    q = _text(query)
+    if not q:
+        return False
+    q_compact = _compact_code(q)
+    q_lower = q.lower()
+    fields = [
+        _text(row.get("original_number")),
+        _text(row.get("barcode")),
+        _text(row.get("item_name")),
+        _text(row.get("notes")),
+        _text(row.get("company")),
+        _text(row.get("brand")),
+    ]
+    for f in fields:
+        if not f:
+            continue
+        if q_lower in f.lower():
+            return True
+        fc = _compact_code(f)
+        if q_compact and fc and (q_compact in fc or fc in q_compact):
+            return True
+    return False
+
+
+def filter_location_rows(
+    rows: List[Dict[str, str]],
+    *,
+    barcode_keys: Optional[List[str]] = None,
+    text_query: str = "",
+) -> List[Dict[str, str]]:
+    """تصفية صفوف المواقع حسب باركود أو رقم أصلي/نص."""
+    keys = [k for k in (barcode_keys or []) if k]
+    text = _text(text_query)
+    if not keys and not text:
+        return []
+    out: List[Dict[str, str]] = []
+    seen: set = set()
+    for row in rows:
+        ok = False
+        if keys and row_matches_barcode_keys(row, keys):
+            ok = True
+        elif text and row_matches_text_query(row, text):
+            ok = True
+        if not ok:
+            continue
+        dedupe_key = (
+            _compact_code(row.get("product_id"))
+            or _compact_code(row.get("barcode"))
+            or f"{_compact_code(row.get('original_number'))}|{_text(row.get('item_name')).lower()}"
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(row)
+    return out
+
+
 def map_products_to_location_rows(
     products_payload: Dict[str, Any],
     *,

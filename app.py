@@ -3917,7 +3917,7 @@ def _release_hesabate_db_lock(lock_conn: Any | None) -> None:
         pass
 
 
-def sync_locations_from_hesabate(*, force: bool = False) -> dict:
+def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = False) -> dict:
     """
     مزامنة اكتشاف المواقع من Store API بأقل طلبات:
     Auth عند الحاجة فقط، company/trades كل عدة أيام، products عند الحاجة.
@@ -3931,7 +3931,8 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "message": "أضف HESABATE_API_HOST و HESABATE_API_USERNAME و HESABATE_API_PASSWORD في إعدادات Vercel.",
             "usage": hesabate_usage_summary(),
         }
-    if not force and _hesabate_last_sync_age_sec() < HESABATE_SYNC_MIN_INTERVAL_SEC:
+    # البحث المباشر (return_mapped/force) يتجاوز مهلة التوفير
+    if (not force) and (not return_mapped) and _hesabate_last_sync_age_sec() < HESABATE_SYNC_MIN_INTERVAL_SEC:
         return {
             "ok": True,
             "skipped": True,
@@ -4052,9 +4053,20 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             ),
         )
 
-        if (not force) and products_hash and products_hash == prev_hash:
+        mapped = hesabate_api.map_products_to_location_rows(
+            products,
+            company_payload=fetched.get("company"),
+            trades_payload=fetched.get("trades"),
+            model_payload=model_payload,
+        )
+        try:
+            prev_rows_n = int(app_kv_get("hesabate_last_rows", "0") or "0")
+        except (TypeError, ValueError):
+            prev_rows_n = 0
+        catalog_bloated = prev_rows_n > max(int(len(mapped) * 1.35), len(mapped) + 500)
+        if products_hash and products_hash == prev_hash and not catalog_bloated:
             app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            return {
+            out = {
                 "ok": True,
                 "skipped": True,
                 "reason": "unchanged",
@@ -4062,19 +4074,16 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
                 "request_count": request_count,
                 "usage": hesabate_usage_summary(),
             }
+            if return_mapped:
+                out["mapped"] = mapped
+            return out
 
-        mapped = hesabate_api.map_products_to_location_rows(
-            products,
-            company_payload=fetched.get("company"),
-            trades_payload=fetched.get("trades"),
-            model_payload=model_payload,
-        )
         inserted = replace_location_rows_from_api(mapped)
         with_loc = sum(1 for r in mapped if clean_shelf_location(r.get("location")))
         app_kv_set("hesabate_products_hash", products_hash)
         app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         app_kv_set("hesabate_last_rows", str(inserted))
-        return {
+        out = {
             "ok": True,
             "skipped": False,
             "rows": inserted,
@@ -4087,6 +4096,9 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "usage": hesabate_usage_summary(),
             "location_note": "موقع الرف = حقل الموديل (model) من حساباتي.",
         }
+        if return_mapped:
+            out["mapped"] = mapped
+        return out
     except hesabate_api.StoreApiError as e:
         try:
             flush_hesabate_usage_pending()
@@ -4122,6 +4134,140 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
 
 def ensure_hesabate_locations_synced(*, force: bool = False) -> dict:
     return sync_locations_from_hesabate(force=force)
+
+
+def looks_like_item_code(raw: str) -> bool:
+    """باركود أو رقم أصلي / كود صنف — وليس اسم عربي طويل فقط."""
+    s = str(raw or "").strip()
+    if len(s) < 3:
+        return False
+    return any(ch.isdigit() for ch in s)
+
+
+def dedupe_location_rows_table() -> int:
+    """يحذف الصفوف المكررة (نفس الباركود أو نفس الرقم الأصلي+الاسم) ويبقي الأحدث."""
+    conn = get_db()
+    removed = 0
+    try:
+        ensure_location_rows_import_schema(conn)
+        if conn.postgres:
+            cur = conn.execute(
+                """
+                DELETE FROM location_rows a
+                USING location_rows b
+                WHERE a.id < b.id
+                  AND COALESCE(NULLIF(TRIM(a.barcode), ''), '') <> ''
+                  AND TRIM(a.barcode) = TRIM(b.barcode)
+                """
+            )
+            try:
+                removed += int(cur.rowcount or 0)
+            except Exception:
+                pass
+            cur = conn.execute(
+                """
+                DELETE FROM location_rows a
+                USING location_rows b
+                WHERE a.id < b.id
+                  AND COALESCE(NULLIF(TRIM(a.barcode), ''), '') = ''
+                  AND COALESCE(TRIM(a.original_number), '') = COALESCE(TRIM(b.original_number), '')
+                  AND COALESCE(TRIM(a.item_name), '') = COALESCE(TRIM(b.item_name), '')
+                  AND COALESCE(TRIM(a.original_number), '') <> ''
+                """
+            )
+            try:
+                removed += int(cur.rowcount or 0)
+            except Exception:
+                pass
+        else:
+            cur = conn.execute(
+                """
+                DELETE FROM location_rows
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM location_rows
+                    WHERE COALESCE(TRIM(barcode), '') <> ''
+                    GROUP BY TRIM(barcode)
+                )
+                AND COALESCE(TRIM(barcode), '') <> ''
+                """
+            )
+            try:
+                removed += int(cur.rowcount or 0)
+            except Exception:
+                pass
+        conn.commit()
+        return removed
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return removed
+    finally:
+        conn.close()
+
+
+def live_lookup_locations_from_hesabate(
+    *,
+    q_barcode: str = "",
+    q_text: str = "",
+    barcode_keys: list[str] | None = None,
+) -> dict:
+    """
+    عند البحث: يطلب من حساباتي الآن، يحدّث الكتالوج، ويرجع المطابقات فقط بدون تكرار.
+    """
+    try:
+        dedupe_location_rows_table()
+    except Exception:
+        pass
+    sync = sync_locations_from_hesabate(force=True, return_mapped=True)
+    mapped = sync.get("mapped") if isinstance(sync.get("mapped"), list) else []
+    keys = list(barcode_keys or [])
+    qb = str(q_barcode or "").strip()
+    qt = str(q_text or "").strip()
+    if qb and not keys:
+        keys = barcode_search_keys(qb)
+    matched = hesabate_api.filter_location_rows(
+        mapped,
+        barcode_keys=keys,
+        text_query="" if keys else qt,
+    )
+    # إذا البحث بالباركود لم يُرجع شيء، جرّب النص أيضاً على نفس السحب
+    if keys and not matched and qt:
+        matched = hesabate_api.filter_location_rows(mapped, barcode_keys=[], text_query=qt)
+    prepared: list[dict[str, Any]] = []
+    for index, row in enumerate(matched):
+        d = {
+            "id": row.get("product_id") or index,
+            "item_name": row.get("item_name") or "",
+            "location": clean_shelf_location(row.get("location")),
+            "company": row.get("company") or "",
+            "original_number": row.get("original_number") or "",
+            "barcode": row.get("barcode") or "",
+            "brand": row.get("brand") or "",
+            "notes": row.get("notes") or "",
+            "quantity": row.get("quantity") or "",
+            "price": row.get("price") or "",
+            "source_file": LOCATION_API_SOURCE_FILE,
+            "source_sheet": "products",
+        }
+        d["row_key"] = f"api|{d.get('barcode')}|{d.get('id')}"
+        prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
+    msg = sync.get("message") or ""
+    if sync.get("ok"):
+        msg = f"تم الجلب من حساباتي الآن — {len(prepared)} نتيجة."
+    return {
+        "ok": bool(sync.get("ok")),
+        "live": True,
+        "total_rows": len(prepared),
+        "rows": prepared,
+        "has_more": False,
+        "limit": len(prepared),
+        "offset": 0,
+        "message": msg,
+        "sync": {k: v for k, v in sync.items() if k != "mapped"},
+        "usage": sync.get("usage") or hesabate_usage_summary(),
+    }
 
 
 app = FastAPI(title="Advanced Excel Search")
@@ -4420,11 +4566,11 @@ def home() -> HTMLResponse:
 
       <div id="locationSearchPanel" class="search-panel">
         <div style="margin:10px 0 14px;padding:12px;background:#eef7f1;border-radius:10px;border:1px solid #b7d7c2;">
-          <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">مزامنة حساباتي تلقائية</p>
-          <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري فحص حالة المزامنة...</p>
+          <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">جلب مباشر من حساباتي عند البحث</p>
+          <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري قراءة حالة API...</p>
           <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
-          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">أثناء فتح هذا التبويب يتم الفحص تلقائياً كل دقيقة تقريباً + عند كل بحث. إذا تغيّر صنف في حساباتي يظهر بعد ثوانٍ إلى دقيقة. لا يُعاد السحب إن لم يتغيّر شيء (توفير Requests).</p>
-          <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف يُؤخذ تلقائياً من حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116).</p>
+          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">عند البحث بالباركود أو الرقم الأصلي يُطلب من حساباتي في نفس اللحظة ويُعرض الموقع وتفاصيل الصنف (بدون مزامنة عشوائية في الخلفية).</p>
+          <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف = حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116). أول بحث قد يستغرق أقل من دقيقة لأن حساباتي لا يدعم سحب صنف واحد.</p>
           <details style="margin-top:10px;">
             <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel احتياطي (اختياري)</summary>
             <p class="muted" style="margin:8px 0;font-size:12px;line-height:1.45;">إذا لزم، يحدّث عمود الموقع حسب الباركود بدون مسح أصناف API.</p>
@@ -4573,9 +4719,7 @@ def home() -> HTMLResponse:
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
-        startHesabateLocationPoller();
-      } else {
-        stopHesabateLocationPoller();
+        refreshHesabateStatus();
       }
       searchNow('auto');
     }
@@ -4614,53 +4758,9 @@ def home() -> HTMLResponse:
       }
     }
 
-    let hesabateEnsureTimer = null;
-    let hesabateEnsureInflight = false;
-    const HESABATE_CLIENT_POLL_MS = 40000;
-    function stopHesabateLocationPoller() {
-      if (hesabateEnsureTimer) {
-        clearInterval(hesabateEnsureTimer);
-        hesabateEnsureTimer = null;
-      }
-    }
-    function startHesabateLocationPoller() {
-      stopHesabateLocationPoller();
-      ensureHesabateLocationSyncQuiet();
-      hesabateEnsureTimer = setInterval(() => {
-        if (activeSearchTab !== 'location') {
-          stopHesabateLocationPoller();
-          return;
-        }
-        ensureHesabateLocationSyncQuiet();
-      }, HESABATE_CLIENT_POLL_MS);
-    }
     async function ensureHesabateLocationSyncQuiet() {
-      if (hesabateEnsureInflight) return;
-      hesabateEnsureInflight = true;
-      try {
-        const stEl = document.getElementById('hesabateSyncStatus');
-        if (stEl && !String(stEl.textContent || '').includes('آخر مزامنة')) {
-          stEl.textContent = 'جاري فحص تحديثات حساباتي...';
-        }
-        const res = await fetch('/hesabate/ensure', { method: 'POST', cache: 'no-store' });
-        const data = await readJsonSafe(res);
-        let msg = data.message || '';
-        if (data && data.ok && data.skipped && data.reason === 'fresh') {
-          const age = Number(data.age_sec || 0);
-          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل ~45 ثانية أثناء فتح التبويب.`;
-        }
-        renderHesabateUsage(data.usage || {}, msg);
-        if (data && data.ok && !data.skipped && activeSearchTab === 'location') {
-          const tEl = document.getElementById('locationTextQueryInput');
-          const bEl = document.getElementById('locationBarcodeQueryInput');
-          const hasQ = (tEl && tEl.value.trim()) || (bEl && lightSanitizeBarcodeValue(bEl.value));
-          if (hasQ) searchNow('location');
-        }
-      } catch (_) {
-        await refreshHesabateStatus();
-      } finally {
-        hesabateEnsureInflight = false;
-      }
+      // لم يعد هناك مزامنة خلفية — الجلب يتم داخل /search_locations عند البحث
+      await refreshHesabateStatus();
     }
 
     let html5QrLocationScanner = null;
@@ -6976,7 +7076,6 @@ def home() -> HTMLResponse:
       const locTable = document.getElementById('locationsTable');
 
       if (effectiveMode === 'location') {
-        // البحث فقط هنا — المزامنة تتم عبر الـ poller حتى لا يتعطل ظهور النتائج
         const lqText = document.getElementById('locationTextQueryInput').value.trim();
         let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
         const lqCanon = normalizeBarcodeLookupKeyClient(lqBc);
@@ -6995,6 +7094,12 @@ def home() -> HTMLResponse:
           document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب في مربع الصنف/الرقم أو في مربع الباركود، أو استخدم الكاميرا.';
           return;
         }
+        const looksCode = /\d/.test(lqText) && lqText.length >= 3;
+        if (lqBc || looksCode) {
+          document.getElementById('stats').innerText = 'جاري الجلب من حساباتي الآن... قد يستغرق أقل من دقيقة.';
+          const stEl = document.getElementById('hesabateSyncStatus');
+          if (stEl) stEl.textContent = 'جاري طلب الصنف من حساباتي...';
+        }
         let data = null;
         try {
           const params = lqBc ? new URLSearchParams() : new URLSearchParams({ q: lqText });
@@ -7004,7 +7109,7 @@ def home() -> HTMLResponse:
             if (barcodeDebug) params.set('barcode_debug', '1');
           }
           const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 90000);
+          const to = setTimeout(() => ctrl.abort(), 180000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
             method: 'GET',
             cache: 'no-store',
@@ -7017,7 +7122,7 @@ def home() -> HTMLResponse:
           data = parsed;
         } catch (err) {
           let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
-          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار (٩٠ ثانية). أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار (٣ دقائق). أعد المحاولة.';
           else if (err && err.message) {
             const m = String(err.message);
             if (m.includes('search-locations-')) hint = `ردّ الخادم (${m.replace('search-locations-', 'رمز ')}) — قد يكون السيرفر مشغولاً؛ أعد المحاولة بعد قليل.`;
@@ -7028,10 +7133,23 @@ def home() -> HTMLResponse:
           locTable.style.display = 'none';
           return;
         }
-        const safeRows = Array.isArray(data && data.rows) ? data.rows : [];
-        const safeTotal = Number((data && data.total_rows) || safeRows.length || 0);
-        const locSrc = lqBc ? `بحث بالباركود فقط | عدد النتائج: ${safeTotal}` : `عدد نتائج المواقع: ${safeTotal}`;
-        let statLine = `${locSrc} | المصدر: الخادم`;
+        if (data && data.usage) renderHesabateUsage(data.usage, data.message || '');
+        const rawRows = Array.isArray(data && data.rows) ? data.rows : [];
+        const seenKeys = new Set();
+        const safeRows = [];
+        rawRows.forEach((r) => {
+          const k = String(r.barcode || r.original_number || r.item_name || '').trim().toLowerCase();
+          if (k && seenKeys.has(k)) return;
+          if (k) seenKeys.add(k);
+          safeRows.push(r);
+        });
+        const safeTotal = safeRows.length;
+        const fromLive = !!(data && data.live);
+        const locSrc = lqBc ? `بحث بالباركود | النتائج: ${safeTotal}` : `نتائج المواقع: ${safeTotal}`;
+        let statLine = fromLive
+          ? `${locSrc} | المصدر: حساباتي الآن`
+          : `${locSrc} | المصدر: محلي`;
+        if (data && data.message) statLine += ` | ${data.message}`;
         if (barcodeDebug && data && data.barcode_meta) {
           statLine += ` | تتبع: ${data.barcode_meta.match_kind || ''} — مفاتيح: ${(data.barcode_meta.keys_tried || []).join(',')}`;
           logBarcodeClientDebug('search-result-meta', data.barcode_meta);
@@ -7059,8 +7177,8 @@ def home() -> HTMLResponse:
         locTable.style.display = showL ? 'table' : 'none';
         if (!showL) {
           document.getElementById('stats').innerText = lqBc
-            ? 'لا يوجد صنف بهذا الباركود في ملف المواقع.'
-            : 'لا توجد نتيجة لهذا البحث في ملف المواقع.';
+            ? 'لا يوجد صنف بهذا الباركود في حساباتي.'
+            : 'لا توجد نتيجة لهذا البحث في حساباتي.';
         }
         return;
       }
@@ -7372,9 +7490,6 @@ def home() -> HTMLResponse:
       updateSizeInputsLayout();
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
-        startHesabateLocationPoller();
-      } else {
-        stopHesabateLocationPoller();
       }
       refreshHesabateStatus();
 
@@ -8379,8 +8494,40 @@ def search_locations(
     meta: dict[str, Any] = {"has_more": False, "limit": lim, "offset": off}
     debug_req = bool(int(barcode_debug)) or BARCODE_SEARCH_DEBUG
 
-    # البحث يستخدم القاعدة المحلية فقط — المزامنة تتم عبر /hesabate/ensure عند فتح التبويب
-    # حتى لا يتجمّد البحث أثناء سحب آلاف الأصناف من حساباتي.
+    # بحث بالباركود أو الرقم الأصلي → جلب مباشر من حساباتي ثم عرض المطابقة (بدون تكرار)
+    qb_raw = (q_barcode or "").strip()
+    qt_early = (q or "").strip()
+    want_live = hesabate_configured() and (
+        bool(qb_raw) or (bool(qt_early) and looks_like_item_code(qt_early))
+    )
+    if want_live:
+        try:
+            live = live_lookup_locations_from_hesabate(
+                q_barcode=qb_raw,
+                q_text=qt_early,
+                barcode_keys=barcode_search_keys(qb_raw) if qb_raw else None,
+            )
+            if live.get("ok"):
+                out = {
+                    "total_rows": int(live.get("total_rows") or 0),
+                    "rows": live.get("rows") or [],
+                    **meta,
+                    "has_more": False,
+                    "live": True,
+                    "message": live.get("message") or "",
+                    "usage": live.get("usage") or {},
+                }
+                if debug_req:
+                    out["barcode_meta"] = {
+                        "keys_tried": barcode_search_keys(qb_raw) if qb_raw else [],
+                        "match_kind": "hesabate_live",
+                        "raw_input": qb_raw or qt_early,
+                    }
+                return out
+        except Exception as exc:
+            # نكمل على البحث المحلي إن فشل API
+            _barcode_search_debug_log(debug_req, "live-lookup-failed", raw=str(exc)[:200])
+
     conn = get_db()
     try:
         try:
@@ -8409,7 +8556,6 @@ def search_locations(
                     except Exception:
                         pass
 
-            qb_raw = (q_barcode or "").strip()
             if qb_raw:
                 b_keys = barcode_search_keys(qb_raw)
                 if not b_keys:
