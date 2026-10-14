@@ -469,6 +469,15 @@ def init_db() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shelf_locations (
+                    barcode_key TEXT PRIMARY KEY,
+                    location TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
         else:
             conn.execute(
                 """
@@ -478,6 +487,16 @@ def init_db() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shelf_locations (
+                    barcode_key TEXT PRIMARY KEY,
+                    location TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_shelf_locations_location ON shelf_locations(location)")
         conn.commit()
     finally:
         conn.close()
@@ -1927,12 +1946,27 @@ def location_text_search_norm_tokens(raw_q: str) -> list[str]:
     return out
 
 
+def is_meaningful_shelf_location(location: Any) -> bool:
+    loc = str(location or "").strip()
+    if not loc:
+        return False
+    if loc in {"0", "0.0", "-", "—", "null", "none", "None"}:
+        return False
+    return True
+
+
+def clean_shelf_location(location: Any) -> str:
+    loc = str(location or "").strip()
+    return loc if is_meaningful_shelf_location(loc) else ""
+
+
 def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for row in rows:
         d = sql_row_to_dict(row)
         rid = d.get("id", "")
         d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{rid}"
+        d["location"] = clean_shelf_location(d.get("location"))
         prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
     return prepared
 
@@ -3495,8 +3529,52 @@ def _hesabate_last_sync_age_sec() -> float:
         return 1e12
 
 
+def _shelf_barcode_keys(barcode: str, normalized: str = "") -> list[str]:
+    keys: list[str] = []
+    bc = str(barcode or "").strip()
+    nb = str(normalized or "").strip() or location_row_normalized_barcode_value(bc, "")
+    compact = re.sub(r"[\s\-]+", "", bc)
+    for k in (bc, nb, compact):
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def ensure_shelf_locations_schema(conn: DBConnection) -> None:
+    if conn.postgres:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shelf_locations (
+                barcode_key TEXT PRIMARY KEY,
+                location TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    else:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shelf_locations (
+                barcode_key TEXT PRIMARY KEY,
+                location TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
 def _load_preserved_locations(conn: DBConnection) -> dict[str, str]:
+    """خريطة باركود → موقع رف (من الجدول الدائم ثم الصفوف الحالية)."""
     out: dict[str, str] = {}
+    try:
+        ensure_shelf_locations_schema(conn)
+        for row in conn.execute("SELECT barcode_key, location FROM shelf_locations").fetchall():
+            loc = clean_shelf_location(row["location"])
+            key = str(row["barcode_key"] or "").strip()
+            if key and loc:
+                out[key] = loc
+    except Exception:
+        pass
     try:
         rows = conn.execute(
             """
@@ -3508,19 +3586,149 @@ def _load_preserved_locations(conn: DBConnection) -> dict[str, str]:
     except Exception:
         return out
     for row in rows:
-        loc = str(row["location"] or "").strip()
+        loc = clean_shelf_location(row["location"])
+        if not loc:
+            continue
+        for key in _shelf_barcode_keys(str(row["barcode"] or ""), str(row["normalized_barcode"] or "")):
+            if key not in out:
+                out[key] = loc
+    return out
+
+
+def upsert_shelf_locations(conn: DBConnection, barcode_to_location: dict[str, str]) -> int:
+    ensure_shelf_locations_schema(conn)
+    n = 0
+    for barcode, location in barcode_to_location.items():
+        loc = clean_shelf_location(location)
+        if not loc:
+            continue
+        for key in _shelf_barcode_keys(str(barcode or "")):
+            if conn.postgres:
+                conn.execute(
+                    """
+                    INSERT INTO shelf_locations (barcode_key, location, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (barcode_key) DO UPDATE SET
+                        location = EXCLUDED.location,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (key, loc),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO shelf_locations (barcode_key, location, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(barcode_key) DO UPDATE SET
+                        location = excluded.location,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (key, loc),
+                )
+            n += 1
+    return n
+
+
+def migrate_current_locations_into_shelf_map(conn: DBConnection) -> int:
+    """يحفظ مواقع الرف الحالية في جدول دائم لا تمسحه مزامنة API."""
+    mapping: dict[str, str] = {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT barcode, location, normalized_barcode
+            FROM location_rows
+            WHERE COALESCE(TRIM(location), '') <> ''
+            """
+        ).fetchall()
+    except Exception:
+        return 0
+    for row in rows:
+        loc = clean_shelf_location(row["location"])
         if not loc:
             continue
         bc = str(row["barcode"] or "").strip()
-        nb = str(row["normalized_barcode"] or "").strip()
-        if bc and bc not in out:
-            out[bc] = loc
-        if nb and nb not in out:
-            out[nb] = loc
-        compact = re.sub(r"[\s\-]+", "", bc)
-        if compact and compact not in out:
-            out[compact] = loc
-    return out
+        if bc:
+            mapping[bc] = loc
+    return upsert_shelf_locations(conn, mapping)
+
+
+def lookup_shelf_location(preserved: dict[str, str], barcode: str) -> str:
+    for key in _shelf_barcode_keys(barcode):
+        loc = clean_shelf_location(preserved.get(key))
+        if loc:
+            return loc
+    return ""
+
+
+def merge_shelf_locations_from_excel_bytes(file_bytes: bytes) -> dict[str, Any]:
+    """
+    يحدّث مواقع الرف من Excel (عمود I) حسب الباركود بدون مسح كتالوج API.
+    """
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    mapping: dict[str, str] = {}
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            preview = list(ws.iter_rows(min_row=1, max_row=1, min_col=1, max_col=12, values_only=True))
+            first_row = preview[0] if preview else ()
+            first_cells = [clean_cell(v) for v in (first_row or ())]
+            data_start_row = 2 if _location_row_looks_like_header(first_cells) else 1
+            for row in ws.iter_rows(min_row=data_start_row, min_col=1, max_col=12, values_only=True):
+                values = [clean_cell(v) for v in row]
+                while len(values) < 12:
+                    values.append("")
+                barcode = str(values[3] or "").strip()
+                unit_barcodes = str(values[10] or "").strip()
+                location = clean_shelf_location(values[8])
+                if not location:
+                    continue
+                if barcode:
+                    mapping[barcode] = location
+                for ub in _extract_location_unit_barcodes_from_cell(unit_barcodes):
+                    mapping[ub] = location
+    finally:
+        wb.close()
+
+    conn = get_db()
+    try:
+        ensure_location_rows_import_schema(conn)
+        saved = upsert_shelf_locations(conn, mapping)
+        updated = 0
+        for barcode, location in mapping.items():
+            nb = location_row_normalized_barcode_value(barcode, "")
+            keys = _shelf_barcode_keys(barcode, nb)
+            if not keys:
+                continue
+            placeholders = ", ".join(["?"] * len(keys))
+            cur = conn.execute(
+                f"""
+                UPDATE location_rows
+                SET location = ?
+                WHERE barcode IN ({placeholders})
+                   OR normalized_barcode IN ({placeholders})
+                """,
+                (location, *keys, *keys),
+            )
+            try:
+                updated += int(cur.rowcount or 0)
+            except Exception:
+                pass
+        conn.commit()
+        return {
+            "ok": True,
+            "shelf_keys": saved,
+            "mapped_barcodes": len(mapping),
+            "updated_rows": updated,
+            "mode": "merge_shelves",
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
@@ -3529,20 +3737,16 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
     source_key = LOCATION_API_SOURCE_FILE
     try:
         ensure_location_rows_import_schema(conn)
+        migrate_current_locations_into_shelf_map(conn)
         preserved = _load_preserved_locations(conn)
         conn.execute("DELETE FROM location_rows")
         batch: list[tuple[str, ...]] = []
         for r in mapped_rows:
             item_name = str(r.get("item_name") or "")
             barcode = str(r.get("barcode") or "").strip()
-            location = str(r.get("location") or "").strip()
+            location = clean_shelf_location(r.get("location"))
             if not location and barcode:
-                location = (
-                    preserved.get(barcode)
-                    or preserved.get(re.sub(r"[\s\-]+", "", barcode))
-                    or preserved.get(location_row_normalized_barcode_value(barcode, ""))
-                    or ""
-                )
+                location = lookup_shelf_location(preserved, barcode)
             company = str(r.get("company") or "")
             original_number = str(r.get("original_number") or "")
             brand = str(r.get("brand") or "")
@@ -3649,6 +3853,17 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "message": "أضف HESABATE_API_HOST و HESABATE_API_USERNAME و HESABATE_API_PASSWORD في إعدادات Vercel.",
             "usage": hesabate_usage_summary(),
         }
+    # احفظ مواقع الرف الحالية في جدول دائم حتى لو لم نُعد السحب من API
+    try:
+        conn_m = get_db()
+        try:
+            migrate_current_locations_into_shelf_map(conn_m)
+            conn_m.commit()
+        finally:
+            conn_m.close()
+    except Exception:
+        pass
+
     if not force and _hesabate_last_sync_age_sec() < HESABATE_SYNC_MIN_INTERVAL_SEC:
         return {
             "ok": True,
@@ -3936,20 +4151,23 @@ def home() -> HTMLResponse:
       z-index: 1;
       box-shadow: 0 1px 0 #dde1eb;
     }
-    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 22%; }
-    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { width: 13%; }
-    #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) {
-      width: 15%; font-variant-numeric: tabular-nums;
+    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 24%; }
+    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) {
+      width: 14%;
+      font-weight: 700;
+      color: #0b3d2e;
+      white-space: nowrap;
     }
+    #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) { width: 12%; }
     #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) {
-      width: 16%; font-variant-numeric: tabular-nums;
+      width: 14%; font-variant-numeric: tabular-nums;
     }
     #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) {
-      width: 8%; text-align: center; font-weight: 800;
-      font-variant-numeric: tabular-nums; color: #0d47a1;
+      width: 16%; font-variant-numeric: tabular-nums;
     }
     #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) {
-      width: 16%; font-weight: 700; color: #1a237e;
+      width: 8%; text-align: center; font-weight: 800;
+      font-variant-numeric: tabular-nums; color: #0d47a1;
     }
     #locationsTable th:nth-child(7), #locationsTable td:nth-child(7) {
       width: 10%; font-weight: 700; font-variant-numeric: tabular-nums; color: #1b5e20;
@@ -4101,11 +4319,11 @@ def home() -> HTMLResponse:
           <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري فحص حالة المزامنة...</p>
           <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
           <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">تتحدث الأصناف تلقائياً عند فتح التبويب أو البحث (بدون زر). لتقليل الـ Requests: لا يُعاد السحب إن كانت البيانات حديثة أو لم تتغير.</p>
-          <details style="margin-top:10px;">
-            <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel يدوي (احتياطي لمواقع الرف القديمة)</summary>
-            <p class="muted" style="margin:8px 0;font-size:12px;">Store API لا يصدّر موقع الرف؛ الرفع اليدوي يحدّث عمود الموقع لنفس الباركود ثم تُحفظ عند المزامنات التالية.</p>
+          <details style="margin-top:10px;" open>
+            <summary class="muted" style="cursor:pointer;font-size:13px;"><strong>رفع مواقع الرف من Excel</strong> (مرة واحدة أو عند التغيير)</summary>
+            <p class="muted" style="margin:8px 0;font-size:12px;line-height:1.45;">حساباتي API يجيب الأصناف/الكمية/السعر، لكن <strong>موقع الرف</strong> (مثل W2 E116) يجي من ملف Excel عمود <strong>I</strong>. الرفع يحدّث الموقع حسب الباركود ويحفظه دائماً حتى بعد المزامنة التلقائية.</p>
             <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
-            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
+            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">تحديث مواقع الرف من Excel</button>
             <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
           </details>
         </div>
@@ -4158,11 +4376,11 @@ def home() -> HTMLResponse:
           <thead>
             <tr>
               <th>اسم الصنف</th>
+              <th>الموقع</th>
               <th>الشركة</th>
               <th>الرقم الأصلي</th>
               <th>الباركود</th>
               <th>الكمية</th>
-              <th>الموقع</th>
               <th>السعر</th>
             </tr>
           </thead>
@@ -4757,6 +4975,8 @@ def home() -> HTMLResponse:
         }
         if (data.skipped) {
           if (st) st.innerText = 'نفس الملف مرفوع مسبقاً — لم يُعد الاستيراد.';
+        } else if (data.mode === 'merge_shelves' || data.message) {
+          if (st) st.innerText = data.message || `تم تحديث مواقع الرف لـ ${Number(data.inserted_rows || 0)} صنف.`;
         } else {
           if (st) st.innerText = `تم استيراد ${Number(data.inserted_rows || 0)} صف موقع.`;
         }
@@ -6684,12 +6904,16 @@ def home() -> HTMLResponse:
         lBody.innerHTML = '';
         safeRows.forEach((r) => {
           const tr = document.createElement('tr');
+          const locTxt = String(r.location ?? '').trim();
+          const locCell = locTxt
+            ? `<strong style="color:#0b3d2e;background:#e7f6ee;padding:3px 8px;border-radius:8px;display:inline-block;">${escapeHtml(locTxt)}</strong>`
+            : `<span class="muted">—</span>`;
           tr.innerHTML = `<td>${escapeHtml(String(r.item_name ?? ''))}</td>
+            <td>${locCell}</td>
             <td>${escapeHtml(String(r.company ?? ''))}</td>
             <td>${escapeHtml(String(r.original_number ?? ''))}</td>
             <td>${escapeHtml(String(r.barcode ?? ''))}</td>
             <td>${escapeHtml(String(r.quantity ?? ''))}</td>
-            <td><strong>${escapeHtml(String(r.location ?? ''))}</strong></td>
             <td>${escapeHtml(String(r.price ?? ''))}</td>`;
           lBody.appendChild(tr);
         });
@@ -7301,8 +7525,8 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
 @app.post("/upload_location_sheet")
 async def upload_location_sheet(file: UploadFile = File(...)) -> dict:
     """
-    رفع ملف المواقع من تبويب «اكتشاف الموقع» فقط: B–L شاملاً G الكمية، I موقع، J ملاحظات، K باركود الوحدات، L سعر.
-    يُخزَّن تحت اسم مصدر ثابت ويُستبدل السابق من نفس الزر.
+    رفع ملف المواقع: يحدّث عمود موقع الرف (I) حسب الباركود.
+    إذا كان الكتالوج من حساباتي API موجوداً: دمج المواقع فقط بدون مسح الأصناف.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="لم يُختَر ملف")
@@ -7312,15 +7536,49 @@ async def upload_location_sheet(file: UploadFile = File(...)) -> dict:
     content = await file.read()
     content_hash, file_size = file_fingerprint(content)
     fixed_name = LOCATION_TAB_IMPORT_SOURCE_FILE
-    if is_same_location_upload(fixed_name, content_hash, file_size):
-        return {"ok": True, "skipped": True, "inserted_rows": 0}
+
+    conn = get_db()
     try:
+        api_rows = conn.execute(
+            "SELECT COUNT(*) AS c FROM location_rows WHERE source_file = ?",
+            (LOCATION_API_SOURCE_FILE,),
+        ).fetchone()
+        has_api_catalog = int((api_rows["c"] if api_rows else 0) or 0) > 0
+    finally:
+        conn.close()
+
+    try:
+        if has_api_catalog or hesabate_configured():
+            merged = merge_shelf_locations_from_excel_bytes(content)
+            # احفظ بصمة الملف حتى لا يُعاد نفس الدمج بلا داعي
+            upsert_location_file_meta(fixed_name, int(merged.get("mapped_barcodes") or 0), content_hash, file_size)
+            return {
+                "ok": True,
+                "skipped": False,
+                "inserted_rows": int(merged.get("updated_rows") or 0),
+                "mapped_barcodes": int(merged.get("mapped_barcodes") or 0),
+                "mode": "merge_shelves",
+                "message": (
+                    f"تم تحديث مواقع الرف لـ {int(merged.get('updated_rows') or 0)} صنف "
+                    f"من {int(merged.get('mapped_barcodes') or 0)} باركود في الملف "
+                    "(بدون مسح بيانات حساباتي)."
+                ),
+            }
+        if is_same_location_upload(fixed_name, content_hash, file_size):
+            return {"ok": True, "skipped": True, "inserted_rows": 0}
         inserted = process_location_excel_file(
             content, fixed_name, content_hash, file_size, replace_entire_table=True
         )
+        # خزّن المواقع في الجدول الدائم أيضاً
+        conn2 = get_db()
+        try:
+            migrate_current_locations_into_shelf_map(conn2)
+            conn2.commit()
+        finally:
+            conn2.close()
+        return {"ok": True, "skipped": False, "inserted_rows": inserted, "mode": "replace"}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"تعذر معالجة الملف: {exc}") from exc
-    return {"ok": True, "skipped": False, "inserted_rows": inserted}
 
 
 @app.post("/google_drive/sync")
