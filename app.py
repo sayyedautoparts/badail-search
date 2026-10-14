@@ -3892,6 +3892,7 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
         lookup_raw = app_kv_get("hesabate_lookup_json", "")
         lookup_company = None
         lookup_trades = None
+        lookup_model = None
         need_lookup = True
         if lookup_raw:
             try:
@@ -3900,7 +3901,9 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
                 if cached_at > 0 and (time.time() - cached_at) < (HESABATE_LOOKUP_CACHE_DAYS * 86400):
                     lookup_company = lookup.get("company") if isinstance(lookup.get("company"), dict) else None
                     lookup_trades = lookup.get("trades") if isinstance(lookup.get("trades"), dict) else None
-                    need_lookup = not (lookup_company and lookup_trades)
+                    lookup_model = lookup.get("model") if isinstance(lookup.get("model"), dict) else None
+                    # model ضروري لموقع الرف — إن ناقص نعيد سحب الجداول
+                    need_lookup = not (lookup_company and lookup_trades and lookup_model)
             except Exception:
                 need_lookup = True
 
@@ -3915,15 +3918,17 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             token_exp_mono=token_exp,
             lookup_company=lookup_company,
             lookup_trades=lookup_trades,
+            lookup_model=lookup_model,
             need_lookup_refresh=need_lookup,
         )
         products = fetched["products"]
         hasher = hashlib.sha256()
+        hasher.update(b"loc-from-model-v1\n")
         for prow in products.get("table") or []:
             if not isinstance(prow, dict):
                 continue
             hasher.update(
-                f"{prow.get('id')}|{prow.get('amount')}|{prow.get('barcode')}|{prow.get('price')}|{prow.get('name')}|{prow.get('model_no')}|{prow.get('note')}|{prow.get('company_id')}|{prow.get('trade_id')}\n".encode(
+                f"{prow.get('id')}|{prow.get('amount')}|{prow.get('barcode')}|{prow.get('price')}|{prow.get('name')}|{prow.get('model_no')}|{prow.get('note')}|{prow.get('company_id')}|{prow.get('trade_id')}|{prow.get('model_id')}\n".encode(
                     "utf-8",
                     "replace",
                 )
@@ -3945,6 +3950,7 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
                         "cached_at": time.time(),
                         "company": fetched.get("company") or {},
                         "trades": fetched.get("trades") or {},
+                        "model": fetched.get("model") or {},
                     },
                     ensure_ascii=False,
                 ),
@@ -3965,8 +3971,10 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             products,
             company_payload=fetched.get("company"),
             trades_payload=fetched.get("trades"),
+            model_payload=fetched.get("model"),
         )
         inserted = replace_location_rows_from_api(mapped)
+        with_loc = sum(1 for r in mapped if clean_shelf_location(r.get("location")))
         app_kv_set("hesabate_products_hash", products_hash)
         app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         app_kv_set("hesabate_last_rows", str(inserted))
@@ -3974,14 +3982,13 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "ok": True,
             "skipped": False,
             "rows": inserted,
+            "rows_with_location": with_loc,
             "request_count": request_count,
             "auth_requested": bool(fetched.get("auth_requested")),
             "lookup_refreshed": bool(fetched.get("lookup_refreshed")),
-            "message": f"تمت مزامنة {inserted} صنف من حساباتي.",
+            "message": f"تمت مزامنة {inserted} صنف من حساباتي — منها {with_loc} بموقع (الموديل).",
             "usage": hesabate_usage_summary(),
-            "location_note": (
-                "Store API لا يصدّر موقع الرف؛ إن وُجد موقع قديم لنفس الباركود يُحفظ تلقائياً."
-            ),
+            "location_note": "موقع الرف = حقل الموديل (model) من حساباتي.",
         }
     except hesabate_api.StoreApiError as e:
         try:
@@ -4319,11 +4326,12 @@ def home() -> HTMLResponse:
           <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري فحص حالة المزامنة...</p>
           <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
           <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">تتحدث الأصناف تلقائياً عند فتح التبويب أو البحث (بدون زر). لتقليل الـ Requests: لا يُعاد السحب إن كانت البيانات حديثة أو لم تتغير.</p>
-          <details style="margin-top:10px;" open>
-            <summary class="muted" style="cursor:pointer;font-size:13px;"><strong>رفع مواقع الرف من Excel</strong> (مرة واحدة أو عند التغيير)</summary>
-            <p class="muted" style="margin:8px 0;font-size:12px;line-height:1.45;">حساباتي API يجيب الأصناف/الكمية/السعر، لكن <strong>موقع الرف</strong> (مثل W2 E116) يجي من ملف Excel عمود <strong>I</strong>. الرفع يحدّث الموقع حسب الباركود ويحفظه دائماً حتى بعد المزامنة التلقائية.</p>
+          <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف يُؤخذ تلقائياً من حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116).</p>
+          <details style="margin-top:10px;">
+            <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel احتياطي (اختياري)</summary>
+            <p class="muted" style="margin:8px 0;font-size:12px;line-height:1.45;">إذا لزم، يحدّث عمود الموقع حسب الباركود بدون مسح أصناف API.</p>
             <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
-            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">تحديث مواقع الرف من Excel</button>
+            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">تحديث مواقع من Excel</button>
             <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
           </details>
         </div>

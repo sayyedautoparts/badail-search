@@ -278,10 +278,19 @@ def _text(v: Any) -> str:
     return str(v or "").strip()
 
 
-def _product_location(prod: Dict[str, Any]) -> str:
+def _product_location(prod: Dict[str, Any], models: Optional[Dict[str, str]] = None) -> str:
+    """
+    موقع الرف عند هذا المتجر = حقل الموديل (model_id → model.name) في Store API.
+    أمثلة: W2 E116 / A111
+    """
+    mid = _text(prod.get("model_id"))
+    if models and mid and mid not in ("0",):
+        mname = _text(models.get(mid))
+        if mname:
+            return mname
     for key in ("location", "place", "shelf", "bin", "store_place", "موقع", "مكان"):
         val = _text(prod.get(key))
-        if val:
+        if val and val not in ("0", "0.0"):
             return val
     return ""
 
@@ -291,10 +300,12 @@ def map_products_to_location_rows(
     *,
     company_payload: Optional[Dict[str, Any]] = None,
     trades_payload: Optional[Dict[str, Any]] = None,
+    model_payload: Optional[Dict[str, Any]] = None,
     preserved_locations: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, str]]:
     companies = _id_name_map(company_payload or {})
     trades = _id_name_map(trades_payload or {})
+    models = _id_name_map(model_payload or {})
     preserved = preserved_locations or {}
     out: List[Dict[str, str]] = []
     for prod in _table_rows(products_payload):
@@ -309,9 +320,14 @@ def map_products_to_location_rows(
         brand = trades.get(_text(prod.get("trade_id")), "")
         quantity = _qty_text(prod.get("amount"))
         price = _qty_text(prod.get("price"))
-        location = _product_location(prod)
+        # الأولوية لموديل API (هذا هو موقع الرف)، ثم الكاش المحفوظ
+        location = _product_location(prod, models)
         if not location and barcode:
-            location = preserved.get(barcode) or preserved.get(re.sub(r"[\s\-]+", "", barcode)) or ""
+            for key in (barcode, re.sub(r"[\s\-]+", "", barcode)):
+                val = _text(preserved.get(key))
+                if val and val not in ("0", "0.0"):
+                    location = val
+                    break
         if not any([item_name, barcode, original_number, location, notes, quantity]):
             continue
         out.append(
@@ -343,13 +359,15 @@ def fetch_location_catalog(
     token_exp_mono: float = 0.0,
     lookup_company: Optional[Dict[str, Any]] = None,
     lookup_trades: Optional[Dict[str, Any]] = None,
+    lookup_model: Optional[Dict[str, Any]] = None,
     need_lookup_refresh: bool = False,
 ) -> Dict[str, Any]:
     """
     سحب كتالوج المواقع بأقل طلبات ممكنة:
     - Auth فقط إذا انتهى الـ token
-    - company/trades فقط إذا انتهى كاش الجداول
+    - company/trades/model فقط إذا انتهى كاش الجداول
     - products دائماً عند المزامنة
+    موقع الرف = model.name عبر model_id
     """
     batch_count = {"n": 0}
 
@@ -388,8 +406,9 @@ def fetch_location_catalog(
 
     company = lookup_company if isinstance(lookup_company, dict) else {}
     trades = lookup_trades if isinstance(lookup_trades, dict) else {}
+    model = lookup_model if isinstance(lookup_model, dict) else {}
     lookup_refreshed = False
-    if need_lookup_refresh or not company or not trades:
+    if need_lookup_refresh or not company or not trades or not model:
         company, scheme = store_api_download(
             host,
             token,
@@ -403,6 +422,15 @@ def fetch_location_catalog(
             host,
             token,
             "trades",
+            verify_ssl=verify_ssl,
+            reauth=_reauth,
+            record_request=_rec,
+            preferred_scheme=scheme or preferred_scheme,
+        )
+        model, scheme = store_api_download(
+            host,
+            token,
+            "model",
             verify_ssl=verify_ssl,
             reauth=_reauth,
             record_request=_rec,
@@ -433,6 +461,7 @@ def fetch_location_catalog(
         "products": products,
         "company": company,
         "trades": trades,
+        "model": model,
         "lookup_refreshed": lookup_refreshed,
         "request_count": int(batch_count["n"]),
         "token_exp_mono": time.monotonic() + _TOKEN_TTL_SEC,
