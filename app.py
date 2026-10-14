@@ -129,10 +129,10 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
 )
 try:
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "600")
+        30, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "60")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 600
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 60
 try:
     HESABATE_LOOKUP_CACHE_DAYS = max(1, min(90, int(os.getenv("HESABATE_LOOKUP_CACHE_DAYS") or "7")))
 except (TypeError, ValueError):
@@ -4325,7 +4325,7 @@ def home() -> HTMLResponse:
           <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">مزامنة حساباتي تلقائية</p>
           <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري فحص حالة المزامنة...</p>
           <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
-          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">تتحدث الأصناف تلقائياً عند فتح التبويب أو البحث (بدون زر). لتقليل الـ Requests: لا يُعاد السحب إن كانت البيانات حديثة أو لم تتغير.</p>
+          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">أثناء فتح هذا التبويب يتم الفحص تلقائياً كل دقيقة تقريباً + عند كل بحث. إذا تغيّر صنف في حساباتي يظهر بعد ثوانٍ إلى دقيقة. لا يُعاد السحب إن لم يتغيّر شيء (توفير Requests).</p>
           <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف يُؤخذ تلقائياً من حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116).</p>
           <details style="margin-top:10px;">
             <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel احتياطي (اختياري)</summary>
@@ -4475,7 +4475,9 @@ def home() -> HTMLResponse:
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
-        ensureHesabateLocationSyncQuiet();
+        startHesabateLocationPoller();
+      } else {
+        stopHesabateLocationPoller();
       }
       searchNow('auto');
     }
@@ -4516,17 +4518,45 @@ def home() -> HTMLResponse:
 
     let hesabateEnsureTimer = null;
     let hesabateEnsureInflight = false;
+    const HESABATE_CLIENT_POLL_MS = 55000;
+    function stopHesabateLocationPoller() {
+      if (hesabateEnsureTimer) {
+        clearInterval(hesabateEnsureTimer);
+        hesabateEnsureTimer = null;
+      }
+    }
+    function startHesabateLocationPoller() {
+      stopHesabateLocationPoller();
+      ensureHesabateLocationSyncQuiet();
+      hesabateEnsureTimer = setInterval(() => {
+        if (activeSearchTab !== 'location') {
+          stopHesabateLocationPoller();
+          return;
+        }
+        ensureHesabateLocationSyncQuiet();
+      }, HESABATE_CLIENT_POLL_MS);
+    }
     async function ensureHesabateLocationSyncQuiet() {
       if (hesabateEnsureInflight) return;
       hesabateEnsureInflight = true;
       try {
         const stEl = document.getElementById('hesabateSyncStatus');
-        if (stEl) stEl.textContent = 'جاري مزامنة الأصناف من حساباتي تلقائياً...';
+        if (stEl && !String(stEl.textContent || '').includes('آخر مزامنة')) {
+          stEl.textContent = 'جاري فحص تحديثات حساباتي...';
+        }
         const res = await fetch('/hesabate/ensure', { method: 'POST', cache: 'no-store' });
         const data = await readJsonSafe(res);
-        renderHesabateUsage(data.usage || {}, data.message || '');
+        let msg = data.message || '';
+        if (data && data.ok && data.skipped && data.reason === 'fresh') {
+          const age = Number(data.age_sec || 0);
+          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل دقيقة أثناء فتح التبويب.`;
+        }
+        renderHesabateUsage(data.usage || {}, msg);
         if (data && data.ok && !data.skipped && activeSearchTab === 'location') {
-          searchNow('location');
+          const tEl = document.getElementById('locationTextQueryInput');
+          const bEl = document.getElementById('locationBarcodeQueryInput');
+          const hasQ = (tEl && tEl.value.trim()) || (bEl && lightSanitizeBarcodeValue(bEl.value));
+          if (hasQ) searchNow('location');
         }
       } catch (_) {
         await refreshHesabateStatus();
@@ -6848,6 +6878,8 @@ def home() -> HTMLResponse:
       const locTable = document.getElementById('locationsTable');
 
       if (effectiveMode === 'location') {
+        // فحص تحديث حساباتي بالتوازي مع البحث (السيرفر يمنع التكرار إن كانت البيانات حديثة)
+        ensureHesabateLocationSyncQuiet();
         const lqText = document.getElementById('locationTextQueryInput').value.trim();
         let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
         const lqCanon = normalizeBarcodeLookupKeyClient(lqBc);
@@ -7243,7 +7275,9 @@ def home() -> HTMLResponse:
       updateSizeInputsLayout();
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
-        ensureHesabateLocationSyncQuiet();
+        startHesabateLocationPoller();
+      } else {
+        stopHesabateLocationPoller();
       }
       refreshHesabateStatus();
 
