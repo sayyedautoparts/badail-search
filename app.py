@@ -129,10 +129,12 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
 )
 try:
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        10, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "15")
+        20, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "45")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 15
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 45
+# قفل مزامنة مشترك بين نسخ Vercel (session advisory lock)
+_HESABATE_SYNC_ADVISORY_LOCK_KEY = 87233401
 try:
     HESABATE_LOOKUP_CACHE_DAYS = max(1, min(90, int(os.getenv("HESABATE_LOOKUP_CACHE_DAYS") or "7")))
 except (TypeError, ValueError):
@@ -3732,12 +3734,27 @@ def merge_shelf_locations_from_excel_bytes(file_bytes: bytes) -> dict[str, Any]:
 
 
 def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
+    """يستبدل صفوف المواقع من API بأمان — لا يمسح الجدول إن كانت النتيجة فارغة/ناقصة جداً."""
+    if not mapped_rows:
+        raise RuntimeError("رفض استبدال المواقع: نتيجة API فارغة.")
+
     conn = get_db()
     inserted = 0
     source_key = LOCATION_API_SOURCE_FILE
     try:
         ensure_location_rows_import_schema(conn)
         ensure_shelf_locations_schema(conn)
+        try:
+            prev_row = conn.execute("SELECT COUNT(*) AS c FROM location_rows").fetchone()
+            prev_count = int(sql_row_to_dict(prev_row).get("c") or 0) if prev_row is not None else 0
+        except Exception:
+            prev_count = 0
+        # حماية من مسح الكتالوج عند سحب جزئي/فاشل من حساباتي
+        if prev_count >= 1000 and len(mapped_rows) < max(500, int(prev_count * 0.35)):
+            raise RuntimeError(
+                f"رفض استبدال المواقع: السحب ناقص ({len(mapped_rows)} مقابل {prev_count} حالياً)."
+            )
+
         # مواقع Excel فقط من shelf_locations — لا ننسخ مواقع API القديمة فوق التحديث الجديد
         preserved: dict[str, str] = {}
         try:
@@ -3748,19 +3765,17 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
                     preserved[key] = loc
         except Exception:
             preserved = {}
+
+        # معاملة واحدة: القراء يرون البيانات القديمة حتى ينجح الاستبدال بالكامل
         conn.execute("DELETE FROM location_rows")
         batch: list[tuple[str, ...]] = []
-        api_shelf_updates: dict[str, str] = {}
         for r in mapped_rows:
             item_name = str(r.get("item_name") or "")
             barcode = str(r.get("barcode") or "").strip()
             # مصدر الحقيقة: موديل حساباتي؛ Excel يكمّل فقط إن لم يوجد موقع من API
             location = clean_shelf_location(r.get("location"))
-            from_api = bool(location)
             if not location and barcode:
                 location = lookup_shelf_location(preserved, barcode)
-            if from_api and barcode:
-                api_shelf_updates[barcode] = location
             company = str(r.get("company") or "")
             original_number = str(r.get("original_number") or "")
             brand = str(r.get("brand") or "")
@@ -3811,8 +3826,6 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
                 batch,
             )
             inserted += len(batch)
-        if api_shelf_updates:
-            upsert_shelf_locations(conn, api_shelf_updates)
         content_hash = hashlib.sha256(f"api:{inserted}:{datetime.now().isoformat()}".encode("utf-8")).hexdigest()
         # نفس الاتصال — تجنّب قفل SQLite من upsert_location_file_meta المنفصل
         if conn.postgres:
@@ -3855,6 +3868,55 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
         conn.close()
 
 
+def _try_acquire_hesabate_db_lock() -> tuple[Any | None, bool]:
+    """قفل Postgres مشترك بين نسخ السيرفرلس — يمنع مسح الجدول من مزامنتين معاً."""
+    if not USE_POSTGRES:
+        return None, True
+    lock_conn = None
+    try:
+        lock_conn = get_db()
+        row = lock_conn.execute(
+            "SELECT pg_try_advisory_lock(?) AS ok",
+            (_HESABATE_SYNC_ADVISORY_LOCK_KEY,),
+        ).fetchone()
+        ok = bool(sql_row_to_dict(row).get("ok")) if row is not None else False
+        if not ok:
+            try:
+                lock_conn.close()
+            except Exception:
+                pass
+            return None, False
+        # إبقاؤ اتصال القفل مفتوحاً طوال المزامنة
+        return lock_conn, True
+    except Exception:
+        if lock_conn is not None:
+            try:
+                lock_conn.close()
+            except Exception:
+                pass
+        return None, True
+
+
+def _release_hesabate_db_lock(lock_conn: Any | None) -> None:
+    if lock_conn is None:
+        return
+    try:
+        lock_conn.execute(
+            "SELECT pg_advisory_unlock(?)",
+            (_HESABATE_SYNC_ADVISORY_LOCK_KEY,),
+        )
+        lock_conn.commit()
+    except Exception:
+        try:
+            lock_conn.rollback()
+        except Exception:
+            pass
+    try:
+        lock_conn.close()
+    except Exception:
+        pass
+
+
 def sync_locations_from_hesabate(*, force: bool = False) -> dict:
     """
     مزامنة اكتشاف المواقع من Store API بأقل طلبات:
@@ -3887,7 +3949,17 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "usage": hesabate_usage_summary(),
         }
     _hesabate_sync_inflight = True
+    db_lock_conn: Any | None = None
     try:
+        db_lock_conn, got_db_lock = _try_acquire_hesabate_db_lock()
+        if not got_db_lock:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "inflight",
+                "message": "مزامنة أخرى جارية على الخادم.",
+                "usage": hesabate_usage_summary(),
+            }
         preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
         token_store = app_kv_get("hesabate_token", "")
         try:
@@ -4040,6 +4112,7 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "usage": hesabate_usage_summary(),
         }
     finally:
+        _release_hesabate_db_lock(db_lock_conn)
         _hesabate_sync_inflight = False
         try:
             _hesabate_sync_lock.release()
@@ -4543,7 +4616,7 @@ def home() -> HTMLResponse:
 
     let hesabateEnsureTimer = null;
     let hesabateEnsureInflight = false;
-    const HESABATE_CLIENT_POLL_MS = 12000;
+    const HESABATE_CLIENT_POLL_MS = 40000;
     function stopHesabateLocationPoller() {
       if (hesabateEnsureTimer) {
         clearInterval(hesabateEnsureTimer);
@@ -4574,7 +4647,7 @@ def home() -> HTMLResponse:
         let msg = data.message || '';
         if (data && data.ok && data.skipped && data.reason === 'fresh') {
           const age = Number(data.age_sec || 0);
-          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل ~15 ثانية أثناء فتح التبويب.`;
+          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل ~45 ثانية أثناء فتح التبويب.`;
         }
         renderHesabateUsage(data.usage || {}, msg);
         if (data && data.ok && !data.skipped && activeSearchTab === 'location') {
@@ -6903,8 +6976,7 @@ def home() -> HTMLResponse:
       const locTable = document.getElementById('locationsTable');
 
       if (effectiveMode === 'location') {
-        // فحص تحديث حساباتي بالتوازي مع البحث (السيرفر يمنع التكرار إن كانت البيانات حديثة)
-        ensureHesabateLocationSyncQuiet();
+        // البحث فقط هنا — المزامنة تتم عبر الـ poller حتى لا يتعطل ظهور النتائج
         const lqText = document.getElementById('locationTextQueryInput').value.trim();
         let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
         const lqCanon = normalizeBarcodeLookupKeyClient(lqBc);
