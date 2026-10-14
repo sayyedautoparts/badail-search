@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import unicodedata
 import hashlib
 import json
@@ -15,6 +16,8 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel, ConfigDict, field_validator
+
+import hesabate_store_api as hesabate_api
 
 try:
     import psycopg
@@ -111,6 +114,45 @@ _location_norm_schema_lock = threading.Lock()
 _location_norm_schema_ready = False
 # اسم مصدر ثابت لرفع المواقع من تبويب «اكتشاف الموقع» (لا يعتمد على اسم الملف على الجهاز)
 LOCATION_TAB_IMPORT_SOURCE_FILE = "مواقع_من_التطبيق.xlsx"
+LOCATION_API_SOURCE_FILE = "حساباتي_API"
+HESABATE_API_HOST = (
+    os.getenv("HESABATE_API_HOST") or os.getenv("STORE_API_HOST") or ""
+).strip()
+HESABATE_API_USERNAME = (
+    os.getenv("HESABATE_API_USERNAME") or os.getenv("STORE_API_USER") or ""
+).strip()
+HESABATE_API_PASSWORD = os.getenv("HESABATE_API_PASSWORD") or os.getenv("STORE_API_PASS") or ""
+HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+try:
+    HESABATE_SYNC_MIN_INTERVAL_SEC = max(
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "600")
+    )
+except (TypeError, ValueError):
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 600
+try:
+    HESABATE_LOOKUP_CACHE_DAYS = max(1, min(90, int(os.getenv("HESABATE_LOOKUP_CACHE_DAYS") or "7")))
+except (TypeError, ValueError):
+    HESABATE_LOOKUP_CACHE_DAYS = 7
+try:
+    HESABATE_MONTHLY_REQUEST_LIMIT = max(
+        1, int(os.getenv("HESABATE_MONTHLY_REQUEST_LIMIT") or "100000")
+    )
+except (TypeError, ValueError):
+    HESABATE_MONTHLY_REQUEST_LIMIT = 100000
+_hesabate_sync_lock = threading.Lock()
+_hesabate_sync_inflight = False
+_hesabate_usage_mem_lock = threading.Lock()
+_hesabate_usage_pending: dict[str, Any] = {
+    "delta": 0,
+    "last_action": "",
+    "last_type": "",
+    "last_host": "",
+    "last_at": "",
+}
 
 
 class DBConnection:
@@ -201,8 +243,12 @@ def get_db() -> DBConnection:
         conn = psycopg.connect(POSTGRES_DB_URL, row_factory=dict_row)
         return DBConnection(conn, postgres=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=120)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout = 120000")
+    except Exception:
+        pass
     return DBConnection(conn, postgres=False)
 
 
@@ -414,6 +460,24 @@ def init_db() -> None:
             conn.execute("DROP INDEX IF EXISTS idx_location_norm_text")
         else:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_location_norm_text ON location_rows(normalized_text)")
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_kv (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_kv (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
         conn.commit()
     finally:
         conn.close()
@@ -3262,6 +3326,484 @@ def process_location_excel_file(
         conn.close()
 
 
+def app_kv_get(key: str, default: str = "") -> str:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT value FROM app_kv WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return default
+        return str(row["value"] if isinstance(row, dict) else row[0] or default)
+    except Exception:
+        return default
+    finally:
+        conn.close()
+
+
+def app_kv_set(key: str, value: str) -> None:
+    conn = get_db()
+    try:
+        if conn.postgres:
+            conn.execute(
+                """
+                INSERT INTO app_kv (key, value) VALUES (?, ?)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                (key, value),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO app_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def hesabate_configured() -> bool:
+    return bool(HESABATE_API_HOST and HESABATE_API_USERNAME and HESABATE_API_PASSWORD)
+
+
+def _hesabate_usage_month_key() -> str:
+    return datetime.now().strftime("%Y-%m")
+
+
+def _load_hesabate_usage() -> dict:
+    month = _hesabate_usage_month_key()
+    raw = app_kv_get("hesabate_usage_json", "")
+    data: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+        except Exception:
+            data = {}
+    if str(data.get("month") or "") != month:
+        return {
+            "month": month,
+            "count": 0,
+            "last_at": "",
+            "last_action": "",
+            "last_type": "",
+            "last_sync_requests": 0,
+            "last_sync_at": "",
+        }
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    try:
+        last_sync_requests = int(data.get("last_sync_requests") or 0)
+    except (TypeError, ValueError):
+        last_sync_requests = 0
+    return {
+        "month": month,
+        "count": max(0, count),
+        "last_at": str(data.get("last_at") or "").strip(),
+        "last_action": str(data.get("last_action") or "").strip(),
+        "last_type": str(data.get("last_type") or "").strip(),
+        "last_sync_requests": max(0, last_sync_requests),
+        "last_sync_at": str(data.get("last_sync_at") or "").strip(),
+    }
+
+
+def _save_hesabate_usage(data: dict) -> None:
+    app_kv_set("hesabate_usage_json", json.dumps(data, ensure_ascii=False))
+
+
+def record_hesabate_api_request(host: str = "", action: str = "", type_name: str = "") -> None:
+    """تجميع في الذاكرة أثناء المزامنة لتفادي قفل SQLite."""
+    with _hesabate_usage_mem_lock:
+        _hesabate_usage_pending["delta"] = int(_hesabate_usage_pending.get("delta") or 0) + 1
+        _hesabate_usage_pending["last_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _hesabate_usage_pending["last_action"] = str(action or "").strip()
+        _hesabate_usage_pending["last_type"] = str(type_name or "").strip()
+        if host:
+            _hesabate_usage_pending["last_host"] = str(host).strip()
+
+
+def flush_hesabate_usage_pending(*, last_sync_requests: int | None = None) -> None:
+    with _hesabate_usage_mem_lock:
+        delta = int(_hesabate_usage_pending.get("delta") or 0)
+        last_action = str(_hesabate_usage_pending.get("last_action") or "")
+        last_type = str(_hesabate_usage_pending.get("last_type") or "")
+        last_host = str(_hesabate_usage_pending.get("last_host") or "")
+        last_at = str(_hesabate_usage_pending.get("last_at") or "")
+        _hesabate_usage_pending["delta"] = 0
+    st = _load_hesabate_usage()
+    month = _hesabate_usage_month_key()
+    if st.get("month") != month:
+        st = {
+            "month": month,
+            "count": 0,
+            "last_at": "",
+            "last_action": "",
+            "last_type": "",
+            "last_sync_requests": int(st.get("last_sync_requests") or 0),
+            "last_sync_at": str(st.get("last_sync_at") or ""),
+        }
+    st["count"] = int(st.get("count") or 0) + max(0, delta)
+    st["month"] = month
+    if last_at:
+        st["last_at"] = last_at
+    if last_action:
+        st["last_action"] = last_action
+    if last_type:
+        st["last_type"] = last_type
+    if last_host:
+        st["last_host"] = last_host
+    if last_sync_requests is not None:
+        st["last_sync_requests"] = max(0, int(last_sync_requests))
+        st["last_sync_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _save_hesabate_usage(st)
+
+
+def record_hesabate_sync_batch(request_count: int) -> None:
+    flush_hesabate_usage_pending(last_sync_requests=int(request_count or 0))
+
+
+def hesabate_usage_summary() -> dict:
+    st = _load_hesabate_usage()
+    with _hesabate_usage_mem_lock:
+        pending = int(_hesabate_usage_pending.get("delta") or 0)
+    limit = HESABATE_MONTHLY_REQUEST_LIMIT
+    count = int(st.get("count") or 0) + max(0, pending)
+    remaining = max(0, limit - count)
+    pct = (100.0 * count / limit) if limit > 0 else 0.0
+    return {
+        **st,
+        "limit": limit,
+        "remaining": remaining,
+        "percent": round(pct, 2),
+        "configured": hesabate_configured(),
+        "host": HESABATE_API_HOST,
+        "sync_min_interval_sec": HESABATE_SYNC_MIN_INTERVAL_SEC,
+        "last_location_sync_at": app_kv_get("hesabate_last_sync_at", ""),
+        "last_location_rows": app_kv_get("hesabate_last_rows", "0"),
+    }
+
+
+def _hesabate_last_sync_age_sec() -> float:
+    raw = app_kv_get("hesabate_last_sync_at", "")
+    if not raw:
+        return 1e12
+    try:
+        ts = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        return max(0.0, (datetime.now() - ts).total_seconds())
+    except Exception:
+        return 1e12
+
+
+def _load_preserved_locations(conn: DBConnection) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT barcode, location, normalized_barcode
+            FROM location_rows
+            WHERE COALESCE(TRIM(location), '') <> ''
+            """
+        ).fetchall()
+    except Exception:
+        return out
+    for row in rows:
+        loc = str(row["location"] or "").strip()
+        if not loc:
+            continue
+        bc = str(row["barcode"] or "").strip()
+        nb = str(row["normalized_barcode"] or "").strip()
+        if bc and bc not in out:
+            out[bc] = loc
+        if nb and nb not in out:
+            out[nb] = loc
+        compact = re.sub(r"[\s\-]+", "", bc)
+        if compact and compact not in out:
+            out[compact] = loc
+    return out
+
+
+def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
+    conn = get_db()
+    inserted = 0
+    source_key = LOCATION_API_SOURCE_FILE
+    try:
+        ensure_location_rows_import_schema(conn)
+        preserved = _load_preserved_locations(conn)
+        conn.execute("DELETE FROM location_rows")
+        batch: list[tuple[str, ...]] = []
+        for r in mapped_rows:
+            item_name = str(r.get("item_name") or "")
+            barcode = str(r.get("barcode") or "").strip()
+            location = str(r.get("location") or "").strip()
+            if not location and barcode:
+                location = (
+                    preserved.get(barcode)
+                    or preserved.get(re.sub(r"[\s\-]+", "", barcode))
+                    or preserved.get(location_row_normalized_barcode_value(barcode, ""))
+                    or ""
+                )
+            company = str(r.get("company") or "")
+            original_number = str(r.get("original_number") or "")
+            brand = str(r.get("brand") or "")
+            notes = str(r.get("notes") or "")
+            quantity = str(r.get("quantity") or "").strip()
+            price = str(r.get("price") or "").strip()
+            nb = location_row_normalized_barcode_value(barcode, "")
+            nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
+            batch.append(
+                (
+                    item_name,
+                    location,
+                    company,
+                    original_number,
+                    barcode,
+                    brand,
+                    notes,
+                    quantity,
+                    price,
+                    source_key,
+                    "products",
+                    nb,
+                    nt,
+                )
+            )
+            if len(batch) >= 800:
+                conn.executemany(
+                    """
+                    INSERT INTO location_rows (
+                        item_name, location, company, original_number, barcode,
+                        brand, notes, quantity, price, source_file, source_sheet,
+                        normalized_barcode, normalized_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    batch,
+                )
+                inserted += len(batch)
+                batch = []
+        if batch:
+            conn.executemany(
+                """
+                INSERT INTO location_rows (
+                    item_name, location, company, original_number, barcode,
+                    brand, notes, quantity, price, source_file, source_sheet,
+                    normalized_barcode, normalized_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch,
+            )
+            inserted += len(batch)
+        content_hash = hashlib.sha256(f"api:{inserted}:{datetime.now().isoformat()}".encode("utf-8")).hexdigest()
+        # نفس الاتصال — تجنّب قفل SQLite من upsert_location_file_meta المنفصل
+        if conn.postgres:
+            conn.execute(
+                """
+                INSERT INTO uploaded_files (file_name, rows_count, content_hash, file_size, parser_version)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    uploaded_at = CURRENT_TIMESTAMP,
+                    rows_count = EXCLUDED.rows_count,
+                    content_hash = EXCLUDED.content_hash,
+                    file_size = EXCLUDED.file_size,
+                    parser_version = EXCLUDED.parser_version
+                """,
+                (source_key, inserted, content_hash, 0, LOCATION_PARSER_VERSION),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO uploaded_files (file_name, rows_count, content_hash, file_size, parser_version)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    uploaded_at = CURRENT_TIMESTAMP,
+                    rows_count = excluded.rows_count,
+                    content_hash = excluded.content_hash,
+                    file_size = excluded.file_size,
+                    parser_version = excluded.parser_version
+                """,
+                (source_key, inserted, content_hash, 0, LOCATION_PARSER_VERSION),
+            )
+        conn.commit()
+        return inserted
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def sync_locations_from_hesabate(*, force: bool = False) -> dict:
+    """
+    مزامنة اكتشاف المواقع من Store API بأقل طلبات:
+    Auth عند الحاجة فقط، company/trades كل عدة أيام، products عند الحاجة.
+    """
+    global _hesabate_sync_inflight
+    if not hesabate_configured():
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "not_configured",
+            "message": "أضف HESABATE_API_HOST و HESABATE_API_USERNAME و HESABATE_API_PASSWORD في إعدادات Vercel.",
+            "usage": hesabate_usage_summary(),
+        }
+    if not force and _hesabate_last_sync_age_sec() < HESABATE_SYNC_MIN_INTERVAL_SEC:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fresh",
+            "message": "البيانات حديثة — لم يُرسل طلب جديد لتوفير الـ Requests.",
+            "age_sec": int(_hesabate_last_sync_age_sec()),
+            "usage": hesabate_usage_summary(),
+        }
+    if not _hesabate_sync_lock.acquire(blocking=False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "inflight",
+            "message": "مزامنة أخرى جارية.",
+            "usage": hesabate_usage_summary(),
+        }
+    _hesabate_sync_inflight = True
+    try:
+        preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
+        token_store = app_kv_get("hesabate_token", "")
+        try:
+            token_exp = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
+        except (TypeError, ValueError):
+            token_exp = 0.0
+        lookup_raw = app_kv_get("hesabate_lookup_json", "")
+        lookup_company = None
+        lookup_trades = None
+        need_lookup = True
+        if lookup_raw:
+            try:
+                lookup = json.loads(lookup_raw)
+                cached_at = float(lookup.get("cached_at") or 0)
+                if cached_at > 0 and (time.time() - cached_at) < (HESABATE_LOOKUP_CACHE_DAYS * 86400):
+                    lookup_company = lookup.get("company") if isinstance(lookup.get("company"), dict) else None
+                    lookup_trades = lookup.get("trades") if isinstance(lookup.get("trades"), dict) else None
+                    need_lookup = not (lookup_company and lookup_trades)
+            except Exception:
+                need_lookup = True
+
+        fetched = hesabate_api.fetch_location_catalog(
+            HESABATE_API_HOST,
+            HESABATE_API_USERNAME,
+            HESABATE_API_PASSWORD,
+            verify_ssl=HESABATE_API_VERIFY_SSL,
+            record_request=record_hesabate_api_request,
+            preferred_scheme=preferred_scheme,
+            token_from_store=token_store,
+            token_exp_mono=token_exp,
+            lookup_company=lookup_company,
+            lookup_trades=lookup_trades,
+            need_lookup_refresh=need_lookup,
+        )
+        products = fetched["products"]
+        hasher = hashlib.sha256()
+        for prow in products.get("table") or []:
+            if not isinstance(prow, dict):
+                continue
+            hasher.update(
+                f"{prow.get('id')}|{prow.get('amount')}|{prow.get('barcode')}|{prow.get('price')}|{prow.get('name')}|{prow.get('model_no')}|{prow.get('note')}|{prow.get('company_id')}|{prow.get('trade_id')}\n".encode(
+                    "utf-8",
+                    "replace",
+                )
+            )
+        products_hash = hasher.hexdigest()
+        prev_hash = app_kv_get("hesabate_products_hash", "")
+        request_count = int(fetched.get("request_count") or 0)
+        record_hesabate_sync_batch(request_count)
+
+        app_kv_set("hesabate_token", str(fetched.get("token") or ""))
+        app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
+        if fetched.get("scheme"):
+            app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
+        if fetched.get("lookup_refreshed"):
+            app_kv_set(
+                "hesabate_lookup_json",
+                json.dumps(
+                    {
+                        "cached_at": time.time(),
+                        "company": fetched.get("company") or {},
+                        "trades": fetched.get("trades") or {},
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+        if (not force) and products_hash and products_hash == prev_hash:
+            app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "unchanged",
+                "message": "لا تغيير في أصناف حساباتي — تم تحديث وقت الفحص فقط.",
+                "request_count": request_count,
+                "usage": hesabate_usage_summary(),
+            }
+
+        mapped = hesabate_api.map_products_to_location_rows(
+            products,
+            company_payload=fetched.get("company"),
+            trades_payload=fetched.get("trades"),
+        )
+        inserted = replace_location_rows_from_api(mapped)
+        app_kv_set("hesabate_products_hash", products_hash)
+        app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        app_kv_set("hesabate_last_rows", str(inserted))
+        return {
+            "ok": True,
+            "skipped": False,
+            "rows": inserted,
+            "request_count": request_count,
+            "auth_requested": bool(fetched.get("auth_requested")),
+            "lookup_refreshed": bool(fetched.get("lookup_refreshed")),
+            "message": f"تمت مزامنة {inserted} صنف من حساباتي.",
+            "usage": hesabate_usage_summary(),
+            "location_note": (
+                "Store API لا يصدّر موقع الرف؛ إن وُجد موقع قديم لنفس الباركود يُحفظ تلقائياً."
+            ),
+        }
+    except hesabate_api.StoreApiError as e:
+        try:
+            flush_hesabate_usage_pending()
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "api_error",
+            "message": str(e),
+            "usage": hesabate_usage_summary(),
+        }
+    except Exception as e:
+        try:
+            flush_hesabate_usage_pending()
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "error",
+            "message": f"{type(e).__name__}: {e}",
+            "usage": hesabate_usage_summary(),
+        }
+    finally:
+        _hesabate_sync_inflight = False
+        try:
+            _hesabate_sync_lock.release()
+        except Exception:
+            pass
+
+
+def ensure_hesabate_locations_synced(*, force: bool = False) -> dict:
+    return sync_locations_from_hesabate(force=force)
+
+
 app = FastAPI(title="Advanced Excel Search")
 init_db()
 
@@ -3554,13 +4096,19 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="locationSearchPanel" class="search-panel">
-        <div style="margin:10px 0 14px;padding:12px;background:#f4f6fb;border-radius:10px;border:1px dashed #b8c4e6;">
-          <p class="muted" style="margin:0 0 8px;"><strong>رفع ملف المواقع</strong> — B رقم أصلي، C صنف، D باركود، E علامة، F شركة، <strong>G كمية</strong>، I موقع، J ملاحظات، <strong>K باركود الوحدات</strong>، <strong>L سعر</strong>. <strong>أي اسم ملف</strong> يُقبل. كل رفع يمسح كل مواقع التطبيق ويستبدلها بهذا الملف فقط.</p>
-          <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
-          <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
-          <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
+        <div style="margin:10px 0 14px;padding:12px;background:#eef7f1;border-radius:10px;border:1px solid #b7d7c2;">
+          <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">مزامنة حساباتي تلقائية</p>
+          <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري فحص حالة المزامنة...</p>
+          <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
+          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">تتحدث الأصناف تلقائياً عند فتح التبويب أو البحث (بدون زر). لتقليل الـ Requests: لا يُعاد السحب إن كانت البيانات حديثة أو لم تتغير.</p>
+          <details style="margin-top:10px;">
+            <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel يدوي (احتياطي لمواقع الرف القديمة)</summary>
+            <p class="muted" style="margin:8px 0;font-size:12px;">Store API لا يصدّر موقع الرف؛ الرفع اليدوي يحدّث عمود الموقع لنفس الباركود ثم تُحفظ عند المزامنات التالية.</p>
+            <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="width:100%;margin:6px 0;font-size:15px;" />
+            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">رفع ملف المواقع</button>
+            <div id="locationUploadStatus" class="muted" style="margin-top:8px;font-size:13px;"></div>
+          </details>
         </div>
-        <p class="muted" style="margin-top:10px;">ملف Excel: <strong>B</strong> الرقم الأصلي، <strong>C</strong> الصنف، <strong>D</strong> الباركود، <strong>E–F</strong> علامة وشركة، <strong>G</strong> الكمية، <strong>I</strong> الموقع، <strong>J</strong> ملاحظات، <strong>K</strong> باركود الوحدات، <strong>L</strong> السعر.</p>
         <label class="muted" for="locationTextQueryInput" style="display:block;font-size:13px;margin-top:8px;">بحث بالصنف / الرقم الأصلي / الملاحظات (بدون الباركود)</label>
         <input id="locationTextQueryInput" placeholder="اسم الصنف، الرقم الأصلي، أو ملاحظات..." inputmode="search" autocomplete="off" />
         <label class="muted" for="locationBarcodeQueryInput" style="display:block;font-size:13px;margin-top:10px;">بحث بالباركود فقط</label>
@@ -3699,8 +4247,66 @@ def home() -> HTMLResponse:
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
-      if (activeSearchTab === 'location') ensureQrLib().catch(() => {});
+      if (activeSearchTab === 'location') {
+        ensureQrLib().catch(() => {});
+        ensureHesabateLocationSyncQuiet();
+      }
       searchNow('auto');
+    }
+
+    function renderHesabateUsage(usage, message) {
+      const st = document.getElementById('hesabateSyncStatus');
+      const ctr = document.getElementById('hesabateRequestCounter');
+      if (!usage) {
+        if (st) st.textContent = message || 'تعذّر قراءة حالة المزامنة.';
+        return;
+      }
+      const count = Number(usage.count || 0);
+      const limit = Number(usage.limit || 0);
+      const remaining = Number(usage.remaining || 0);
+      const month = usage.month || '';
+      const lastSync = usage.last_location_sync_at || usage.last_sync_at || '';
+      const rows = usage.last_location_rows || '0';
+      if (ctr) {
+        ctr.textContent = `طلبات API (${month}): ${count.toLocaleString('en-US')} / ${limit.toLocaleString('en-US')} — متبقي ${remaining.toLocaleString('en-US')}`;
+      }
+      let line = usage.configured
+        ? (message || 'المزامنة التلقائية مفعّلة.')
+        : 'أضف بيانات حساباتي في متغيرات Vercel (HOST / USERNAME / PASSWORD).';
+      if (lastSync) line += ` آخر مزامنة: ${lastSync}`;
+      if (rows && rows !== '0') line += ` — ${rows} صنف.`;
+      if (st) st.textContent = line;
+    }
+
+    async function refreshHesabateStatus() {
+      try {
+        const res = await fetch('/hesabate/status', { cache: 'no-store' });
+        const data = await readJsonSafe(res);
+        renderHesabateUsage(data.usage || {}, data.configured ? 'المزامنة التلقائية مفعّلة.' : '');
+      } catch (_) {
+        renderHesabateUsage(null, 'تعذّر الاتصال بحالة API.');
+      }
+    }
+
+    let hesabateEnsureTimer = null;
+    let hesabateEnsureInflight = false;
+    async function ensureHesabateLocationSyncQuiet() {
+      if (hesabateEnsureInflight) return;
+      hesabateEnsureInflight = true;
+      try {
+        const stEl = document.getElementById('hesabateSyncStatus');
+        if (stEl) stEl.textContent = 'جاري مزامنة الأصناف من حساباتي تلقائياً...';
+        const res = await fetch('/hesabate/ensure', { method: 'POST', cache: 'no-store' });
+        const data = await readJsonSafe(res);
+        renderHesabateUsage(data.usage || {}, data.message || '');
+        if (data && data.ok && !data.skipped && activeSearchTab === 'location') {
+          searchNow('location');
+        }
+      } catch (_) {
+        await refreshHesabateStatus();
+      } finally {
+        hesabateEnsureInflight = false;
+      }
     }
 
     let html5QrLocationScanner = null;
@@ -6403,7 +7009,11 @@ def home() -> HTMLResponse:
         document.getElementById('locationBarcodeQueryInput').value = localStorage.getItem('lastLocationBarcodeQuery') || '';
       }
       updateSizeInputsLayout();
-      if (activeSearchTab === 'location') ensureQrLib().catch(() => {});
+      if (activeSearchTab === 'location') {
+        ensureQrLib().catch(() => {});
+        ensureHesabateLocationSyncQuiet();
+      }
+      refreshHesabateStatus();
 
       queryInput.addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
@@ -7372,6 +7982,8 @@ def search_locations(
     meta: dict[str, Any] = {"has_more": False, "limit": lim, "offset": off}
     debug_req = bool(int(barcode_debug)) or BARCODE_SEARCH_DEBUG
 
+    # البحث يستخدم القاعدة المحلية فقط — المزامنة تتم عبر /hesabate/ensure عند فتح التبويب
+    # حتى لا يتجمّد البحث أثناء سحب آلاف الأصناف من حساباتي.
     conn = get_db()
     try:
         try:
@@ -7527,6 +8139,27 @@ def search_locations(
         conn.close()
 
 
+@app.get("/hesabate/status")
+def hesabate_status() -> dict:
+    return {
+        "configured": hesabate_configured(),
+        "usage": hesabate_usage_summary(),
+        "docs": "https://documenter.getpostman.com/view/5117721/2sAYdcrXsJ",
+    }
+
+
+@app.post("/hesabate/ensure")
+def hesabate_ensure() -> dict:
+    """مزامنة تلقائية إن لزم (تحترم الحد الأدنى بين الطلبات)."""
+    return ensure_hesabate_locations_synced(force=False)
+
+
+@app.post("/hesabate/sync")
+def hesabate_sync_force() -> dict:
+    """مزامنة فورية (تستخدم عند الحاجة فقط — تستهلك Requests)."""
+    return ensure_hesabate_locations_synced(force=True)
+
+
 @app.get("/stats")
 def stats() -> dict:
     conn = get_db()
@@ -7633,6 +8266,7 @@ self.addEventListener('fetch', (event) => {{
     path.startsWith('/sync/') ||
     path.startsWith('/search') ||
     path.startsWith('/upload') ||
+    path.startsWith('/hesabate') ||
     path === '/stats';
   if (networkOnly) {{
     event.respondWith(fetch(req));
