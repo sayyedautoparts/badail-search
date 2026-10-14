@@ -129,10 +129,10 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
 )
 try:
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        30, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "60")
+        10, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "15")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 60
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 15
 try:
     HESABATE_LOOKUP_CACHE_DAYS = max(1, min(90, int(os.getenv("HESABATE_LOOKUP_CACHE_DAYS") or "7")))
 except (TypeError, ValueError):
@@ -3737,16 +3737,30 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
     source_key = LOCATION_API_SOURCE_FILE
     try:
         ensure_location_rows_import_schema(conn)
-        migrate_current_locations_into_shelf_map(conn)
-        preserved = _load_preserved_locations(conn)
+        ensure_shelf_locations_schema(conn)
+        # مواقع Excel فقط من shelf_locations — لا ننسخ مواقع API القديمة فوق التحديث الجديد
+        preserved: dict[str, str] = {}
+        try:
+            for row in conn.execute("SELECT barcode_key, location FROM shelf_locations").fetchall():
+                loc = clean_shelf_location(row["location"])
+                key = str(row["barcode_key"] or "").strip()
+                if key and loc:
+                    preserved[key] = loc
+        except Exception:
+            preserved = {}
         conn.execute("DELETE FROM location_rows")
         batch: list[tuple[str, ...]] = []
+        api_shelf_updates: dict[str, str] = {}
         for r in mapped_rows:
             item_name = str(r.get("item_name") or "")
             barcode = str(r.get("barcode") or "").strip()
+            # مصدر الحقيقة: موديل حساباتي؛ Excel يكمّل فقط إن لم يوجد موقع من API
             location = clean_shelf_location(r.get("location"))
+            from_api = bool(location)
             if not location and barcode:
                 location = lookup_shelf_location(preserved, barcode)
+            if from_api and barcode:
+                api_shelf_updates[barcode] = location
             company = str(r.get("company") or "")
             original_number = str(r.get("original_number") or "")
             brand = str(r.get("brand") or "")
@@ -3797,6 +3811,8 @@ def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
                 batch,
             )
             inserted += len(batch)
+        if api_shelf_updates:
+            upsert_shelf_locations(conn, api_shelf_updates)
         content_hash = hashlib.sha256(f"api:{inserted}:{datetime.now().isoformat()}".encode("utf-8")).hexdigest()
         # نفس الاتصال — تجنّب قفل SQLite من upsert_location_file_meta المنفصل
         if conn.postgres:
@@ -3853,17 +3869,6 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "message": "أضف HESABATE_API_HOST و HESABATE_API_USERNAME و HESABATE_API_PASSWORD في إعدادات Vercel.",
             "usage": hesabate_usage_summary(),
         }
-    # احفظ مواقع الرف الحالية في جدول دائم حتى لو لم نُعد السحب من API
-    try:
-        conn_m = get_db()
-        try:
-            migrate_current_locations_into_shelf_map(conn_m)
-            conn_m.commit()
-        finally:
-            conn_m.close()
-    except Exception:
-        pass
-
     if not force and _hesabate_last_sync_age_sec() < HESABATE_SYNC_MIN_INTERVAL_SEC:
         return {
             "ok": True,
@@ -3902,8 +3907,8 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
                     lookup_company = lookup.get("company") if isinstance(lookup.get("company"), dict) else None
                     lookup_trades = lookup.get("trades") if isinstance(lookup.get("trades"), dict) else None
                     lookup_model = lookup.get("model") if isinstance(lookup.get("model"), dict) else None
-                    # model ضروري لموقع الرف — إن ناقص نعيد سحب الجداول
-                    need_lookup = not (lookup_company and lookup_trades and lookup_model)
+                    # company/trades فقط من الكاش؛ model يُحدَّث كل مزامنة
+                    need_lookup = not (lookup_company and lookup_trades)
             except Exception:
                 need_lookup = True
 
@@ -3920,10 +3925,23 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             lookup_trades=lookup_trades,
             lookup_model=lookup_model,
             need_lookup_refresh=need_lookup,
+            need_model_refresh=True,
         )
         products = fetched["products"]
+        model_payload = fetched.get("model") or {}
         hasher = hashlib.sha256()
-        hasher.update(b"loc-from-model-v1\n")
+        hasher.update(b"loc-from-model-v2\n")
+        # أسماء المواقع جزء من الهاش حتى يتحدّث العرض لو تغيّر اسم الموديل فقط
+        try:
+            model_names = sorted(
+                (
+                    f"{k}:{v}"
+                    for k, v in (hesabate_api._id_name_map(model_payload) or {}).items()
+                )
+            )
+            hasher.update(("|".join(model_names) + "\n").encode("utf-8", "replace"))
+        except Exception:
+            pass
         for prow in products.get("table") or []:
             if not isinstance(prow, dict):
                 continue
@@ -3942,19 +3960,25 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
         app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
         if fetched.get("scheme"):
             app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
-        if fetched.get("lookup_refreshed"):
-            app_kv_set(
-                "hesabate_lookup_json",
-                json.dumps(
-                    {
-                        "cached_at": time.time(),
-                        "company": fetched.get("company") or {},
-                        "trades": fetched.get("trades") or {},
-                        "model": fetched.get("model") or {},
-                    },
-                    ensure_ascii=False,
-                ),
-            )
+        # حدّث كاش الجداول مع أحدث model دائماً (بدون إعادة ضبط عمر company/trades)
+        prev_lookup_cached_at = time.time()
+        if lookup_raw and not fetched.get("lookup_refreshed"):
+            try:
+                prev_lookup_cached_at = float(json.loads(lookup_raw).get("cached_at") or time.time())
+            except Exception:
+                prev_lookup_cached_at = time.time()
+        app_kv_set(
+            "hesabate_lookup_json",
+            json.dumps(
+                {
+                    "cached_at": time.time() if fetched.get("lookup_refreshed") else prev_lookup_cached_at,
+                    "company": fetched.get("company") or lookup_company or {},
+                    "trades": fetched.get("trades") or lookup_trades or {},
+                    "model": model_payload,
+                },
+                ensure_ascii=False,
+            ),
+        )
 
         if (not force) and products_hash and products_hash == prev_hash:
             app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -3971,7 +3995,7 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             products,
             company_payload=fetched.get("company"),
             trades_payload=fetched.get("trades"),
-            model_payload=fetched.get("model"),
+            model_payload=model_payload,
         )
         inserted = replace_location_rows_from_api(mapped)
         with_loc = sum(1 for r in mapped if clean_shelf_location(r.get("location")))
@@ -3986,6 +4010,7 @@ def sync_locations_from_hesabate(*, force: bool = False) -> dict:
             "request_count": request_count,
             "auth_requested": bool(fetched.get("auth_requested")),
             "lookup_refreshed": bool(fetched.get("lookup_refreshed")),
+            "model_refreshed": bool(fetched.get("model_refreshed")),
             "message": f"تمت مزامنة {inserted} صنف من حساباتي — منها {with_loc} بموقع (الموديل).",
             "usage": hesabate_usage_summary(),
             "location_note": "موقع الرف = حقل الموديل (model) من حساباتي.",
@@ -4518,7 +4543,7 @@ def home() -> HTMLResponse:
 
     let hesabateEnsureTimer = null;
     let hesabateEnsureInflight = false;
-    const HESABATE_CLIENT_POLL_MS = 55000;
+    const HESABATE_CLIENT_POLL_MS = 12000;
     function stopHesabateLocationPoller() {
       if (hesabateEnsureTimer) {
         clearInterval(hesabateEnsureTimer);
@@ -4549,7 +4574,7 @@ def home() -> HTMLResponse:
         let msg = data.message || '';
         if (data && data.ok && data.skipped && data.reason === 'fresh') {
           const age = Number(data.age_sec || 0);
-          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل دقيقة أثناء فتح التبويب.`;
+          msg = `البيانات مفحوصة (قبل ${age} ث) — يتجدد تلقائياً كل ~15 ثانية أثناء فتح التبويب.`;
         }
         renderHesabateUsage(data.usage || {}, msg);
         if (data && data.ok && !data.skipped && activeSearchTab === 'location') {

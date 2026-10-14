@@ -361,11 +361,13 @@ def fetch_location_catalog(
     lookup_trades: Optional[Dict[str, Any]] = None,
     lookup_model: Optional[Dict[str, Any]] = None,
     need_lookup_refresh: bool = False,
+    need_model_refresh: bool = True,
 ) -> Dict[str, Any]:
     """
     سحب كتالوج المواقع بأقل طلبات ممكنة:
     - Auth فقط إذا انتهى الـ token
-    - company/trades/model فقط إذا انتهى كاش الجداول
+    - company/trades إذا انتهى كاش الجداول
+    - model يُحدَّث مع كل مزامنة (أسماء المواقع تتغير كثيراً)
     - products دائماً عند المزامنة
     موقع الرف = model.name عبر model_id
     """
@@ -408,7 +410,8 @@ def fetch_location_catalog(
     trades = lookup_trades if isinstance(lookup_trades, dict) else {}
     model = lookup_model if isinstance(lookup_model, dict) else {}
     lookup_refreshed = False
-    if need_lookup_refresh or not company or not trades or not model:
+    model_refreshed = False
+    if need_lookup_refresh or not company or not trades:
         company, scheme = store_api_download(
             host,
             token,
@@ -427,6 +430,10 @@ def fetch_location_catalog(
             record_request=_rec,
             preferred_scheme=scheme or preferred_scheme,
         )
+        lookup_refreshed = True
+        need_model_refresh = True
+
+    if need_model_refresh or not model:
         model, scheme = store_api_download(
             host,
             token,
@@ -436,7 +443,7 @@ def fetch_location_catalog(
             record_request=_rec,
             preferred_scheme=scheme or preferred_scheme,
         )
-        lookup_refreshed = True
+        model_refreshed = True
 
     products, scheme = store_api_download(
         host,
@@ -463,6 +470,7 @@ def fetch_location_catalog(
         "trades": trades,
         "model": model,
         "lookup_refreshed": lookup_refreshed,
+        "model_refreshed": model_refreshed,
         "request_count": int(batch_count["n"]),
         "token_exp_mono": time.monotonic() + _TOKEN_TTL_SEC,
     }
