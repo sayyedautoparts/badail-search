@@ -6,11 +6,17 @@
 ما هو موثّق/مستخدم هنا:
 - Auth
 - download type=products|company|trades|model
-- products: all=1 للكتالوج، وpro_id لمحاولة صنف واحد (الفلترة غير موثوقة)
+- products: all=1 للكتالوج الكامل
+- products: pro_id + all=1 لصنف واحد (~1 صف، ~1KB) — مُختبر عملياً
+
+ما ثبت بالقياس أنه لا يعمل كفلتر:
+- حقل barcode (مع all=0 → 0 صفوف؛ مع all=1 → الكتالوج الكامل ~27k/~18MB)
+- all=0 مع pro_id → 0 صفوف
 
 ما ليس في الوثائق ولا يُفترض وجوده:
 - جلب تغييرات منذ تاريخ/مؤشر
 - Webhooks
+- اكتشاف صنف جديد بالباركود دون مزامنة الكتالوج أو معرفة pro_id
 """
 from __future__ import annotations
 
@@ -36,6 +42,11 @@ _PRODUCTS_MEM_TTL_SEC = 600.0
 _PRODUCTS_MEM_LOCK = threading.Lock()
 # حد أقصى لردّ «صنف واحد» — فوقه نعتبر أن API أعاد كتالوجاً ونرفضه في المسار التفاعلي
 _SINGLE_LOOKUP_MAX_ROWS = 40
+# مهلات: Auth وطلب صنف واحد سريعان عملياً (~0.5–0.7ث)؛ الكتالوج الكامل أكبر بكثير
+_TIMEOUT_AUTH_SEC = 30.0
+_TIMEOUT_SINGLE_SEC = 25.0
+_TIMEOUT_FULL_SEC = 180.0
+_TIMEOUT_LOOKUP_TABLE_SEC = 30.0
 
 
 def _products_cache_get(host: str) -> Optional[Tuple[Dict[str, Any], str]]:
@@ -172,35 +183,25 @@ def _post_form_auto_scheme(
     record_request: Optional[RecordRequestFn] = None,
     preferred_scheme: str = "",
 ) -> Tuple[Dict[str, Any], str]:
+    """
+    طلب واحد ببروتوكول واحد فقط.
+    لا انتقال تلقائي https↔http عند أخطاء التطبيق أو الشبكة — يُستخدم preferred أو https.
+    """
     h = normalize_store_api_host(host)
-    pref = preferred_scheme or _PREFERRED_SCHEME.get(h) or ""
-    schemes = (pref, "https", "http") if pref in ("https", "http") else ("https", "http")
-    seen = set()
-    order = []
-    for s in schemes:
-        if s and s not in seen:
-            seen.add(s)
-            order.append(s)
-    last_err: Optional[Exception] = None
-    for scheme in order:
-        try:
-            payload = _post_form(
-                host,
-                fields,
-                verify_ssl=verify_ssl,
-                timeout=timeout,
-                scheme=scheme,
-                record_request=record_request,
-            )
-            if h:
-                _PREFERRED_SCHEME[h] = scheme
-            return payload, scheme
-        except StoreApiError as e:
-            last_err = e
-            continue
-    if last_err:
-        raise last_err
-    raise StoreApiError("تعذّر الاتصال بالسيرفر.")
+    pref = preferred_scheme or _PREFERRED_SCHEME.get(h) or "https"
+    if pref not in ("https", "http"):
+        pref = "https"
+    payload = _post_form(
+        host,
+        fields,
+        verify_ssl=verify_ssl,
+        timeout=timeout,
+        scheme=pref,
+        record_request=record_request,
+    )
+    if h:
+        _PREFERRED_SCHEME[h] = pref
+    return payload, pref
 
 
 def _auth_cache_key(host: str, username: str) -> str:
@@ -224,7 +225,7 @@ def store_api_auth(
         host,
         {"username": username, "password": password, "action": "Auth"},
         verify_ssl=verify_ssl,
-        timeout=60.0,
+        timeout=_TIMEOUT_AUTH_SEC,
         record_request=record_request,
         preferred_scheme=preferred_scheme,
     )
@@ -296,6 +297,7 @@ def store_api_download(
     reauth: Optional[Any] = None,
     record_request: Optional[RecordRequestFn] = None,
     preferred_scheme: str = "",
+    timeout: float = _TIMEOUT_FULL_SEC,
 ) -> Tuple[Dict[str, Any], str]:
     fields: Dict[str, Any] = {"token": token, "action": "download", "type": type_name}
     if extra:
@@ -304,7 +306,7 @@ def store_api_download(
         host,
         fields,
         verify_ssl=verify_ssl,
-        timeout=180.0,
+        timeout=float(timeout or _TIMEOUT_FULL_SEC),
         record_request=record_request,
         preferred_scheme=preferred_scheme,
     )
@@ -327,6 +329,7 @@ def store_api_download(
                 reauth=None,
                 record_request=record_request,
                 preferred_scheme=scheme or preferred_scheme,
+                timeout=timeout,
             )
         raise StoreApiError("انتهت صلاحية الجلسة — أعد المزامنة.")
     return payload, scheme
@@ -689,20 +692,28 @@ def fetch_products_for_lookup(
     preferred_scheme: str = "",
     allow_full_catalog: bool = False,
     bypass_mem_cache: bool = False,
+    metrics: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], str, str, int]:
     """
     جلب صنف واحد — منفصل عن استيراد الكتالوج.
 
-    - allow_full_catalog=True: للمزامنة الخلفية فقط (all=1).
-    - المسار التفاعلي: pro_id الداخلي فقط و/أو حقل barcode — لا تحويل الباركود/النص إلى pro_id.
-    - إن أعاد API جدولاً كبيراً رغم all=0 نرفضه في المسار التفاعلي (لا استخراج من كتالوج كامل).
+    - allow_full_catalog=True: للمزامنة الخلفية فقط (كتالوج all=1 بلا pro_id).
+    - المسار التفاعلي الفعّال: pro_id الداخلي + all=1 فقط (~1 صف).
+    - حقل barcode لا يُفلتر على سيرفر حساباتي (قياس حي) — لا يُرسل هنا لتجنّب
+      تنزيل ~18MB ثم رفضه بعد التحميل.
+    - لا تحويل الباركود/النص إلى pro_id.
+    - لا fallback لعرض صفوف غير مطابقة.
     """
     keys = [k for k in (barcode_keys or []) if k]
-    bc = keys[0] if keys else ""
     qt = _text(text_query)
     pid = _text(pro_id)
     scheme = preferred_scheme or "https"
     req_n = 0
+    m = metrics if isinstance(metrics, dict) else None
+
+    def _note(**kwargs: Any) -> None:
+        if m is not None:
+            m.update(kwargs)
 
     def _hits_from(products: Dict[str, Any]) -> List[Dict[str, Any]]:
         if keys:
@@ -716,7 +727,9 @@ def fetch_products_for_lookup(
                         break
             if out:
                 return out
-        return filter_raw_products(products, text_query=qt, max_hits=10)
+        if qt:
+            return filter_raw_products(products, text_query=qt, max_hits=10)
+        return []
 
     # 1) كاش ذاكرة — يُتخطى عند refresh صريح؛ نُرجع النتائج المطابقة فقط وليس الكتالوج
     if not bypass_mem_cache:
@@ -725,10 +738,12 @@ def fetch_products_for_lookup(
             products, scheme = cached
             hits = _hits_from(products)
             if hits:
+                _note(products_fetch_mode="mem_cache", products_rows=len(hits), products_ms=0, products_bytes=0)
                 return {"status": "succes", "table": hits}, scheme, "mem_cache", 0
 
     # 2) كتالوج كامل — مسار المزامنة فقط
     if allow_full_catalog:
+        t0 = time.perf_counter()
         products, scheme = store_api_download(
             host,
             token,
@@ -738,26 +753,25 @@ def fetch_products_for_lookup(
             reauth=reauth,
             record_request=record_request,
             preferred_scheme=scheme or preferred_scheme,
+            timeout=_TIMEOUT_FULL_SEC,
         )
         req_n += 1
+        rows_n = len(_table_rows(products))
+        _note(
+            products_ms=int((time.perf_counter() - t0) * 1000),
+            products_rows=rows_n,
+            products_bytes=len(json.dumps(products, ensure_ascii=False).encode("utf-8")) if rows_n < 500 else -1,
+        )
         _products_cache_set(host, products, scheme)
         hits = _hits_from(products)
         mode = "full_extract" if hits else "full_miss"
+        _note(products_fetch_mode=mode)
         return products, scheme, mode, req_n
 
-    # 3) مسار تفاعلي ضيق — بدون all=1 وبدون اعتبار الباركود/النص pro_id
-    attempts: List[Tuple[str, Dict[str, Any]]] = []
+    # 3) مسار تفاعلي: pro_id + all=1 فقط (مُختبر: ~0.6ث، صف واحد)
     if looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
-        attempts.append(
-            ("single_pro_id", _products_download_extra(pro_id=pid, all_flag="0"))
-        )
-    if bc:
-        # حقل barcode منفصل — ليس معرّف الصنف الداخلي (pro_id)
-        attempts.append(
-            ("single_barcode_field", _products_download_extra(pro_id="", all_flag="0", barcode=bc))
-        )
-
-    for mode, extra in attempts:
+        extra = _products_download_extra(pro_id=pid, all_flag="1")
+        t0 = time.perf_counter()
         try:
             products, scheme = store_api_download(
                 host,
@@ -768,25 +782,41 @@ def fetch_products_for_lookup(
                 reauth=reauth,
                 record_request=record_request,
                 preferred_scheme=scheme or preferred_scheme,
+                timeout=_TIMEOUT_SINGLE_SEC,
             )
             req_n += 1
-        except StoreApiError:
-            continue
+        except StoreApiError as e:
+            _note(products_error=str(e)[:200], products_ms=int((time.perf_counter() - t0) * 1000))
+            return {"status": "succes", "table": []}, scheme, "single_miss", req_n
         rows = _table_rows(products)
-        if not rows:
-            continue
-        # رفض الكتالوج الكامل داخل الطلب التفاعلي
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        resp_bytes = len(json.dumps(products, ensure_ascii=False).encode("utf-8"))
+        _note(products_ms=elapsed, products_rows=len(rows), products_bytes=resp_bytes)
+        # رفض الكتالوج الكامل داخل الطلب التفاعلي (لو تجاهل السيرفر pro_id)
         if len(rows) > _SINGLE_LOOKUP_MAX_ROWS:
-            continue
-        hits = _hits_from(products)
-        if not hits and looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
-            hits = [r for r in rows if _text(r.get("id")) == pid][:10]
-        if not hits and len(rows) <= 5:
-            hits = rows[:10]
+            _note(products_fetch_mode="rejected_full_catalog")
+            return {"status": "succes", "table": []}, scheme, "rejected_full_catalog", req_n
+        hits = [r for r in rows if _text(r.get("id")) == pid]
+        # إن طُلب باركود محدد: لا تعرض الصنف إن لم يطابق (حتى مع pro_id صحيح)
+        if keys:
+            hits = filter_raw_products({"table": hits}, barcode_keys=keys, max_hits=10)
         if hits:
-            return {"status": "succes", "table": hits}, scheme, mode, req_n
+            _note(products_fetch_mode="single_pro_id")
+            return {"status": "succes", "table": hits}, scheme, "single_pro_id", req_n
+        _note(products_fetch_mode="single_miss")
+        return {"status": "succes", "table": []}, scheme, "single_miss", req_n
 
-    return {"status": "succes", "table": []}, scheme, "single_miss", req_n
+    # 4) باركود/نص بلا pro_id معروف: حساباتي لا يدعم فلترة باركود فعّالة
+    #    إرسال barcode+all=1 ينزّل الكتالوج كاملاً (~18MB / 25–50ث) ثم يُرفض بعد التحميل.
+    mode = "barcode_filter_unsupported" if keys else "single_miss"
+    _note(
+        products_fetch_mode=mode,
+        products_ms=0,
+        products_rows=0,
+        products_bytes=0,
+        barcode_filter_effective=False,
+    )
+    return {"status": "succes", "table": []}, scheme, mode, req_n
 
 
 def fetch_location_catalog(
@@ -816,12 +846,13 @@ def fetch_location_catalog(
     """
     سحب كتالوج المواقع بأقل طلبات ممكنة:
     - Auth فقط إذا انتهى الـ token
-    - company/trades إذا انتهى كاش الجداول
-    - model يُحدَّث مع كل مزامنة (أسماء المواقع تتغير كثيراً)
-    - products: كامل (مزامنة منفصلة) أو محاولة صنف واحد (تفاعلي — بلا كتالوج)
-    موقع الرف = model.name عبر model_id
+    - products single: لا يجلب company/trades/model — يستخدم الكاش إن وُجد ويعرض الصنف فوراً
+    - products all: يحدّث company/trades/model حسب الحاجة ثم الكتالوج
+    موقع الرف = model.name عبر model_id (عند توفر كاش model)
     """
     batch_count = {"n": 0}
+    timing: Dict[str, Any] = {"auth_ms": 0, "company_ms": 0, "trades_ms": 0, "model_ms": 0}
+    t_all = time.perf_counter()
 
     def _rec(h: str, action: str, type_name: str) -> None:
         batch_count["n"] += 1
@@ -844,6 +875,7 @@ def fetch_location_catalog(
             )
             return tok
 
+    t0 = time.perf_counter()
     token, scheme, auth_hit = store_api_auth_cached(
         host,
         username,
@@ -856,55 +888,66 @@ def fetch_location_catalog(
         token_exp_mono=token_exp_mono,
         token_exp_unix=token_exp_unix,
     )
+    timing["auth_ms"] = int((time.perf_counter() - t0) * 1000)
+    timing["auth_requested"] = bool(auth_hit)
 
     company = lookup_company if isinstance(lookup_company, dict) else {}
     trades = lookup_trades if isinstance(lookup_trades, dict) else {}
     model = lookup_model if isinstance(lookup_model, dict) else {}
     lookup_refreshed = False
     model_refreshed = False
-    if need_lookup_refresh or not company or not trades:
-        company, scheme = store_api_download(
-            host,
-            token,
-            "company",
-            verify_ssl=verify_ssl,
-            reauth=_reauth,
-            record_request=_rec,
-            preferred_scheme=scheme or preferred_scheme,
-        )
-        trades, scheme = store_api_download(
-            host,
-            token,
-            "trades",
-            verify_ssl=verify_ssl,
-            reauth=_reauth,
-            record_request=_rec,
-            preferred_scheme=scheme or preferred_scheme,
-        )
-        lookup_refreshed = True
-        need_model_refresh = True
+    single_mode = products_mode == "single" and bool(
+        lookup_barcode_keys or lookup_text_query or lookup_pro_id
+    )
 
-    if need_model_refresh or not model:
-        model, scheme = store_api_download(
-            host,
-            token,
-            "model",
-            verify_ssl=verify_ssl,
-            reauth=_reauth,
-            record_request=_rec,
-            preferred_scheme=scheme or preferred_scheme,
-        )
-        model_refreshed = True
+    # في جلب صنف واحد: لا نعطّل العرض بانتظار company/trades/model
+    if not single_mode:
+        if need_lookup_refresh or not company or not trades:
+            t0 = time.perf_counter()
+            company, scheme = store_api_download(
+                host,
+                token,
+                "company",
+                verify_ssl=verify_ssl,
+                reauth=_reauth,
+                record_request=_rec,
+                preferred_scheme=scheme or preferred_scheme,
+                timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+            )
+            timing["company_ms"] = int((time.perf_counter() - t0) * 1000)
+            t0 = time.perf_counter()
+            trades, scheme = store_api_download(
+                host,
+                token,
+                "trades",
+                verify_ssl=verify_ssl,
+                reauth=_reauth,
+                record_request=_rec,
+                preferred_scheme=scheme or preferred_scheme,
+                timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+            )
+            timing["trades_ms"] = int((time.perf_counter() - t0) * 1000)
+            lookup_refreshed = True
+            need_model_refresh = True
+
+        if need_model_refresh or not model:
+            t0 = time.perf_counter()
+            model, scheme = store_api_download(
+                host,
+                token,
+                "model",
+                verify_ssl=verify_ssl,
+                reauth=_reauth,
+                record_request=_rec,
+                preferred_scheme=scheme or preferred_scheme,
+                timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+            )
+            timing["model_ms"] = int((time.perf_counter() - t0) * 1000)
+            model_refreshed = True
 
     products_fetch_mode = "full"
-    if products_mode == "single" and (lookup_barcode_keys or lookup_text_query or lookup_pro_id):
-        # لا نمرّر record_request لكل محاولة فاشلة كأنها استخدام حقيقي مضاعف —
-        # نحتسب عبر fetch_products_for_lookup ثم نضيف للعداد.
-        before = int(batch_count["n"])
-
-        def _rec_lookup(h: str, action: str, type_name: str) -> None:
-            _rec(h, action, type_name)
-
+    products_metrics: Dict[str, Any] = {}
+    if single_mode:
         products, scheme, products_fetch_mode, _delta = fetch_products_for_lookup(
             host,
             token,
@@ -913,16 +956,15 @@ def fetch_location_catalog(
             pro_id=lookup_pro_id,
             verify_ssl=verify_ssl,
             reauth=_reauth,
-            record_request=_rec_lookup,
+            record_request=_rec,
             preferred_scheme=scheme or preferred_scheme,
-            # المسار التفاعلي: ممنوع تنزيل الكتالوج هنا حتى لو طُلب سابقاً بالخطأ
-            allow_full_catalog=False if products_mode == "single" else bool(allow_full_on_single),
+            allow_full_catalog=False,
             bypass_mem_cache=bool(bypass_mem_cache),
+            metrics=products_metrics,
         )
-        # batch_count already updated via _rec_lookup
-        _ = before
+        timing.update(products_metrics)
     else:
-        # مزامنة كاملة فقط عبر هذا الفرع (ليس من طلب بحث تفاعلي)
+        t0 = time.perf_counter()
         products, scheme = store_api_download(
             host,
             token,
@@ -932,8 +974,15 @@ def fetch_location_catalog(
             reauth=_reauth,
             record_request=_rec,
             preferred_scheme=scheme or preferred_scheme,
+            timeout=_TIMEOUT_FULL_SEC,
         )
+        timing["products_ms"] = int((time.perf_counter() - t0) * 1000)
+        timing["products_rows"] = len(_table_rows(products))
         _products_cache_set(host, products, scheme)
+
+    timing["total_ms"] = int((time.perf_counter() - t_all) * 1000)
+    timing["request_count"] = int(batch_count["n"])
+    timing["skipped_lookup_tables"] = bool(single_mode)
 
     return {
         "token": token,
@@ -947,6 +996,7 @@ def fetch_location_catalog(
         "model_refreshed": model_refreshed,
         "products_fetch_mode": products_fetch_mode,
         "request_count": int(batch_count["n"]),
+        "timing_ms": timing,
         "token_exp_mono": time.monotonic() + _TOKEN_TTL_SEC,
         "token_exp_unix": time.time() + _TOKEN_TTL_SEC,
     }

@@ -5524,9 +5524,18 @@ def live_lookup_locations_from_hesabate(
     جلب صنف واحد بدون فرض تنزيل الكتالوج الكامل:
     1) location_rows المحلي (يُتخطى عند refresh)
     2) كاش المنتجات (يُتخطى عند refresh)
-    3) API ضيق: pro_id الداخلي المحفوظ و/أو حقل barcode — ممنوع all=1
-    التحديث الكامل يتم عبر مسار المزامنة الموحّد فقط.
+    3) API ضيق: pro_id الداخلي + all=1 فقط (حقل barcode لا يفلتر على حساباتي)
+    اكتشاف صنف جديد بالباركود وحده يحتاج مزامنة الكتالوج — لا يوجد endpoint فلترة باركود فعّال.
     """
+    t_total = time.perf_counter()
+    timing: dict[str, Any] = {
+        "db_ms": 0,
+        "auth_ms": 0,
+        "products_ms": 0,
+        "save_ms": 0,
+        "map_ms": 0,
+        "total_ms": 0,
+    }
     if not hesabate_configured():
         return {
             "ok": False,
@@ -5535,6 +5544,7 @@ def live_lookup_locations_from_hesabate(
             "rows": [],
             "message": "حساباتي غير مُعدّ.",
             "usage": hesabate_usage_summary(),
+            "timing_ms": timing,
         }
     keys = list(barcode_keys or [])
     qb = str(q_barcode or "").strip()
@@ -5542,6 +5552,7 @@ def live_lookup_locations_from_hesabate(
     if qb and not keys:
         keys = barcode_search_keys(qb)
     stale = _hesabate_last_sync_age_sec() >= HESABATE_SYNC_MIN_INTERVAL_SEC
+    t0 = time.perf_counter()
     resolved_pro_id = resolve_local_hesabate_product_id(
         barcode_keys=keys or None,
         text_query="" if keys else qt,
@@ -5568,10 +5579,10 @@ def live_lookup_locations_from_hesabate(
         local_rows = _lookup_location_rows_for_live(
             barcode_keys=keys or None, text_query="" if keys else qt, limit=10
         )
+    timing["db_ms"] = int((time.perf_counter() - t0) * 1000)
     if local_rows:
-        msg = f"تم الجلب فوراً من البحث المحلي — {len(local_rows)} نتيجة."
-        if stale:
-            msg += " البيانات قد تكون قديمة — المزامنة تحدّثها بالخلفية."
+        timing["total_ms"] = int((time.perf_counter() - t_total) * 1000)
+        msg = f"محلي · {len(local_rows)} · {timing['total_ms']}ms"
         return {
             "ok": True,
             "live": True,
@@ -5587,33 +5598,39 @@ def live_lookup_locations_from_hesabate(
             "message": msg,
             "search_version": _hesabate_search_data_version(),
             "request_count": 0,
+            "timing_ms": timing,
             "usage": hesabate_usage_summary(),
         }
 
     # ——— 2) كاش المنتجات (Neon) ———
     if not refresh:
         try:
+            t0 = time.perf_counter()
             cached_raw = lookup_hesabate_product_cache(
                 barcode_keys=keys or None, text_query="" if keys else qt, limit=10
             )
             if keys and not cached_raw and qt:
                 cached_raw = lookup_hesabate_product_cache(barcode_keys=None, text_query=qt, limit=10)
+            timing["db_ms"] += int((time.perf_counter() - t0) * 1000)
             if cached_raw:
+                t0 = time.perf_counter()
                 mapped = hesabate_api.map_products_to_location_rows(
                     {"table": cached_raw},
                     company_payload=lookup_company,
                     trades_payload=lookup_trades,
                     model_payload=lookup_model,
                 )
+                timing["map_ms"] = int((time.perf_counter() - t0) * 1000)
                 if mapped:
+                    t0 = time.perf_counter()
                     try:
                         upsert_matched_location_rows(mapped)
                     except Exception:
                         pass
+                    timing["save_ms"] = int((time.perf_counter() - t0) * 1000)
                     prepared = _prepare_live_rows_from_mapped(mapped)
-                    msg = f"تم الجلب فوراً من الكاش المحلي — {len(prepared)} نتيجة."
-                    if stale:
-                        msg += " قد تحتاج مزامنة لتحديث أحدث الحقول."
+                    timing["total_ms"] = int((time.perf_counter() - t_total) * 1000)
+                    msg = f"كاش · {len(prepared)} · {timing['total_ms']}ms"
                     return {
                         "ok": True,
                         "live": True,
@@ -5629,12 +5646,14 @@ def live_lookup_locations_from_hesabate(
                         "message": msg,
                         "search_version": _hesabate_search_data_version(),
                         "request_count": 0,
+                        "timing_ms": timing,
                         "usage": hesabate_usage_summary(),
                     }
         except Exception:
             pass
 
     if cache_only:
+        timing["total_ms"] = int((time.perf_counter() - t_total) * 1000)
         return {
             "ok": True,
             "live": True,
@@ -5642,18 +5661,20 @@ def live_lookup_locations_from_hesabate(
             "pending_refresh": True,
             "needs_sync": True,
             "products_fetch_mode": "cache_miss",
+            "resolved_pro_id": resolved_pro_id,
             "total_rows": 0,
             "rows": [],
             "has_more": False,
             "limit": 0,
             "offset": 0,
-            "message": "الصنف غير موجود محلياً — شغّل المزامنة (بدون تنزيل داخل البحث).",
+            "message": "غير موجود محلياً.",
             "search_version": _hesabate_search_data_version(),
             "request_count": 0,
+            "timing_ms": timing,
             "usage": hesabate_usage_summary(),
         }
 
-    preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
+    preferred_scheme = app_kv_get("hesabate_preferred_scheme", "") or "https"
     token_store = app_kv_get("hesabate_token", "")
     try:
         token_exp_mono = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
@@ -5694,6 +5715,11 @@ def live_lookup_locations_from_hesabate(
             allow_full_on_single=False,
             bypass_mem_cache=bool(refresh),
         )
+        api_timing = fetched.get("timing_ms") if isinstance(fetched.get("timing_ms"), dict) else {}
+        for k in ("auth_ms", "products_ms", "products_rows", "products_bytes", "company_ms", "trades_ms", "model_ms"):
+            if k in api_timing:
+                timing[k] = api_timing[k]
+        timing["skipped_lookup_tables"] = bool(api_timing.get("skipped_lookup_tables"))
         request_count = int(fetched.get("request_count") or 0)
         if request_count:
             record_hesabate_sync_batch(request_count)
@@ -5704,9 +5730,9 @@ def live_lookup_locations_from_hesabate(
             app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
 
         products = fetched.get("products") or {}
+        # استخدم كاش الأسماء إن وُجد فقط — لا ننتظر تنزيل الجداول
         model_payload = fetched.get("model") or lookup_model or {}
         fetch_mode = str(fetched.get("products_fetch_mode") or "single_miss")
-        # حماية: لا نقبل جدولاً كبيراً من مسار تفاعلي (كتالوج كامل)
         raw_table = products.get("table") if isinstance(products, dict) else None
         raw_all = [r for r in (raw_table or []) if isinstance(r, dict)]
         if len(raw_all) > 40:
@@ -5719,58 +5745,84 @@ def live_lookup_locations_from_hesabate(
             fetch_mode = "rejected_full_catalog"
         else:
             raw_hits = raw_all
-            if raw_hits and (keys or qt or resolved_pro_id):
+            if raw_hits and keys:
                 filtered = hesabate_api.filter_raw_products(
                     {"table": raw_hits},
                     barcode_keys=keys,
-                    text_query="" if keys else qt,
+                    text_query="",
                     max_hits=10,
                 )
-                if filtered:
-                    raw_hits = filtered
-                elif resolved_pro_id:
-                    raw_hits = [r for r in raw_hits if str(r.get("id") or "") == resolved_pro_id][:10]
+                raw_hits = filtered
+            elif raw_hits and resolved_pro_id:
+                raw_hits = [r for r in raw_hits if str(r.get("id") or "") == resolved_pro_id][:10]
+            elif raw_hits and qt:
+                filtered = hesabate_api.filter_raw_products(
+                    {"table": raw_hits},
+                    text_query=qt,
+                    max_hits=10,
+                )
+                raw_hits = filtered
 
+        t0 = time.perf_counter()
         if raw_hits:
             try:
                 upsert_hesabate_product_cache_hits(raw_hits)
             except Exception:
                 pass
-
         mapped = hesabate_api.map_products_to_location_rows(
             {"table": raw_hits},
             company_payload=fetched.get("company") or lookup_company,
             trades_payload=fetched.get("trades") or lookup_trades,
             model_payload=model_payload,
         )
+        timing["map_ms"] = int((time.perf_counter() - t0) * 1000)
         if mapped:
+            t0 = time.perf_counter()
             try:
                 upsert_matched_location_rows(mapped)
             except Exception:
                 pass
+            timing["save_ms"] = int((time.perf_counter() - t0) * 1000)
 
         prepared = _prepare_live_rows_from_mapped(mapped)
+        timing["total_ms"] = int((time.perf_counter() - t_total) * 1000)
         if prepared:
             if fetch_mode == "mem_cache":
-                msg = f"تم الجلب من كاش الذاكرة — {len(prepared)} نتيجة."
+                msg = f"ذاكرة · {len(prepared)} · {timing['total_ms']}ms"
             elif fetch_mode == "single_pro_id":
-                msg = f"تم الجلب بالمعرّف الداخلي — {len(prepared)} نتيجة."
+                msg = f"pro_id · {len(prepared)} · {timing['total_ms']}ms · {request_count} طلب"
             else:
-                msg = f"تم جلب الصنف بطلب ضيق — {len(prepared)} نتيجة."
+                msg = f"جلب · {len(prepared)} · {timing['total_ms']}ms"
+        elif fetch_mode == "barcode_filter_unsupported":
+            msg = (
+                "حساباتي لا يدعم فلترة بالباركود. "
+                "لاكتشاف صنف جديد اضغط «استيراد الكل» (مزامنة الكتالوج)."
+            )
+        elif resolved_pro_id:
+            msg = "المعرّف الداخلي لم يُرجع صنفاً مطابقاً."
         else:
             msg = (
-                "الصنف غير متاح بطلب ضيق (بدون تنزيل كتالوج). "
-                "انتظر المزامنة الدورية أو اضغط استيراد الكل."
+                "الصنف غير معروف محلياً ولا يوجد pro_id. "
+                "اكتشفّه عبر «استيراد الكل» — لا فلترة باركود فعّالة في API."
             )
+        logger.info(
+            "hesabate_lookup mode=%s rows=%s req=%s timing=%s pro_id=%s",
+            fetch_mode,
+            len(prepared),
+            request_count,
+            timing,
+            resolved_pro_id or "",
+        )
         return {
             "ok": True,
             "live": True,
             "fast_path": True,
             "products_fetch_mode": fetch_mode,
             "resolved_pro_id": resolved_pro_id,
+            "barcode_filter_effective": False,
             "needs_sync": not bool(prepared),
             "pending_refresh": not bool(prepared),
-            "need_full_warm": False,
+            "need_full_warm": fetch_mode == "barcode_filter_unsupported",
             "catalog_downloaded": False,
             "total_rows": len(prepared),
             "rows": prepared,
@@ -5780,6 +5832,7 @@ def live_lookup_locations_from_hesabate(
             "message": msg,
             "search_version": _hesabate_search_data_version(),
             "request_count": request_count,
+            "timing_ms": timing,
             "usage": hesabate_usage_summary(),
         }
     except hesabate_api.StoreApiError as e:
@@ -6540,6 +6593,7 @@ def home() -> HTMLResponse:
 
     let hesabateEnsureTimer = null;
     let hesabateEnsureInflight = false;
+    let hesabateLookupInflight = null;
     const HESABATE_CLIENT_POLL_MS = 100000; // ~100ث — أقل من مهلة السيرفر؛ قفل DB يمنع تكرار التنزيل بين الأجهزة
     function stopHesabateLocationPoller() {
       if (hesabateEnsureTimer) {
@@ -6642,6 +6696,22 @@ def home() -> HTMLResponse:
       if (!res.ok) throw new Error((live && live.detail) || `hesabate-lookup-${res.status}`);
       return live;
     }
+    function formatLookupTiming(live, uiMs) {
+      const t = (live && live.timing_ms) || {};
+      const parts = [];
+      if (uiMs != null) parts.push(`واجهة ${uiMs}ms`);
+      if (t.db_ms != null) parts.push(`DB ${t.db_ms}ms`);
+      if (t.auth_ms != null) parts.push(`Auth ${t.auth_ms}ms`);
+      if (t.products_ms != null) parts.push(`products ${t.products_ms}ms`);
+      if (t.products_bytes != null && t.products_bytes >= 0) {
+        parts.push(`${Math.round(Number(t.products_bytes) / 1024)}KB`);
+      }
+      if (t.products_rows != null) parts.push(`${t.products_rows} صف`);
+      if (live && live.request_count != null) parts.push(`${live.request_count} طلب`);
+      if (t.save_ms != null) parts.push(`حفظ ${t.save_ms}ms`);
+      if (t.total_ms != null) parts.push(`خادم ${t.total_ms}ms`);
+      return parts.join(' · ');
+    }
     async function fetchOneItemFromHesabate() {
       const lqText = document.getElementById('locationTextQueryInput').value.trim();
       let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
@@ -6649,84 +6719,71 @@ def home() -> HTMLResponse:
         setStats('اكتب باركود أو رقم الصنف ثم اضغط «جلب الصنف».');
         return;
       }
+      if (hesabateLookupInflight) {
+        setStats('جلب جارٍ — انتظر...');
+        return hesabateLookupInflight;
+      }
       const oneBtn = document.getElementById('hesabateFetchOneBtn');
       const stEl = document.getElementById('hesabateSyncStatus');
       if (oneBtn) oneBtn.disabled = true;
       setStats('جاري الجلب...');
-      if (stEl) stEl.textContent = 'فحص البحث المحلي أولاً...';
+      if (stEl) stEl.textContent = 'فحص محلي...';
       const t0 = performance.now();
       const qBody = lqBc ? '' : lqText;
-      try {
-        // 1) محلي فوري — بدون تنزيل كتالوج
-        let live = await lookupHesabateItemOnce(lqBc, qBody, true, undefined, false);
-        let rows = Array.isArray(live && live.rows) ? live.rows : [];
-        if (rows.length && live && live.needs_sync) {
-          ensureHesabateLocationSyncQuiet(false);
-        }
-        // 2) miss أو تريد تحديثاً: مزامنة موحّدة بالخلفية ثم بحث محلي (البحث يبقى متاحاً)
-        if (!rows.length) {
-          if (hesabateEnsureInflight) {
-            if (stEl) stEl.textContent = 'مزامنة جارية — انتظار بدل تنزيل مزدوج...';
-            for (let i = 0; i < 90 && hesabateEnsureInflight; i++) {
-              await new Promise((r) => setTimeout(r, 1000));
+      hesabateLookupInflight = (async () => {
+        try {
+          // 1) محلي فوري — بدون تنزيل وبدون انتظار مزامنة الكتالوج
+          let live = await lookupHesabateItemOnce(lqBc, qBody, true, undefined, false);
+          let rows = Array.isArray(live && live.rows) ? live.rows : [];
+          // 2) miss: طلب ضيق فوري (pro_id إن عُرف) — لا استيراد كل ولا انتظار sync
+          if (!rows.length) {
+            if (stEl) stEl.textContent = 'جلب من حساباتي...';
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), 35000);
+            try {
+              live = await lookupHesabateItemOnce(lqBc, qBody, false, ctrl.signal, true);
+              rows = Array.isArray(live && live.rows) ? live.rows : [];
+            } finally {
+              clearTimeout(to);
             }
-          } else {
-            if (stEl) stEl.textContent = 'الصنف غير محلي — مزامنة حساباتي (منفصلة عن البحث)...';
-            setStats('جاري المزامنة...');
-            await ensureHesabateLocationSyncQuiet(true);
           }
-          live = await lookupHesabateItemOnce(lqBc, qBody, true, undefined, false);
-          rows = Array.isArray(live && live.rows) ? live.rows : [];
-        }
-        // 3) طلب ضيق فقط: معرّف داخلي و/أو حقل barcode — refresh يتجاوز كاش الذاكرة
-        if (!rows.length || (live && live.stale)) {
-          if (stEl) stEl.textContent = 'جلب ضيق من حساباتي (بدون كتالوج كامل)...';
-          const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 60000);
-          try {
-            const narrow = await lookupHesabateItemOnce(lqBc, qBody, false, ctrl.signal, true);
-            if (narrow && Array.isArray(narrow.rows) && narrow.rows.length) {
-              live = narrow;
-              rows = narrow.rows;
-            } else if (!rows.length) {
-              live = narrow;
-            }
-          } finally {
-            clearTimeout(to);
+          if (!live || live.ok === false) {
+            const err = (live && live.message) || 'تعذر جلب الصنف.';
+            setStats(err);
+            if (stEl) stEl.textContent = err;
+            if (live && live.usage) renderHesabateUsage(live.usage, live.message || '');
+            return;
           }
+          if (live.catalog_downloaded) {
+            setStats('خطأ: تنزيل كتالوج داخل جلب صنف.');
+            return;
+          }
+          applyHesabateSearchVersion(live);
+          if (live.usage) renderHesabateUsage(live.usage, live.message || '');
+          const uiMs = Math.round(performance.now() - t0);
+          const timingLine = formatLookupTiming(live, uiMs);
+          if (!rows.length) {
+            setStats((live.message || 'غير موجود.') + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = live.message || 'غير موجود.';
+            return;
+          }
+          const n = renderLocationRowsNow(
+            rows,
+            `${live.message || `تم جلب ${rows.length}`} | ${timingLine}`
+          );
+          if (stEl) stEl.textContent = live.message || `تم جلب ${n}.`;
+        } catch (err) {
+          let hint = 'تعذر جلب الصنف.';
+          if (err && err.name === 'AbortError') hint = 'انتهت المهلة.';
+          else if (err && err.message) hint = String(err.message);
+          setStats(hint);
+          await refreshHesabateStatus();
+        } finally {
+          if (oneBtn) oneBtn.disabled = false;
+          hesabateLookupInflight = null;
         }
-        if (!live || live.ok === false) {
-          const err = (live && live.message) || 'تعذر جلب الصنف.';
-          setStats( err);
-          if (stEl) stEl.textContent = err;
-          if (live && live.usage) renderHesabateUsage(live.usage, live.message || '');
-          return;
-        }
-        if (live.catalog_downloaded) {
-          setStats( 'خطأ: تم تنزيل كتالوج داخل جلب صنف — أبلغ المطوّر.');
-          return;
-        }
-        applyHesabateSearchVersion(live);
-        if (live.usage) renderHesabateUsage(live.usage, live.message || '');
-        const sec = ((performance.now() - t0) / 1000).toFixed(1);
-        if (!rows.length) {
-          setStats( live.message || 'الصنف غير موجود في حساباتي.');
-          return;
-        }
-        const n = renderLocationRowsNow(
-          rows,
-          `${live.message || `تم جلب ${rows.length} صنف`} | ${sec}ث`
-        );
-        if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف.`;
-      } catch (err) {
-        let hint = 'تعذر جلب الصنف. أعد المحاولة بعد قليل.';
-        if (err && err.name === 'AbortError') hint = 'انتهت المهلة أثناء الجلب. أعد المحاولة.';
-        else if (err && err.message) hint = String(err.message);
-        setStats( hint);
-        await refreshHesabateStatus();
-      } finally {
-        if (oneBtn) oneBtn.disabled = false;
-      }
+      })();
+      return hesabateLookupInflight;
     }
     async function forceHesabateFullImport() {
       const sideBtn = document.getElementById('hesabateSideImportBtn');
@@ -10710,8 +10767,9 @@ def hesabate_status() -> dict:
         "sync_min_interval_sec": HESABATE_SYNC_MIN_INTERVAL_SEC,
         "catalog_mode": "full_download_compare",
         "api_note": (
-            "Store API يدعم Auth + download (products/company/trades/model) وpro_id للصنف؛ "
-            "لا يوجد في الوثائق جلب تغييرات منذ تاريخ ولا Webhooks."
+            "Store API: Auth + download (products/company/trades/model). "
+            "صنف واحد فعّال فقط عبر pro_id+all=1. حقل barcode لا يفلتر (all=1 يعيد الكتالوج كاملاً). "
+            "لا جلب تغييرات/Webhooks — اكتشاف صنف جديد بالباركود يحتاج مزامنة الكتالوج."
         ),
         "docs": "https://documenter.getpostman.com/view/5117721/2sAYdcrXsJ",
     }
