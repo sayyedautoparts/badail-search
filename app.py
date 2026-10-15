@@ -4283,6 +4283,86 @@ def dedupe_location_rows_table() -> int:
         conn.close()
 
 
+def upsert_matched_location_rows(mapped_rows: list[dict[str, str]]) -> int:
+    """يدرج/يحدّث فقط الأصناف المطابقة دون مسح كامل الكتالوج (أسرع بكثير)."""
+    if not mapped_rows:
+        return 0
+    conn = get_db()
+    source_key = LOCATION_API_SOURCE_FILE
+    n = 0
+    try:
+        ensure_location_rows_import_schema(conn)
+        for r in mapped_rows:
+            item_name = str(r.get("item_name") or "")
+            barcode = str(r.get("barcode") or "").strip()
+            location = clean_shelf_location(r.get("location"))
+            company = str(r.get("company") or "")
+            original_number = str(r.get("original_number") or "")
+            brand = str(r.get("brand") or "")
+            notes = str(r.get("notes") or "")
+            quantity = str(r.get("quantity") or "").strip()
+            price = str(r.get("price") or "").strip()
+            nb = location_row_normalized_barcode_value(barcode, "")
+            nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
+            if barcode:
+                conn.execute(
+                    """
+                    DELETE FROM location_rows
+                    WHERE source_file = ?
+                      AND (
+                        barcode = ?
+                        OR normalized_barcode LIKE ?
+                      )
+                    """,
+                    (source_key, barcode, f"% {_like_pattern_escape_sql(normalize_barcode_lookup_key(barcode) or barcode)} %"),
+                )
+            elif original_number:
+                conn.execute(
+                    """
+                    DELETE FROM location_rows
+                    WHERE source_file = ?
+                      AND original_number = ?
+                      AND item_name = ?
+                    """,
+                    (source_key, original_number, item_name),
+                )
+            conn.execute(
+                """
+                INSERT INTO location_rows (
+                    item_name, location, company, original_number, barcode,
+                    brand, notes, quantity, price, source_file, source_sheet,
+                    normalized_barcode, normalized_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_name,
+                    location,
+                    company,
+                    original_number,
+                    barcode,
+                    brand,
+                    notes,
+                    quantity,
+                    price,
+                    source_key,
+                    "products",
+                    nb,
+                    nt,
+                ),
+            )
+            n += 1
+        conn.commit()
+        return n
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def live_lookup_locations_from_hesabate(
     *,
     q_barcode: str = "",
@@ -4290,60 +4370,178 @@ def live_lookup_locations_from_hesabate(
     barcode_keys: list[str] | None = None,
 ) -> dict:
     """
-    عند البحث: يطلب من حساباتي الآن، يحدّث الكتالوج، ويرجع المطابقات فقط بدون تكرار.
+    مسار سريع للصنف غير الموجود محلياً:
+    يسحب products من حساباتي، يصفّي الصنف المطلوب فقط، يخزّنه، ويرجعه —
+    بدون إعادة كتابة كل الكتالوج (هذا كان أبطأ جزء بعد التنزيل).
     """
-    try:
-        dedupe_location_rows_table()
-    except Exception:
-        pass
-    sync = sync_locations_from_hesabate(force=True, return_mapped=True)
-    mapped = sync.get("mapped") if isinstance(sync.get("mapped"), list) else []
+    if not hesabate_configured():
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": "حساباتي غير مُعدّ.",
+            "usage": hesabate_usage_summary(),
+        }
     keys = list(barcode_keys or [])
     qb = str(q_barcode or "").strip()
     qt = str(q_text or "").strip()
     if qb and not keys:
         keys = barcode_search_keys(qb)
-    matched = hesabate_api.filter_location_rows(
-        mapped,
-        barcode_keys=keys,
-        text_query="" if keys else qt,
-    )
-    # إذا البحث بالباركود لم يُرجع شيء، جرّب النص أيضاً على نفس السحب
-    if keys and not matched and qt:
-        matched = hesabate_api.filter_location_rows(mapped, barcode_keys=[], text_query=qt)
-    prepared: list[dict[str, Any]] = []
-    for index, row in enumerate(matched):
-        d = {
-            "id": row.get("product_id") or index,
-            "item_name": row.get("item_name") or "",
-            "location": clean_shelf_location(row.get("location")),
-            "company": row.get("company") or "",
-            "original_number": row.get("original_number") or "",
-            "barcode": row.get("barcode") or "",
-            "brand": row.get("brand") or "",
-            "notes": row.get("notes") or "",
-            "quantity": row.get("quantity") or "",
-            "price": row.get("price") or "",
-            "source_file": LOCATION_API_SOURCE_FILE,
-            "source_sheet": "products",
+
+    preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
+    token_store = app_kv_get("hesabate_token", "")
+    try:
+        token_exp = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
+    except (TypeError, ValueError):
+        token_exp = 0.0
+    lookup_raw = app_kv_get("hesabate_lookup_json", "")
+    lookup_company = None
+    lookup_trades = None
+    lookup_model = None
+    need_lookup = True
+    if lookup_raw:
+        try:
+            lookup = json.loads(lookup_raw)
+            cached_at = float(lookup.get("cached_at") or 0)
+            if cached_at > 0 and (time.time() - cached_at) < (HESABATE_LOOKUP_CACHE_DAYS * 86400):
+                lookup_company = lookup.get("company") if isinstance(lookup.get("company"), dict) else None
+                lookup_trades = lookup.get("trades") if isinstance(lookup.get("trades"), dict) else None
+                lookup_model = lookup.get("model") if isinstance(lookup.get("model"), dict) else None
+                need_lookup = not (lookup_company and lookup_trades)
+        except Exception:
+            need_lookup = True
+
+    try:
+        fetched = hesabate_api.fetch_location_catalog(
+            HESABATE_API_HOST,
+            HESABATE_API_USERNAME,
+            HESABATE_API_PASSWORD,
+            verify_ssl=HESABATE_API_VERIFY_SSL,
+            record_request=record_hesabate_api_request,
+            preferred_scheme=preferred_scheme,
+            token_from_store=token_store,
+            token_exp_mono=token_exp,
+            lookup_company=lookup_company,
+            lookup_trades=lookup_trades,
+            lookup_model=lookup_model,
+            need_lookup_refresh=need_lookup,
+            need_model_refresh=not bool(lookup_model),
+        )
+        request_count = int(fetched.get("request_count") or 0)
+        record_hesabate_sync_batch(request_count)
+        app_kv_set("hesabate_token", str(fetched.get("token") or ""))
+        app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
+        if fetched.get("scheme"):
+            app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
+
+        products = fetched.get("products") or {}
+        model_payload = fetched.get("model") or lookup_model or {}
+        # صفِّ الخام أولاً (آلاف المرات أسرع من تحويل الكل ثم البحث)
+        raw_hits = hesabate_api.filter_raw_products(
+            products,
+            barcode_keys=keys,
+            text_query="" if keys else qt,
+        )
+        if keys and not raw_hits and qt:
+            raw_hits = hesabate_api.filter_raw_products(products, barcode_keys=[], text_query=qt)
+
+        mapped = hesabate_api.map_products_to_location_rows(
+            {"table": raw_hits},
+            company_payload=fetched.get("company") or lookup_company,
+            trades_payload=fetched.get("trades") or lookup_trades,
+            model_payload=model_payload,
+        )
+        if mapped:
+            try:
+                upsert_matched_location_rows(mapped)
+            except Exception:
+                pass
+            # حدّث وقت الفحص فقط — بدون كتابة الهاش حتى لا نتخطى مزامنة كاملة لاحقاً
+            app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if fetched.get("lookup_refreshed") or fetched.get("model_refreshed"):
+            prev_lookup_cached_at = time.time()
+            if lookup_raw and not fetched.get("lookup_refreshed"):
+                try:
+                    prev_lookup_cached_at = float(json.loads(lookup_raw).get("cached_at") or time.time())
+                except Exception:
+                    prev_lookup_cached_at = time.time()
+            app_kv_set(
+                "hesabate_lookup_json",
+                json.dumps(
+                    {
+                        "cached_at": time.time() if fetched.get("lookup_refreshed") else prev_lookup_cached_at,
+                        "company": fetched.get("company") or lookup_company or {},
+                        "trades": fetched.get("trades") or lookup_trades or {},
+                        "model": model_payload,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+        prepared: list[dict[str, Any]] = []
+        for index, row in enumerate(mapped):
+            d = {
+                "id": row.get("product_id") or index,
+                "item_name": row.get("item_name") or "",
+                "location": clean_shelf_location(row.get("location")),
+                "company": row.get("company") or "",
+                "original_number": row.get("original_number") or "",
+                "barcode": row.get("barcode") or "",
+                "brand": row.get("brand") or "",
+                "notes": row.get("notes") or "",
+                "quantity": row.get("quantity") or "",
+                "price": row.get("price") or "",
+                "source_file": LOCATION_API_SOURCE_FILE,
+                "source_sheet": "products",
+            }
+            d["row_key"] = f"api|{d.get('barcode')}|{d.get('id')}"
+            prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
+        msg = (
+            f"تم الجلب السريع من حساباتي — {len(prepared)} نتيجة."
+            if prepared
+            else "تم الجلب من حساباتي — الصنف غير موجود."
+        )
+        return {
+            "ok": True,
+            "live": True,
+            "fast_path": True,
+            "total_rows": len(prepared),
+            "rows": prepared,
+            "has_more": False,
+            "limit": len(prepared),
+            "offset": 0,
+            "message": msg,
+            "request_count": request_count,
+            "usage": hesabate_usage_summary(),
         }
-        d["row_key"] = f"api|{d.get('barcode')}|{d.get('id')}"
-        prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
-    msg = sync.get("message") or ""
-    if sync.get("ok"):
-        msg = f"تم الجلب من حساباتي الآن — {len(prepared)} نتيجة."
-    return {
-        "ok": bool(sync.get("ok")),
-        "live": True,
-        "total_rows": len(prepared),
-        "rows": prepared,
-        "has_more": False,
-        "limit": len(prepared),
-        "offset": 0,
-        "message": msg,
-        "sync": {k: v for k, v in sync.items() if k != "mapped"},
-        "usage": sync.get("usage") or hesabate_usage_summary(),
-    }
+    except hesabate_api.StoreApiError as e:
+        try:
+            flush_hesabate_usage_pending()
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": str(e),
+            "usage": hesabate_usage_summary(),
+        }
+    except Exception as e:
+        try:
+            flush_hesabate_usage_pending()
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": f"{type(e).__name__}: {e}",
+            "usage": hesabate_usage_summary(),
+        }
 
 
 app = FastAPI(title="Advanced Excel Search")

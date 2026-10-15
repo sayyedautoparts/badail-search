@@ -66,13 +66,27 @@ def _post_form(
         headers={
             "User-Agent": "BadailSearch/StoreAPI",
             "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate",
         },
         method="POST",
     )
     try:
-        raw = urllib.request.urlopen(req, timeout=timeout, context=_ssl_context(verify_ssl)).read()
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context(verify_ssl)) as resp:
+            raw = resp.read()
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
         if record_request:
             record_request(h, str(clean.get("action") or ""), str(clean.get("type") or ""))
+        if "gzip" in enc:
+            import gzip
+
+            raw = gzip.decompress(raw)
+        elif "deflate" in enc:
+            import zlib
+
+            try:
+                raw = zlib.decompress(raw)
+            except zlib.error:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)
     except urllib.error.HTTPError as e:
         if record_request:
             record_request(h, str(clean.get("action") or ""), str(clean.get("type") or ""))
@@ -383,6 +397,64 @@ def filter_location_rows(
             continue
         seen.add(dedupe_key)
         out.append(row)
+    return out
+
+
+def filter_raw_products(
+    products_payload: Dict[str, Any],
+    *,
+    barcode_keys: Optional[List[str]] = None,
+    text_query: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    تصفية سريعة على جدول products الخام قبل التحويل الكامل —
+    أسرع بكثير عند البحث عن صنف واحد من بين عشرات الآلاف.
+    """
+    keys = {_compact_code(k) for k in (barcode_keys or []) if _compact_code(k)}
+    text = _text(text_query)
+    text_compact = _compact_code(text)
+    text_lower = text.lower()
+    if not keys and not text:
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for prod in _table_rows(products_payload):
+        pid = _text(prod.get("id"))
+        if not pid or pid in seen:
+            continue
+        bc = _compact_code(prod.get("barcode"))
+        oe = _compact_code(prod.get("model_no")) or _compact_code(prod.get("other_codes"))
+        name = _text(prod.get("name"))
+        note = _text(prod.get("note"))
+        hit = False
+        if keys:
+            for c in (bc, oe, _compact_code(pid)):
+                if not c:
+                    continue
+                if c in keys:
+                    hit = True
+                    break
+                for k in keys:
+                    if len(k) >= 4 and len(c) >= 4 and (k in c or c in k):
+                        hit = True
+                        break
+                if hit:
+                    break
+        if (not hit) and text:
+            for f in (name, note, _text(prod.get("barcode")), _text(prod.get("model_no")), _text(prod.get("other_codes"))):
+                if not f:
+                    continue
+                if text_lower in f.lower():
+                    hit = True
+                    break
+                fc = _compact_code(f)
+                if text_compact and fc and len(text_compact) >= 4 and (text_compact in fc or fc in text_compact):
+                    hit = True
+                    break
+        if not hit:
+            continue
+        seen.add(pid)
+        out.append(prod)
     return out
 
 
