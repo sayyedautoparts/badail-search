@@ -6359,7 +6359,7 @@ def home() -> HTMLResponse:
       border-radius: 12px;
       border: 1px dashed #b8c4e6;
     }
-    /* جدول المواقع — صفوف وخلايا بمحاذاة موحّدة */
+    /* جدول المواقع — النص كامل ظاهر، الخط يتكيّف مع الخانة */
     #locationsTableWrap {
       overflow-x: auto;
       overflow-y: visible;
@@ -6375,23 +6375,19 @@ def home() -> HTMLResponse:
       table-layout: fixed;
       width: 100%;
       min-width: 640px;
-      font-size: 15px;
+      font-size: 14px;
       border-collapse: collapse;
     }
     #locationsTable th,
     #locationsTable td {
       padding: 0;
-      font-size: 15px;
-      line-height: 1.35;
       vertical-align: middle;
       border-bottom: 1px solid #e8edf5;
-      height: 52px;
     }
     #locationsTable tbody tr:nth-child(even) { background: #f7f9fd; }
     #locationsTable tbody tr:hover { background: #eef4ff; }
     #locationsTable tbody tr:last-child td { border-bottom: none; }
     #locationsTable th {
-      height: 46px;
       font-size: 13px;
       font-weight: 800;
       color: #102038;
@@ -6408,27 +6404,29 @@ def home() -> HTMLResponse:
       justify-content: flex-start;
       box-sizing: border-box;
       width: 100%;
-      height: 100%;
-      min-height: 52px;
-      padding: 0 12px;
-      overflow: hidden;
+      min-height: 48px;
+      padding: 10px 12px;
     }
     #locationsTable th .cell {
-      min-height: 46px;
+      min-height: 44px;
+      padding: 10px 12px;
       font-weight: 800;
       color: #102038;
     }
     #locationsTable .cell-text {
       display: block;
       width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      white-space: normal;
+      overflow: visible;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.35;
       font-variant-numeric: tabular-nums;
     }
     #locationsTable .cell-empty {
       color: #94a3b8;
       font-weight: 600;
+      white-space: nowrap;
     }
     /* الصنف | الموقع | الشركة | الأصلي | الكمية | السعر */
     #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 32%; }
@@ -6458,17 +6456,14 @@ def home() -> HTMLResponse:
         max-width: none;
         border-radius: 12px;
       }
-      #locationsTable { min-width: 560px; font-size: 14px; }
-      #locationsTable th, #locationsTable td { height: 48px; font-size: 14px; }
-      #locationsTable th { height: 42px; font-size: 12px; }
-      #locationsTable .cell { min-height: 48px; padding: 0 8px; }
-      #locationsTable th .cell { min-height: 42px; }
+      #locationsTable { min-width: 560px; }
+      #locationsTable .cell { min-height: 44px; padding: 8px; }
+      #locationsTable th .cell { min-height: 40px; }
+      #locationsTable th { font-size: 12px; }
     }
     @media (min-width: 768px) {
-      #locationsTable th, #locationsTable td { height: 56px; font-size: 16px; }
-      #locationsTable th { height: 48px; font-size: 14px; }
-      #locationsTable .cell { min-height: 56px; padding: 0 14px; }
-      #locationsTable th .cell { min-height: 48px; }
+      #locationsTable .cell { min-height: 52px; padding: 12px 14px; }
+      #locationsTable th .cell { min-height: 46px; }
     }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
@@ -6900,7 +6895,7 @@ def home() -> HTMLResponse:
       const cellHtml = (value) => {
         const t = String(value ?? '').trim();
         if (!t) return `<div class="cell"><span class="cell-text cell-empty">—</span></div>`;
-        return `<div class="cell"><span class="cell-text" title="${escapeHtml(t)}">${escapeHtml(t)}</span></div>`;
+        return `<div class="cell"><span class="cell-text">${escapeHtml(t)}</span></div>`;
       };
       safeRows.forEach((r) => {
         const tr = document.createElement('tr');
@@ -6916,7 +6911,44 @@ def home() -> HTMLResponse:
       const showL = safeRows.length > 0;
       locWrap.style.display = showL ? 'block' : 'none';
       locTable.style.display = showL ? 'table' : 'none';
+      if (showL) {
+        requestAnimationFrame(() => fitLocationsTableText());
+      }
       return safeRows.length;
+    }
+    function fitLocationsTableText() {
+      const table = document.getElementById('locationsTable');
+      if (!table || table.style.display === 'none') return;
+      const isMobile = window.matchMedia('(max-width: 767px)').matches;
+      const maxByCol = isMobile ? [14, 13, 13, 13, 14, 14] : [16, 15, 15, 15, 16, 16];
+      const minPx = 10;
+      table.querySelectorAll('tbody td').forEach((td) => {
+        const el = td.querySelector('.cell-text:not(.cell-empty)');
+        const cell = td.querySelector('.cell');
+        if (!el || !cell) return;
+        const col = td.cellIndex;
+        const maxPx = maxByCol[col] != null ? maxByCol[col] : 14;
+        let size = maxPx;
+        el.style.fontSize = size + 'px';
+        el.style.whiteSpace = 'normal';
+        // قصير → خط أكبر؛ طويل → يصغّر حتى يظهر كاملاً داخل عرض الخانة بعد الالتفاف
+        const len = (el.textContent || '').trim().length;
+        if (len > 18) size = Math.min(size, maxPx - 1);
+        if (len > 32) size = Math.min(size, maxPx - 2);
+        if (len > 48) size = Math.min(size, maxPx - 3);
+        if (len > 70) size = Math.min(size, maxPx - 4);
+        size = Math.max(minPx, size);
+        el.style.fontSize = size + 'px';
+        let guard = 0;
+        while (guard < 16 && size > minPx) {
+          const tooWide = el.scrollWidth > cell.clientWidth + 1;
+          const tooTall = el.scrollHeight > 84;
+          if (!tooWide && !tooTall) break;
+          size -= 0.5;
+          el.style.fontSize = size + 'px';
+          guard += 1;
+        }
+      });
     }
     async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh) {
       const res = await fetch('/hesabate/lookup', {
