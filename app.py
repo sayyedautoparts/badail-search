@@ -6359,134 +6359,116 @@ def home() -> HTMLResponse:
       border-radius: 12px;
       border: 1px dashed #b8c4e6;
     }
-    /* جدول المواقع — بدون عمود باركود، خط أكبر وتنسيق أوضح */
+    /* جدول المواقع — صفوف وخلايا بمحاذاة موحّدة */
     #locationsTableWrap {
-      overflow-x: hidden;
+      overflow-x: auto;
       overflow-y: visible;
       width: 100%;
       max-width: 100%;
       margin-top: 14px;
-      border-radius: 16px;
+      border-radius: 14px;
       border: 1px solid #d5dde9;
       background: #fff;
-      box-shadow: 0 8px 28px rgba(21, 32, 51, .08);
+      box-shadow: 0 6px 20px rgba(21, 32, 51, .07);
     }
     #locationsTable {
       table-layout: fixed;
       width: 100%;
-      min-width: 0;
+      min-width: 640px;
       font-size: 15px;
-      border-collapse: separate;
-      border-spacing: 0;
+      border-collapse: collapse;
     }
     #locationsTable th,
     #locationsTable td {
-      padding: 14px 12px;
+      padding: 0;
       font-size: 15px;
-      line-height: 1.45;
+      line-height: 1.35;
       vertical-align: middle;
-      white-space: normal;
-      word-break: break-word;
-      overflow-wrap: anywhere;
       border-bottom: 1px solid #e8edf5;
-    }
-    #locationsTable tbody tr {
-      transition: background-color .15s ease;
+      height: 52px;
     }
     #locationsTable tbody tr:nth-child(even) { background: #f7f9fd; }
     #locationsTable tbody tr:hover { background: #eef4ff; }
     #locationsTable tbody tr:last-child td { border-bottom: none; }
     #locationsTable th {
+      height: 46px;
       font-size: 13px;
       font-weight: 800;
-      letter-spacing: .01em;
       color: #102038;
-      background: linear-gradient(180deg, #f4f7fc 0%, #e9eef8 100%);
+      background: #eef2f8;
       position: sticky;
       top: 0;
       z-index: 1;
-      box-shadow: 0 1px 0 #d5dde9;
       text-align: right;
+      border-bottom: 1px solid #d5dde9;
+    }
+    #locationsTable .cell {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      box-sizing: border-box;
+      width: 100%;
+      height: 100%;
+      min-height: 52px;
+      padding: 0 12px;
+      overflow: hidden;
+    }
+    #locationsTable th .cell {
+      min-height: 46px;
+      font-weight: 800;
+      color: #102038;
+    }
+    #locationsTable .cell-text {
+      display: block;
+      width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    #locationsTable .cell-empty {
+      color: #94a3b8;
+      font-weight: 600;
     }
     /* الصنف | الموقع | الشركة | الأصلي | الكمية | السعر */
-    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) {
-      width: 34%;
-      font-weight: 700;
-      color: var(--ink);
-    }
-    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) {
-      width: 16%;
-      font-weight: 800;
-      color: #0b3d2e;
-      white-space: nowrap;
-    }
-    #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) {
-      width: 16%;
-      color: #334155;
-    }
-    #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) {
-      width: 16%;
-      font-variant-numeric: tabular-nums;
-      font-weight: 700;
-      color: #1e293b;
-    }
-    #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) {
-      width: 9%;
+    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 32%; }
+    #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { width: 16%; }
+    #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) { width: 16%; }
+    #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) { width: 16%; }
+    #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 10%; }
+    #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 10%; }
+    #locationsTable td:nth-child(1) .cell-text { font-weight: 700; color: var(--ink); }
+    #locationsTable td:nth-child(2) .cell-text { font-weight: 800; color: #0b3d2e; }
+    #locationsTable td:nth-child(3) .cell-text { font-weight: 600; color: #334155; }
+    #locationsTable td:nth-child(4) .cell-text { font-weight: 700; color: #1e293b; }
+    #locationsTable th:nth-child(5) .cell,
+    #locationsTable td:nth-child(5) .cell,
+    #locationsTable th:nth-child(6) .cell,
+    #locationsTable td:nth-child(6) .cell {
+      justify-content: center;
       text-align: center;
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      color: #0d47a1;
     }
-    #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) {
-      width: 9%;
-      text-align: center;
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      color: #1b5e20;
-    }
-    #locationsTable .loc-chip {
-      display: inline-block;
-      background: #e7f6ee;
-      color: #0b3d2e;
-      padding: 6px 12px;
-      border-radius: 999px;
-      font-weight: 800;
-      font-size: 14px;
-      white-space: nowrap;
-    }
-    #locationsTable .qty-cell,
-    #locationsTable .price-cell {
-      display: inline-block;
-      min-width: 2.2em;
-      padding: 4px 8px;
-      border-radius: 8px;
-      background: #f1f5f9;
-    }
-    #locationsTable .price-cell { background: #eaf7ee; }
+    #locationsTable td:nth-child(5) .cell-text { font-weight: 800; color: #0d47a1; text-align: center; }
+    #locationsTable td:nth-child(6) .cell-text { font-weight: 800; color: #1b5e20; text-align: center; }
     @media (max-width: 767px) {
       #locationsTableWrap {
         margin-left: -8px;
         margin-right: -8px;
         width: calc(100% + 16px);
         max-width: none;
-        border-radius: 14px;
+        border-radius: 12px;
       }
-      #locationsTable th,
-      #locationsTable td {
-        padding: 12px 8px;
-        font-size: 14px;
-      }
-      #locationsTable th { font-size: 12px; }
-      #locationsTable .loc-chip { font-size: 13px; padding: 5px 10px; }
+      #locationsTable { min-width: 560px; font-size: 14px; }
+      #locationsTable th, #locationsTable td { height: 48px; font-size: 14px; }
+      #locationsTable th { height: 42px; font-size: 12px; }
+      #locationsTable .cell { min-height: 48px; padding: 0 8px; }
+      #locationsTable th .cell { min-height: 42px; }
     }
     @media (min-width: 768px) {
-      #locationsTable th,
-      #locationsTable td {
-        padding: 16px 14px;
-        font-size: 16px;
-      }
-      #locationsTable th { font-size: 14px; }
-      #locationsTable .loc-chip { font-size: 15px; }
+      #locationsTable th, #locationsTable td { height: 56px; font-size: 16px; }
+      #locationsTable th { height: 48px; font-size: 14px; }
+      #locationsTable .cell { min-height: 56px; padding: 0 14px; }
+      #locationsTable th .cell { min-height: 48px; }
     }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
@@ -6670,12 +6652,12 @@ def home() -> HTMLResponse:
         <table id="locationsTable" style="display:none;">
           <thead>
             <tr>
-              <th>الصنف</th>
-              <th>الموقع</th>
-              <th>الشركة</th>
-              <th>الأصلي</th>
-              <th>الكمية</th>
-              <th>السعر</th>
+              <th><div class="cell"><span class="cell-text">الصنف</span></div></th>
+              <th><div class="cell"><span class="cell-text">الموقع</span></div></th>
+              <th><div class="cell"><span class="cell-text">الشركة</span></div></th>
+              <th><div class="cell"><span class="cell-text">الأصلي</span></div></th>
+              <th><div class="cell"><span class="cell-text">الكمية</span></div></th>
+              <th><div class="cell"><span class="cell-text">السعر</span></div></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -6915,20 +6897,20 @@ def home() -> HTMLResponse:
       setStats( statsText || `نتائج المواقع: ${safeRows.length}`);
       const lBody = locTable.querySelector('tbody');
       lBody.innerHTML = '';
+      const cellHtml = (value) => {
+        const t = String(value ?? '').trim();
+        if (!t) return `<div class="cell"><span class="cell-text cell-empty">—</span></div>`;
+        return `<div class="cell"><span class="cell-text" title="${escapeHtml(t)}">${escapeHtml(t)}</span></div>`;
+      };
       safeRows.forEach((r) => {
         const tr = document.createElement('tr');
-        const locTxt = String(r.location ?? '').trim();
-        const locCell = locTxt
-          ? `<span class="loc-chip">${escapeHtml(locTxt)}</span>`
-          : `<span class="muted">—</span>`;
-        const qty = String(r.quantity ?? '').trim();
-        const price = String(r.price ?? '').trim();
-        tr.innerHTML = `<td>${escapeHtml(String(r.item_name ?? ''))}</td>
-          <td>${locCell}</td>
-          <td>${escapeHtml(String(r.company ?? ''))}</td>
-          <td>${escapeHtml(String(r.original_number ?? ''))}</td>
-          <td>${qty ? `<span class="qty-cell">${escapeHtml(qty)}</span>` : '—'}</td>
-          <td>${price ? `<span class="price-cell">${escapeHtml(price)}</span>` : '—'}</td>`;
+        tr.innerHTML =
+          `<td>${cellHtml(r.item_name)}</td>` +
+          `<td>${cellHtml(r.location)}</td>` +
+          `<td>${cellHtml(r.company)}</td>` +
+          `<td>${cellHtml(r.original_number)}</td>` +
+          `<td>${cellHtml(r.quantity)}</td>` +
+          `<td>${cellHtml(r.price)}</td>`;
         lBody.appendChild(tr);
       });
       const showL = safeRows.length > 0;
