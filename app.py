@@ -128,11 +128,12 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
+    # افتراضي 5 دقائق: البحث محلي سريع؛ API فقط عند نفاد المهلة أو كتالوج فارغ
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        20, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "45")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "300")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 45
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 300
 # قفل مزامنة مشترك بين نسخ Vercel (session advisory lock)
 _HESABATE_SYNC_ADVISORY_LOCK_KEY = 87233401
 try:
@@ -1964,13 +1965,33 @@ def clean_shelf_location(location: Any) -> str:
 
 def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows:
         d = sql_row_to_dict(row)
         rid = d.get("id", "")
         d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{rid}"
         d["location"] = clean_shelf_location(d.get("location"))
+        dedupe = (
+            normalize_barcode_lookup_key(str(d.get("barcode") or ""))
+            or f"{str(d.get('original_number') or '').strip().lower()}|{str(d.get('item_name') or '').strip().lower()}"
+        )
+        if dedupe and dedupe in seen:
+            continue
+        if dedupe:
+            seen.add(dedupe)
         prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
     return prepared
+
+
+def location_catalog_row_count() -> int:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS c FROM location_rows").fetchone()
+        return int(sql_row_to_dict(row).get("c") or 0) if row is not None else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
 
 
 def _search_locations_sql_only(
@@ -3980,11 +4001,12 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
                     lookup_company = lookup.get("company") if isinstance(lookup.get("company"), dict) else None
                     lookup_trades = lookup.get("trades") if isinstance(lookup.get("trades"), dict) else None
                     lookup_model = lookup.get("model") if isinstance(lookup.get("model"), dict) else None
-                    # company/trades فقط من الكاش؛ model يُحدَّث كل مزامنة
+                    # company/trades من الكاش؛ model يُحدَّث فقط عند تغيّر المنتجات
                     need_lookup = not (lookup_company and lookup_trades)
             except Exception:
                 need_lookup = True
 
+        have_cached_model = bool(lookup_model)
         fetched = hesabate_api.fetch_location_catalog(
             HESABATE_API_HOST,
             HESABATE_API_USERNAME,
@@ -3998,26 +4020,17 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             lookup_trades=lookup_trades,
             lookup_model=lookup_model,
             need_lookup_refresh=need_lookup,
-            need_model_refresh=True,
+            need_model_refresh=not have_cached_model,
         )
         products = fetched["products"]
-        model_payload = fetched.get("model") or {}
+        model_payload = fetched.get("model") or lookup_model or {}
         hasher = hashlib.sha256()
-        hasher.update(b"loc-from-model-v2\n")
-        # أسماء المواقع جزء من الهاش حتى يتحدّث العرض لو تغيّر اسم الموديل فقط
-        try:
-            model_names = sorted(
-                (
-                    f"{k}:{v}"
-                    for k, v in (hesabate_api._id_name_map(model_payload) or {}).items()
-                )
-            )
-            hasher.update(("|".join(model_names) + "\n").encode("utf-8", "replace"))
-        except Exception:
-            pass
+        hasher.update(b"loc-products-v3\n")
+        prod_n = 0
         for prow in products.get("table") or []:
             if not isinstance(prow, dict):
                 continue
+            prod_n += 1
             hasher.update(
                 f"{prow.get('id')}|{prow.get('amount')}|{prow.get('barcode')}|{prow.get('price')}|{prow.get('name')}|{prow.get('model_no')}|{prow.get('note')}|{prow.get('company_id')}|{prow.get('trade_id')}|{prow.get('model_id')}\n".encode(
                     "utf-8",
@@ -4027,13 +4040,95 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         products_hash = hasher.hexdigest()
         prev_hash = app_kv_get("hesabate_products_hash", "")
         request_count = int(fetched.get("request_count") or 0)
-        record_hesabate_sync_batch(request_count)
 
         app_kv_set("hesabate_token", str(fetched.get("token") or ""))
         app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
         if fetched.get("scheme"):
             app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
-        # حدّث كاش الجداول مع أحدث model دائماً (بدون إعادة ضبط عمر company/trades)
+
+        try:
+            prev_rows_n = int(app_kv_get("hesabate_last_rows", "0") or "0")
+        except (TypeError, ValueError):
+            prev_rows_n = 0
+        catalog_bloated = prev_rows_n > max(int(prod_n * 1.35), prod_n + 500)
+        products_unchanged = bool(products_hash and products_hash == prev_hash and not catalog_bloated)
+
+        if products_unchanged and model_payload:
+            record_hesabate_sync_batch(request_count)
+            app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            # احفظ كاش الجداول كما هو (model قديم كافٍ لأن المنتجات لم تتغير)
+            prev_lookup_cached_at = time.time()
+            if lookup_raw and not fetched.get("lookup_refreshed"):
+                try:
+                    prev_lookup_cached_at = float(json.loads(lookup_raw).get("cached_at") or time.time())
+                except Exception:
+                    prev_lookup_cached_at = time.time()
+            app_kv_set(
+                "hesabate_lookup_json",
+                json.dumps(
+                    {
+                        "cached_at": time.time() if fetched.get("lookup_refreshed") else prev_lookup_cached_at,
+                        "company": fetched.get("company") or lookup_company or {},
+                        "trades": fetched.get("trades") or lookup_trades or {},
+                        "model": model_payload,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            out = {
+                "ok": True,
+                "skipped": True,
+                "reason": "unchanged",
+                "message": "لا تغيير في أصناف حساباتي — لم يُصرف وقت إضافي لإعادة الكتابة.",
+                "request_count": request_count,
+                "usage": hesabate_usage_summary(),
+            }
+            if return_mapped:
+                out["mapped"] = hesabate_api.map_products_to_location_rows(
+                    products,
+                    company_payload=fetched.get("company"),
+                    trades_payload=fetched.get("trades"),
+                    model_payload=model_payload,
+                )
+            return out
+
+        # تغيّرت المنتجات (أو لا يوجد model) → حدّث أسماء المواقع ثم أعد بناء الكتالوج
+        if not fetched.get("model_refreshed"):
+            try:
+                token_now = str(fetched.get("token") or token_store or "")
+                scheme_now = str(fetched.get("scheme") or preferred_scheme or "")
+
+                def _reauth_model() -> str:
+                    hesabate_api.invalidate_token(HESABATE_API_HOST, HESABATE_API_USERNAME)
+                    tok, _sch, _ = hesabate_api.store_api_auth_cached(
+                        HESABATE_API_HOST,
+                        HESABATE_API_USERNAME,
+                        HESABATE_API_PASSWORD,
+                        verify_ssl=HESABATE_API_VERIFY_SSL,
+                        force=True,
+                        record_request=record_hesabate_api_request,
+                        preferred_scheme=scheme_now,
+                    )
+                    return tok
+
+                model_payload, scheme_now = hesabate_api.store_api_download(
+                    HESABATE_API_HOST,
+                    token_now,
+                    "model",
+                    verify_ssl=HESABATE_API_VERIFY_SSL,
+                    reauth=_reauth_model,
+                    record_request=record_hesabate_api_request,
+                    preferred_scheme=scheme_now,
+                )
+                request_count += 1
+                fetched["scheme"] = scheme_now
+                fetched["model_refreshed"] = True
+            except Exception:
+                model_payload = fetched.get("model") or lookup_model or {}
+
+        record_hesabate_sync_batch(request_count)
+        if fetched.get("scheme"):
+            app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
         prev_lookup_cached_at = time.time()
         if lookup_raw and not fetched.get("lookup_refreshed"):
             try:
@@ -4059,25 +4154,6 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             trades_payload=fetched.get("trades"),
             model_payload=model_payload,
         )
-        try:
-            prev_rows_n = int(app_kv_get("hesabate_last_rows", "0") or "0")
-        except (TypeError, ValueError):
-            prev_rows_n = 0
-        catalog_bloated = prev_rows_n > max(int(len(mapped) * 1.35), len(mapped) + 500)
-        if products_hash and products_hash == prev_hash and not catalog_bloated:
-            app_kv_set("hesabate_last_sync_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            out = {
-                "ok": True,
-                "skipped": True,
-                "reason": "unchanged",
-                "message": "لا تغيير في أصناف حساباتي — تم تحديث وقت الفحص فقط.",
-                "request_count": request_count,
-                "usage": hesabate_usage_summary(),
-            }
-            if return_mapped:
-                out["mapped"] = mapped
-            return out
-
         inserted = replace_location_rows_from_api(mapped)
         with_loc = sum(1 for r in mapped if clean_shelf_location(r.get("location")))
         app_kv_set("hesabate_products_hash", products_hash)
@@ -4566,11 +4642,14 @@ def home() -> HTMLResponse:
 
       <div id="locationSearchPanel" class="search-panel">
         <div style="margin:10px 0 14px;padding:12px;background:#eef7f1;border-radius:10px;border:1px solid #b7d7c2;">
-          <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">جلب مباشر من حساباتي عند البحث</p>
+          <p style="margin:0 0 6px;font-weight:700;color:#1b4332;">بحث سريع + مزامنة ذكية</p>
           <p id="hesabateSyncStatus" class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.45;">جاري قراءة حالة API...</p>
           <p id="hesabateRequestCounter" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#1a2744;">طلبات API: —</p>
-          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">عند البحث بالباركود أو الرقم الأصلي يُطلب من حساباتي في نفس اللحظة ويُعرض الموقع وتفاصيل الصنف (بدون مزامنة عشوائية في الخلفية).</p>
-          <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف = حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116). أول بحث قد يستغرق أقل من دقيقة لأن حساباتي لا يدعم سحب صنف واحد.</p>
+          <p class="muted" style="margin:0;font-size:12px;line-height:1.45;">البحث فوري من النسخة المخزّنة. يُحدَّث من حساباتي كل بضع دقائق (أو إن كان الكتالوج فارغاً). إذا لم يتغيّر شيء لا يُعاد كتابة الأصناف ولا يُهدر وقت إضافي.</p>
+          <p class="muted" style="margin:8px 0 0;font-size:12px;line-height:1.45;">موقع الرف = حقل <strong>الموديل</strong> في حساباتي (مثل W2 E116).</p>
+          <div class="btn-row" style="margin-top:8px;">
+            <button type="button" class="btn-secondary" onclick="forceHesabateLocationSync()">تحديث من حساباتي الآن</button>
+          </div>
           <details style="margin-top:10px;">
             <summary class="muted" style="cursor:pointer;font-size:13px;">رفع Excel احتياطي (اختياري)</summary>
             <p class="muted" style="margin:8px 0;font-size:12px;line-height:1.45;">إذا لزم، يحدّث عمود الموقع حسب الباركود بدون مسح أصناف API.</p>
@@ -4719,7 +4798,9 @@ def home() -> HTMLResponse:
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
-        refreshHesabateStatus();
+        startHesabateLocationPoller();
+      } else {
+        stopHesabateLocationPoller();
       }
       searchNow('auto');
     }
@@ -4758,9 +4839,53 @@ def home() -> HTMLResponse:
       }
     }
 
-    async function ensureHesabateLocationSyncQuiet() {
-      // لم يعد هناك مزامنة خلفية — الجلب يتم داخل /search_locations عند البحث
-      await refreshHesabateStatus();
+    let hesabateEnsureTimer = null;
+    let hesabateEnsureInflight = false;
+    const HESABATE_CLIENT_POLL_MS = 280000; // ~4.5 دقائق — أقل من مهلة السيرفر 5 دقائق
+    function stopHesabateLocationPoller() {
+      if (hesabateEnsureTimer) {
+        clearInterval(hesabateEnsureTimer);
+        hesabateEnsureTimer = null;
+      }
+    }
+    function startHesabateLocationPoller() {
+      stopHesabateLocationPoller();
+      ensureHesabateLocationSyncQuiet(false);
+      hesabateEnsureTimer = setInterval(() => {
+        if (activeSearchTab !== 'location') {
+          stopHesabateLocationPoller();
+          return;
+        }
+        ensureHesabateLocationSyncQuiet(false);
+      }, HESABATE_CLIENT_POLL_MS);
+    }
+    async function ensureHesabateLocationSyncQuiet(force) {
+      if (hesabateEnsureInflight) return;
+      hesabateEnsureInflight = true;
+      try {
+        const stEl = document.getElementById('hesabateSyncStatus');
+        if (stEl && force) stEl.textContent = 'جاري التحديث من حساباتي...';
+        const url = force ? '/hesabate/sync' : '/hesabate/ensure';
+        const res = await fetch(url, { method: 'POST', cache: 'no-store' });
+        const data = await readJsonSafe(res);
+        let msg = data.message || '';
+        if (data && data.ok && data.skipped && data.reason === 'fresh') {
+          msg = `النسخة المخزّنة حديثة (قبل ${Number(data.age_sec || 0)} ث) — البحث فوري بدون طلب API.`;
+        } else if (data && data.ok && data.skipped && data.reason === 'unchanged') {
+          msg = 'لا تغيير في حساباتي — لم يُعد كتابة الأصناف (توفير).';
+        } else if (data && data.ok && !data.skipped) {
+          msg = data.message || 'تم تحديث الأصناف من حساباتي.';
+        }
+        renderHesabateUsage(data.usage || {}, msg);
+      } catch (_) {
+        await refreshHesabateStatus();
+      } finally {
+        hesabateEnsureInflight = false;
+      }
+    }
+    async function forceHesabateLocationSync() {
+      await ensureHesabateLocationSyncQuiet(true);
+      if (activeSearchTab === 'location') searchNow('location');
     }
 
     let html5QrLocationScanner = null;
@@ -7094,12 +7219,9 @@ def home() -> HTMLResponse:
           document.getElementById('stats').innerText = 'لا توجد نتائج. اكتب في مربع الصنف/الرقم أو في مربع الباركود، أو استخدم الكاميرا.';
           return;
         }
-        const looksCode = /\d/.test(lqText) && lqText.length >= 3;
-        if (lqBc || looksCode) {
-          document.getElementById('stats').innerText = 'جاري الجلب من حساباتي الآن... قد يستغرق أقل من دقيقة.';
-          const stEl = document.getElementById('hesabateSyncStatus');
-          if (stEl) stEl.textContent = 'جاري طلب الصنف من حساباتي...';
-        }
+        document.getElementById('stats').innerText = 'جاري البحث...';
+        // مزامنة خلفية خفيفة — لا تعطّل ظهور نتيجة البحث
+        ensureHesabateLocationSyncQuiet(false);
         let data = null;
         try {
           const params = lqBc ? new URLSearchParams() : new URLSearchParams({ q: lqText });
@@ -7109,7 +7231,7 @@ def home() -> HTMLResponse:
             if (barcodeDebug) params.set('barcode_debug', '1');
           }
           const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 180000);
+          const to = setTimeout(() => ctrl.abort(), 30000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
             method: 'GET',
             cache: 'no-store',
@@ -7122,7 +7244,7 @@ def home() -> HTMLResponse:
           data = parsed;
         } catch (err) {
           let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
-          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار (٣ دقائق). أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار. أعد المحاولة.';
           else if (err && err.message) {
             const m = String(err.message);
             if (m.includes('search-locations-')) hint = `ردّ الخادم (${m.replace('search-locations-', 'رمز ')}) — قد يكون السيرفر مشغولاً؛ أعد المحاولة بعد قليل.`;
@@ -7133,7 +7255,6 @@ def home() -> HTMLResponse:
           locTable.style.display = 'none';
           return;
         }
-        if (data && data.usage) renderHesabateUsage(data.usage, data.message || '');
         const rawRows = Array.isArray(data && data.rows) ? data.rows : [];
         const seenKeys = new Set();
         const safeRows = [];
@@ -7144,12 +7265,8 @@ def home() -> HTMLResponse:
           safeRows.push(r);
         });
         const safeTotal = safeRows.length;
-        const fromLive = !!(data && data.live);
         const locSrc = lqBc ? `بحث بالباركود | النتائج: ${safeTotal}` : `نتائج المواقع: ${safeTotal}`;
-        let statLine = fromLive
-          ? `${locSrc} | المصدر: حساباتي الآن`
-          : `${locSrc} | المصدر: محلي`;
-        if (data && data.message) statLine += ` | ${data.message}`;
+        let statLine = `${locSrc} | مصدر سريع: المخزون المحلي`;
         if (barcodeDebug && data && data.barcode_meta) {
           statLine += ` | تتبع: ${data.barcode_meta.match_kind || ''} — مفاتيح: ${(data.barcode_meta.keys_tried || []).join(',')}`;
           logBarcodeClientDebug('search-result-meta', data.barcode_meta);
@@ -7177,8 +7294,8 @@ def home() -> HTMLResponse:
         locTable.style.display = showL ? 'table' : 'none';
         if (!showL) {
           document.getElementById('stats').innerText = lqBc
-            ? 'لا يوجد صنف بهذا الباركود في حساباتي.'
-            : 'لا توجد نتيجة لهذا البحث في حساباتي.';
+            ? 'لا يوجد صنف بهذا الباركود في المخزون المحلي. جرّب «تحديث من حساباتي الآن».'
+            : 'لا توجد نتيجة. إن كان الصنف جديداً اضغط «تحديث من حساباتي الآن».';
         }
         return;
       }
@@ -7490,6 +7607,7 @@ def home() -> HTMLResponse:
       updateSizeInputsLayout();
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
+        startHesabateLocationPoller();
       }
       refreshHesabateStatus();
 
@@ -8494,39 +8612,14 @@ def search_locations(
     meta: dict[str, Any] = {"has_more": False, "limit": lim, "offset": off}
     debug_req = bool(int(barcode_debug)) or BARCODE_SEARCH_DEBUG
 
-    # بحث بالباركود أو الرقم الأصلي → جلب مباشر من حساباتي ثم عرض المطابقة (بدون تكرار)
+    # البحث دائماً من النسخة المحلية (سريع). API فقط إن كان الكتالوج فارغاً مرة واحدة.
     qb_raw = (q_barcode or "").strip()
-    qt_early = (q or "").strip()
-    want_live = hesabate_configured() and (
-        bool(qb_raw) or (bool(qt_early) and looks_like_item_code(qt_early))
-    )
-    if want_live:
+    if hesabate_configured():
         try:
-            live = live_lookup_locations_from_hesabate(
-                q_barcode=qb_raw,
-                q_text=qt_early,
-                barcode_keys=barcode_search_keys(qb_raw) if qb_raw else None,
-            )
-            if live.get("ok"):
-                out = {
-                    "total_rows": int(live.get("total_rows") or 0),
-                    "rows": live.get("rows") or [],
-                    **meta,
-                    "has_more": False,
-                    "live": True,
-                    "message": live.get("message") or "",
-                    "usage": live.get("usage") or {},
-                }
-                if debug_req:
-                    out["barcode_meta"] = {
-                        "keys_tried": barcode_search_keys(qb_raw) if qb_raw else [],
-                        "match_kind": "hesabate_live",
-                        "raw_input": qb_raw or qt_early,
-                    }
-                return out
+            if location_catalog_row_count() <= 0:
+                sync_locations_from_hesabate(force=True)
         except Exception as exc:
-            # نكمل على البحث المحلي إن فشل API
-            _barcode_search_debug_log(debug_req, "live-lookup-failed", raw=str(exc)[:200])
+            _barcode_search_debug_log(debug_req, "bootstrap-sync-failed", raw=str(exc)[:200])
 
     conn = get_db()
     try:
