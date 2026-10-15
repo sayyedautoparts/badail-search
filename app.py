@@ -2232,7 +2232,7 @@ def _search_locations_sql_only(
     fetch = lim + 1
     cols = (
         "id, item_name, location, company, original_number, barcode, brand, notes, quantity, price, "
-        "source_file, source_sheet"
+        "source_file, source_sheet, hesabate_product_id"
     )
     if mode == "barcode":
         keys = [k for k in (barcode_keys or []) if k]
@@ -5854,15 +5854,8 @@ def live_lookup_locations_from_hesabate(
                 lookup_text_query="",
                 allow_full_on_single=False,
                 bypass_mem_cache=True,
-                # model من الكاش إن وُجد — لا يُجلب في المسار الحرج إلا عند غيابه
-                force_model_refresh=(
-                    idx == 0
-                    and not (
-                        isinstance(model_payload, dict)
-                        and isinstance(model_payload.get("table"), list)
-                        and len(model_payload.get("table") or []) > 0
-                    )
-                ),
+                # لا تجلب model في المسار الحرج — فشل/بطء model كان يُظهر «تعذّر التحقق»
+                force_model_refresh=False,
             )
             request_count += int(fetched.get("request_count") or 0)
             api_timing = fetched.get("timing_ms") if isinstance(fetched.get("timing_ms"), dict) else {}
@@ -5935,7 +5928,44 @@ def live_lookup_locations_from_hesabate(
             trades_payload=trades_payload,
             model_payload=model_payload,
         )
-        # الحفاظ على موقع/شركة عند الفراغ يتم داخل upsert_location_rows_delta_from_api
+        # املأ الموقع/الشركة الفارغة من الصف المحلي قبل العرض والحفظ
+        if mapped:
+            try:
+                conn_prev = get_db()
+                try:
+                    ensure_location_rows_import_schema(conn_prev)
+                    for mrow in mapped:
+                        pid = str(mrow.get("product_id") or "").strip()
+                        if not pid:
+                            continue
+                        prev = conn_prev.execute(
+                            """
+                            SELECT location, company, brand, notes, original_number
+                            FROM location_rows
+                            WHERE source_file = ?
+                              AND hesabate_product_id = ?
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (LOCATION_API_SOURCE_FILE, pid),
+                        ).fetchone()
+                        if not prev:
+                            continue
+                        pd = sql_row_to_dict(prev)
+                        if not str(mrow.get("location") or "").strip():
+                            mrow["location"] = clean_shelf_location(pd.get("location"))
+                        if not str(mrow.get("company") or "").strip():
+                            mrow["company"] = str(pd.get("company") or "")
+                        if not str(mrow.get("brand") or "").strip():
+                            mrow["brand"] = str(pd.get("brand") or "")
+                        if not str(mrow.get("notes") or "").strip():
+                            mrow["notes"] = str(pd.get("notes") or "")
+                        if not str(mrow.get("original_number") or "").strip():
+                            mrow["original_number"] = str(pd.get("original_number") or "")
+                finally:
+                    conn_prev.close()
+            except Exception:
+                pass
         timing["map_ms"] = int((time.perf_counter() - t0) * 1000)
         if mapped:
             t0 = time.perf_counter()
@@ -6982,21 +7012,34 @@ def home() -> HTMLResponse:
             setStats('خطأ: محاولة تنزيل كتالوج من مسار البحث — أُوقفت.');
             return live;
           }
+          const unsupported = !!(live && (
+            live.error_kind === 'targeted_search_unsupported'
+            || live.products_fetch_mode === 'targeted_search_unsupported'
+          ));
           if (rows.length) {
             renderLocationRowsNow(
               rows,
               `${live.message || 'محدّث'} | محلي ${localMs != null ? localMs + 'ms' : '—'} → تحديث ${uiMs}ms | ${timingLine}`
             );
             if (stEl) stEl.textContent = live.message || 'تم التحديث من حساباتي';
+          } else if (unsupported) {
+            // أبقِ النتائج المحلية ظاهرة — هذه ليست خطأ شبكة
+            setStats(
+              hadLocalRows
+                ? `نتيجة محلية (${localMs != null ? localMs + 'ms' : 'فوري'}) · لا تحديث موجّه (يلزم pro_id أو استيراد الكل)`
+                : (live.message || 'حساباتي لا يدعم بحثاً موجّهاً لهذا الاستعلام — استخدم استيراد الكل يدوياً.')
+            );
+            if (stEl) stEl.textContent = 'بحث موجّه غير متاح لهذا الاستعلام';
+          } else if (live && live.not_found) {
+            setStats(
+              hadLocalRows
+                ? `نتيجة محلية (${localMs != null ? localMs + 'ms' : 'فوري'}) · لم يُرجع حساباتي تحديثاً`
+                : (live.message || 'لا يوجد صنف مطابق.')
+            );
+            if (stEl) stEl.textContent = hadLocalRows ? 'بقيت النتيجة المحلية' : 'غير موجود';
           } else if (hadLocalRows) {
             setStats(`نتيجة محلية (${localMs != null ? localMs + 'ms' : 'فوري'}) · تعذّر التحقق من أحدث البيانات`);
             if (stEl) stEl.textContent = 'تعذّر التحقق من أحدث البيانات';
-          } else if (live && (live.error_kind === 'targeted_search_unsupported' || live.products_fetch_mode === 'targeted_search_unsupported')) {
-            setStats(live.message || 'حساباتي لا يدعم بحثاً موجّهاً لهذا الاستعلام — استخدم استيراد الكل يدوياً.');
-            if (stEl) stEl.textContent = 'بحث موجّه غير مدعوم من حساباتي';
-          } else if (live && live.not_found) {
-            setStats(live.message || 'لا يوجد صنف مطابق.');
-            if (stEl) stEl.textContent = 'غير موجود';
           } else {
             setStats((live && live.message) || 'لا نتيجة.');
           }
@@ -9545,19 +9588,19 @@ def home() -> HTMLResponse:
           safeRows.push(r);
         });
         const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
-        const willAutoText = !lqBc && !!(lqText && String(lqText).trim().length >= 2);
+        const localHasProId = safeRows.some(r => String(r.hesabate_product_id || '').trim());
+        // نص: حدّث فقط إن وُجد pro_id محلي — وإلا الرسالة كانت تُفهم كخطأ
+        const willAutoText = !lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId;
         const willAuto = willAutoBc || willAutoText;
         if (safeRows.length) {
           renderLocationRowsNow(
             safeRows,
             `محلي فوري · ${safeRows.length} · ${localMs}ms` + (willAuto ? ' · جاري التحقق من حساباتي...' : '')
           );
-        } else if (willAuto) {
+        } else if (willAutoBc) {
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
-          setStats(willAutoBc
-            ? 'بحث موجّه في حساباتي...'
-            : 'بحث موجّه في حساباتي (بالاسم/الرقم)...');
+          setStats('بحث موجّه في حساباتي...');
         } else {
           locWrap.style.display = 'none';
           locTable.style.display = 'none';

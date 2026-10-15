@@ -131,6 +131,45 @@ def test_no_loose_fallback_small_unrelated_rows() -> None:
         h.store_api_download = orig  # type: ignore
 
 
+def test_model_refresh_failure_does_not_abort_single_product() -> None:
+    calls: list[str] = []
+
+    def fake_auth_cached(*a, **k):
+        return "tok", "https", False
+
+    def fake_download(host, token, type_name, extra=None, **kwargs):
+        calls.append(type_name)
+        if type_name == "model":
+            raise h.StoreApiError("model timeout")
+        if type_name == "products":
+            return {
+                "status": "succes",
+                "table": [{"id": "9", "barcode": "111", "name": "N", "amount": "1", "price": "1"}],
+            }, "https"
+        return {"status": "succes", "table": []}, "https"
+
+    orig_auth = h.store_api_auth_cached
+    orig_dl = h.store_api_download
+    h.store_api_auth_cached = fake_auth_cached  # type: ignore
+    h.store_api_download = fake_download  # type: ignore
+    try:
+        out = h.fetch_location_catalog(
+            "example.hesabate.com",
+            "u",
+            "p",
+            products_mode="single",
+            lookup_pro_id="9",
+            force_model_refresh=True,
+            bypass_mem_cache=True,
+        )
+        _eq("products" in calls, True, "products still fetched")
+        _eq(len((out.get("products") or {}).get("table") or []), 1, "product returned")
+        _eq(out.get("model_refreshed"), False, "model soft-failed")
+    finally:
+        h.store_api_auth_cached = orig_auth  # type: ignore
+        h.store_api_download = orig_dl  # type: ignore
+
+
 def test_single_mode_skips_lookup_tables() -> None:
     calls: list[str] = []
 
@@ -216,6 +255,7 @@ def main() -> None:
     test_fetch_lookup_uses_real_pro_id_all1([])
     test_reject_full_catalog_in_interactive()
     test_no_loose_fallback_small_unrelated_rows()
+    test_model_refresh_failure_does_not_abort_single_product()
     test_single_mode_skips_lookup_tables()
     test_full_catalog_only_when_allowed()
     print("tests_hesabate_lookup: OK")

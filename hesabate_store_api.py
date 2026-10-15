@@ -946,19 +946,24 @@ def fetch_location_catalog(
             timing["model_ms"] = int((time.perf_counter() - t0) * 1000)
             model_refreshed = True
     elif force_model_refresh:
+        # لا تُسقط جلب الصنف إن فشل/انتهت مهلة model — الموقع من الكاش يكفي
         t0 = time.perf_counter()
-        model, scheme = store_api_download(
-            host,
-            token,
-            "model",
-            verify_ssl=verify_ssl,
-            reauth=_reauth,
-            record_request=_rec,
-            preferred_scheme=scheme or preferred_scheme,
-            timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
-        )
+        try:
+            model, scheme = store_api_download(
+                host,
+                token,
+                "model",
+                verify_ssl=verify_ssl,
+                reauth=_reauth,
+                record_request=_rec,
+                preferred_scheme=scheme or preferred_scheme,
+                timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+            )
+            model_refreshed = True
+        except StoreApiError as e:
+            timing["model_error"] = str(e)[:160]
+            model_refreshed = False
         timing["model_ms"] = int((time.perf_counter() - t0) * 1000)
-        model_refreshed = True
 
     products_fetch_mode = "full"
     products_metrics: Dict[str, Any] = {}
