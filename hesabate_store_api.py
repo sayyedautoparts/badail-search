@@ -195,17 +195,25 @@ def store_api_auth_cached(
     preferred_scheme: str = "",
     token_from_store: str = "",
     token_exp_mono: float = 0.0,
+    token_exp_unix: float = 0.0,
 ) -> Tuple[str, str, bool]:
     """
     يُرجع (token, scheme, auth_was_requested).
     يستخدم كاش الذاكرة ثم token_from_store إن لم ينتهِ.
+    ملاحظة: على Vercel الـ monotonic لا يُشارك بين النسخ — لذلك نعتمد token_exp_unix.
     """
     key = _auth_cache_key(host, username)
     if not force:
         hit = _TOKEN_CACHE.get(key)
         if hit and time.monotonic() < hit[1]:
             return hit[0], (_PREFERRED_SCHEME.get(normalize_store_api_host(host)) or preferred_scheme or "https"), False
-        if token_from_store and token_exp_mono and time.monotonic() < token_exp_mono:
+        # صلاحية مشتركة بين نسخ السيرفرلس
+        if token_from_store and token_exp_unix and time.time() < float(token_exp_unix):
+            remain = max(30.0, float(token_exp_unix) - time.time())
+            _TOKEN_CACHE[key] = (token_from_store, time.monotonic() + min(_TOKEN_TTL_SEC, remain))
+            return token_from_store, (preferred_scheme or "https"), False
+        # توافق قديم: لا تعتمد على mono المخزّن عبر النسخ
+        if token_from_store and (not token_exp_unix) and token_exp_mono and time.monotonic() < token_exp_mono:
             _TOKEN_CACHE[key] = (token_from_store, token_exp_mono)
             return token_from_store, (preferred_scheme or "https"), False
     token, scheme = store_api_auth(
@@ -310,10 +318,23 @@ def _product_location(prod: Dict[str, Any], models: Optional[Dict[str, str]] = N
 
 
 def _compact_code(v: Any) -> str:
+    """تطبيع كود/باركود مثل مفاتيح البحث: أرقام وحروف فقط."""
     s = _text(v).upper()
     if not s:
         return ""
-    return re.sub(r"[\s\-_./\\]+", "", s)
+    return re.sub(r"[^A-Z0-9]", "", s)
+
+
+def _key_variants(code: str) -> List[str]:
+    c = _compact_code(code)
+    if not c:
+        return []
+    out = [c]
+    if c.isdigit():
+        stripped = c.lstrip("0") or "0"
+        if stripped not in out:
+            out.append(stripped)
+    return out
 
 
 def row_matches_barcode_keys(row: Dict[str, str], barcode_keys: List[str]) -> bool:
@@ -410,9 +431,12 @@ def filter_raw_products(
     تصفية سريعة على جدول products الخام قبل التحويل الكامل —
     أسرع بكثير عند البحث عن صنف واحد من بين عشرات الآلاف.
     """
-    keys = {_compact_code(k) for k in (barcode_keys or []) if _compact_code(k)}
+    keys: set = set()
+    for k in barcode_keys or []:
+        for v in _key_variants(k):
+            keys.add(v)
     text = _text(text_query)
-    text_compact = _compact_code(text)
+    text_keys = set(_key_variants(text)) if text else set()
     text_lower = text.lower()
     if not keys and not text:
         return []
@@ -422,15 +446,21 @@ def filter_raw_products(
         pid = _text(prod.get("id"))
         if not pid or pid in seen:
             continue
-        bc = _compact_code(prod.get("barcode"))
-        oe = _compact_code(prod.get("model_no")) or _compact_code(prod.get("other_codes"))
+        cand_codes: List[str] = []
+        for raw in (
+            prod.get("barcode"),
+            prod.get("model_no"),
+            prod.get("other_codes"),
+            prod.get("id"),
+        ):
+            for v in _key_variants(raw):
+                if v not in cand_codes:
+                    cand_codes.append(v)
         name = _text(prod.get("name"))
         note = _text(prod.get("note"))
         hit = False
         if keys:
-            for c in (bc, oe, _compact_code(pid)):
-                if not c:
-                    continue
+            for c in cand_codes:
                 if c in keys:
                     hit = True
                     break
@@ -447,9 +477,17 @@ def filter_raw_products(
                 if text_lower in f.lower():
                     hit = True
                     break
-                fc = _compact_code(f)
-                if text_compact and fc and len(text_compact) >= 4 and (text_compact in fc or fc in text_compact):
-                    hit = True
+                for fc in _key_variants(f):
+                    if fc in text_keys:
+                        hit = True
+                        break
+                    for tk in text_keys:
+                        if len(tk) >= 4 and len(fc) >= 4 and (tk in fc or fc in tk):
+                            hit = True
+                            break
+                    if hit:
+                        break
+                if hit:
                     break
         if not hit:
             continue
@@ -520,6 +558,7 @@ def fetch_location_catalog(
     preferred_scheme: str = "",
     token_from_store: str = "",
     token_exp_mono: float = 0.0,
+    token_exp_unix: float = 0.0,
     lookup_company: Optional[Dict[str, Any]] = None,
     lookup_trades: Optional[Dict[str, Any]] = None,
     lookup_model: Optional[Dict[str, Any]] = None,
@@ -567,6 +606,7 @@ def fetch_location_catalog(
         preferred_scheme=preferred_scheme,
         token_from_store=token_from_store,
         token_exp_mono=token_exp_mono,
+        token_exp_unix=token_exp_unix,
     )
 
     company = lookup_company if isinstance(lookup_company, dict) else {}
@@ -636,4 +676,5 @@ def fetch_location_catalog(
         "model_refreshed": model_refreshed,
         "request_count": int(batch_count["n"]),
         "token_exp_mono": time.monotonic() + _TOKEN_TTL_SEC,
+        "token_exp_unix": time.time() + _TOKEN_TTL_SEC,
     }

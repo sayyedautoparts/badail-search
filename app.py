@@ -677,6 +677,11 @@ class LocationRowsFinishIn(BaseModel):
     file_size: int
 
 
+class HesabateLookupIn(BaseModel):
+    barcode: str = ""
+    q: str = ""
+
+
 class LocationRowsAbortIn(BaseModel):
     file_name: str
 
@@ -3985,9 +3990,13 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
         token_store = app_kv_get("hesabate_token", "")
         try:
-            token_exp = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
+            token_exp_mono = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
         except (TypeError, ValueError):
-            token_exp = 0.0
+            token_exp_mono = 0.0
+        try:
+            token_exp_unix = float(app_kv_get("hesabate_token_exp_unix", "0") or "0")
+        except (TypeError, ValueError):
+            token_exp_unix = 0.0
         lookup_raw = app_kv_get("hesabate_lookup_json", "")
         lookup_company = None
         lookup_trades = None
@@ -4015,7 +4024,8 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             record_request=record_hesabate_api_request,
             preferred_scheme=preferred_scheme,
             token_from_store=token_store,
-            token_exp_mono=token_exp,
+            token_exp_mono=token_exp_mono,
+            token_exp_unix=token_exp_unix,
             lookup_company=lookup_company,
             lookup_trades=lookup_trades,
             lookup_model=lookup_model,
@@ -4043,6 +4053,7 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
 
         app_kv_set("hesabate_token", str(fetched.get("token") or ""))
         app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
+        app_kv_set("hesabate_token_exp_unix", str(fetched.get("token_exp_unix") or 0))
         if fetched.get("scheme"):
             app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
 
@@ -4392,9 +4403,18 @@ def live_lookup_locations_from_hesabate(
     preferred_scheme = app_kv_get("hesabate_preferred_scheme", "")
     token_store = app_kv_get("hesabate_token", "")
     try:
-        token_exp = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
+        token_exp_mono = float(app_kv_get("hesabate_token_exp_mono", "0") or "0")
     except (TypeError, ValueError):
-        token_exp = 0.0
+        token_exp_mono = 0.0
+    try:
+        token_exp_unix = float(app_kv_get("hesabate_token_exp_unix", "0") or "0")
+    except (TypeError, ValueError):
+        token_exp_unix = 0.0
+    # إن انتهت الصلاحية المخزّنة لا تمرّر توكن قديم بين نسخ Vercel
+    if (not token_exp_unix) or time.time() >= token_exp_unix:
+        token_store = ""
+        token_exp_mono = 0.0
+        token_exp_unix = 0.0
     lookup_raw = app_kv_get("hesabate_lookup_json", "")
     lookup_company = None
     lookup_trades = None
@@ -4421,7 +4441,8 @@ def live_lookup_locations_from_hesabate(
             record_request=record_hesabate_api_request,
             preferred_scheme=preferred_scheme,
             token_from_store=token_store,
-            token_exp_mono=token_exp,
+            token_exp_mono=token_exp_mono,
+            token_exp_unix=token_exp_unix,
             lookup_company=lookup_company,
             lookup_trades=lookup_trades,
             lookup_model=lookup_model,
@@ -4432,6 +4453,7 @@ def live_lookup_locations_from_hesabate(
         record_hesabate_sync_batch(request_count)
         app_kv_set("hesabate_token", str(fetched.get("token") or ""))
         app_kv_set("hesabate_token_exp_mono", str(fetched.get("token_exp_mono") or 0))
+        app_kv_set("hesabate_token_exp_unix", str(fetched.get("token_exp_unix") or 0))
         if fetched.get("scheme"):
             app_kv_set("hesabate_preferred_scheme", str(fetched["scheme"]))
 
@@ -7426,9 +7448,8 @@ def home() -> HTMLResponse:
             if (lqCanon) params.set('q_barcode_canonical', lqCanon);
             if (barcodeDebug) params.set('barcode_debug', '1');
           }
-          // مهلة أطول: إن لم يوجد محلياً قد يحدّث من حساباتي للصنف الجديد
           const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 180000);
+          const to = setTimeout(() => ctrl.abort(), 45000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
             method: 'GET',
             cache: 'no-store',
@@ -7441,7 +7462,7 @@ def home() -> HTMLResponse:
           data = parsed;
         } catch (err) {
           let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
-          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار أثناء التحديث من حساباتي. أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار. أعد المحاولة.';
           else if (err && err.message) {
             const m = String(err.message);
             if (m.includes('search-locations-')) hint = `ردّ الخادم (${m.replace('search-locations-', 'رمز ')}) — قد يكون السيرفر مشغولاً؛ أعد المحاولة بعد قليل.`;
@@ -7451,6 +7472,36 @@ def home() -> HTMLResponse:
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
           return;
+        }
+        // صنف جديد غير موجود محلياً → جلب منفصل من حساباتي (لا يقطع البحث المحلي)
+        if (data && data.needs_live_refresh && !(Array.isArray(data.rows) && data.rows.length)) {
+          document.getElementById('stats').innerText = 'غير موجود محلياً — جاري جلب الصنف من حساباتي...';
+          const stEl = document.getElementById('hesabateSyncStatus');
+          if (stEl) stEl.textContent = 'جاري جلب الصنف الجديد من حساباتي...';
+          try {
+            const ctrl2 = new AbortController();
+            const to2 = setTimeout(() => ctrl2.abort(), 180000);
+            const res2 = await fetch('/hesabate/lookup', {
+              method: 'POST',
+              cache: 'no-store',
+              signal: ctrl2.signal,
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({ barcode: lqBc || '', q: lqBc ? '' : lqText })
+            });
+            clearTimeout(to2);
+            const live = await readJsonSafe(res2);
+            if (!res2.ok) throw new Error(live.detail || `hesabate-lookup-${res2.status}`);
+            data = live;
+          } catch (err2) {
+            let hint2 = 'تعذر الجلب من حساباتي. أعد المحاولة أو اضغط «تحديث من حساباتي الآن».';
+            if (err2 && err2.name === 'AbortError') hint2 = 'انتهت مهلة الجلب من حساباتي. أعد المحاولة.';
+            else if (err2 && err2.message) hint2 = String(err2.message);
+            document.getElementById('stats').innerText = hint2;
+            locWrap.style.display = 'none';
+            locTable.style.display = 'none';
+            await refreshHesabateStatus();
+            return;
+          }
         }
         if (data && data.usage) renderHesabateUsage(data.usage, data.message || '');
         const rawRows = Array.isArray(data && data.rows) ? data.rows : [];
@@ -7463,10 +7514,10 @@ def home() -> HTMLResponse:
           safeRows.push(r);
         });
         const safeTotal = safeRows.length;
-        const refreshed = !!(data && data.refreshed_on_miss);
+        const refreshed = !!(data && (data.refreshed_on_miss || data.live));
         const locSrc = lqBc ? `بحث بالباركود | النتائج: ${safeTotal}` : `نتائج المواقع: ${safeTotal}`;
         let statLine = refreshed
-          ? `${locSrc} | تم التحديث من حساباتي للصنف الجديد`
+          ? `${locSrc} | تم الجلب من حساباتي`
           : `${locSrc} | مصدر سريع: المخزون المحلي`;
         if (data && data.message) statLine += ` | ${data.message}`;
         if (barcodeDebug && data && data.barcode_meta) {
@@ -8932,45 +8983,14 @@ def search_locations(
                 )
 
                 prepared = _prepare_location_search_rows(rows)
-                # صنف جديد؟ إن لم يوجد محلياً اسحب من حساباتي مرة واحدة ثم أعد المطابقة
-                if (not prepared) and hesabate_configured():
-                    try:
-                        live = live_lookup_locations_from_hesabate(
-                            q_barcode=qb_raw,
-                            barcode_keys=b_keys,
-                        )
-                        if live.get("ok"):
-                            out_live = {
-                                "total_rows": int(live.get("total_rows") or 0),
-                                "rows": live.get("rows") or [],
-                                **meta,
-                                "has_more": False,
-                                "live": True,
-                                "refreshed_on_miss": True,
-                                "message": live.get("message")
-                                or (
-                                    "تم التحديث من حساباتي — الصنف غير موجود."
-                                    if not live.get("rows")
-                                    else "تم إيجاد الصنف بعد التحديث من حساباتي."
-                                ),
-                                "usage": live.get("usage") or {},
-                            }
-                            if debug_req:
-                                out_live["barcode_meta"] = {
-                                    "keys_tried": list(b_keys),
-                                    "match_kind": "hesabate_refresh_on_miss",
-                                    "raw_input": qb_raw,
-                                    "canonical_primary": bc_primary,
-                                    "client_canonical_hint": (q_barcode_canonical or "").strip(),
-                                    "server_canonical": normalize_barcode_lookup_key(qb_raw),
-                                }
-                            return out_live
-                    except Exception as exc:
-                        _barcode_search_debug_log(
-                            debug_req, "refresh-on-miss-failed", raw=str(exc)[:200]
-                        )
-
-                out = {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
+                out = {
+                    "total_rows": len(prepared),
+                    "rows": prepared,
+                    **meta,
+                    "has_more": has_more,
+                    # الواجهة تستدعي /hesabate/lookup عند الفراغ (بدون حجز اتصال DB أثناء سحب API)
+                    "needs_live_refresh": bool((not prepared) and hesabate_configured()),
+                }
                 if debug_req:
                     out["barcode_meta"] = {
                         "keys_tried": list(b_keys),
@@ -8999,30 +9019,15 @@ def search_locations(
                 offset=off,
             )
             prepared = _prepare_location_search_rows(rows)
-            if (not prepared) and hesabate_configured() and looks_like_item_code(qt):
-                try:
-                    live = live_lookup_locations_from_hesabate(q_text=qt)
-                    if live.get("ok"):
-                        return {
-                            "total_rows": int(live.get("total_rows") or 0),
-                            "rows": live.get("rows") or [],
-                            **meta,
-                            "has_more": False,
-                            "live": True,
-                            "refreshed_on_miss": True,
-                            "message": live.get("message")
-                            or (
-                                "تم التحديث من حساباتي — الصنف غير موجود."
-                                if not live.get("rows")
-                                else "تم إيجاد الصنف بعد التحديث من حساباتي."
-                            ),
-                            "usage": live.get("usage") or {},
-                        }
-                except Exception as exc:
-                    _barcode_search_debug_log(
-                        debug_req, "refresh-on-miss-text-failed", raw=str(exc)[:200]
-                    )
-            return {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
+            return {
+                "total_rows": len(prepared),
+                "rows": prepared,
+                **meta,
+                "has_more": has_more,
+                "needs_live_refresh": bool(
+                    (not prepared) and hesabate_configured() and looks_like_item_code(qt)
+                ),
+            }
         except HTTPException:
             raise
         except Exception as exc:
@@ -9057,6 +9062,32 @@ def hesabate_ensure() -> dict:
 def hesabate_sync_force() -> dict:
     """مزامنة فورية (تستخدم عند الحاجة فقط — تستهلك Requests)."""
     return ensure_hesabate_locations_synced(force=True)
+
+
+@app.post("/hesabate/lookup")
+def hesabate_lookup_item(payload: HesabateLookupIn) -> dict:
+    """
+    جلب صنف واحد من حساباتي عند غيابه محلياً (باركود أو رقم أصلي).
+    منفصل عن البحث حتى لا يُقطع الاتصال أثناء سحب الكتالوج.
+    """
+    qb = str(payload.barcode or "").strip()
+    qt = str(payload.q or "").strip()
+    if not qb and not qt:
+        raise HTTPException(status_code=400, detail="أدخل باركود أو رقم أصلي.")
+    if not hesabate_configured():
+        raise HTTPException(status_code=400, detail="حساباتي غير مُعدّ على السيرفر.")
+    live = live_lookup_locations_from_hesabate(
+        q_barcode=qb,
+        q_text=qt,
+        barcode_keys=barcode_search_keys(qb) if qb else None,
+    )
+    return {
+        **live,
+        "refreshed_on_miss": True,
+        "has_more": False,
+        "limit": int(live.get("total_rows") or 0),
+        "offset": 0,
+    }
 
 
 @app.get("/stats")
