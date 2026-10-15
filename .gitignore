@@ -6,3 +6,4 @@ search_data.db
 .env
 .env.*
 !.env.example
+.env*.local

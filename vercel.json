@@ -4,5 +4,11 @@
     "app.py": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/hesabate/cron_sync",
+      "schedule": "0 2 * * *"
+    }
+  ]
 }

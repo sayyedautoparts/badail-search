@@ -2,6 +2,15 @@
 """
 عميل Hesabate Store API لاكتشاف المواقع.
 التوثيق: https://documenter.getpostman.com/view/5117721/2sAYdcrXsJ
+
+ما هو موثّق/مستخدم هنا:
+- Auth
+- download type=products|company|trades|model
+- products: all=1 للكتالوج، وpro_id لمحاولة صنف واحد (الفلترة غير موثوقة)
+
+ما ليس في الوثائق ولا يُفترض وجوده:
+- جلب تغييرات منذ تاريخ/مؤشر
+- Webhooks
 """
 from __future__ import annotations
 
@@ -21,6 +30,55 @@ _TOKEN_CACHE: Dict[str, Tuple[str, float]] = {}
 _TOKEN_TTL_SEC = 3300.0
 _PREFERRED_SCHEME: Dict[str, str] = {}
 _REAUTH_LOCKS: Dict[str, threading.Lock] = {}
+# كاش منتجات في ذاكرة العملية (نسخ Vercel الدافئة) — للمزامنة فقط بعد تحديث صريح
+_PRODUCTS_MEM_CACHE: Dict[str, Any] = {"host": "", "exp": 0.0, "payload": None, "scheme": "", "synced_at": 0.0}
+_PRODUCTS_MEM_TTL_SEC = 600.0
+_PRODUCTS_MEM_LOCK = threading.Lock()
+# حد أقصى لردّ «صنف واحد» — فوقه نعتبر أن API أعاد كتالوجاً ونرفضه في المسار التفاعلي
+_SINGLE_LOOKUP_MAX_ROWS = 40
+
+
+def _products_cache_get(host: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    h = normalize_store_api_host(host)
+    with _PRODUCTS_MEM_LOCK:
+        if (
+            h
+            and _PRODUCTS_MEM_CACHE.get("host") == h
+            and time.time() < float(_PRODUCTS_MEM_CACHE.get("exp") or 0)
+            and isinstance(_PRODUCTS_MEM_CACHE.get("payload"), dict)
+        ):
+            return _PRODUCTS_MEM_CACHE["payload"], str(_PRODUCTS_MEM_CACHE.get("scheme") or "https")
+    return None
+
+
+def _products_cache_set(host: str, payload: Dict[str, Any], scheme: str) -> None:
+    h = normalize_store_api_host(host)
+    if not h or not isinstance(payload, dict):
+        return
+    # لا نكاش ردود صغيرة جداً (فلتر فاشل) — فقط كتالوج كامل تقريباً
+    table = payload.get("table") or []
+    n = len(table) if isinstance(table, list) else 0
+    if n < 50:
+        return
+    with _PRODUCTS_MEM_LOCK:
+        _PRODUCTS_MEM_CACHE["host"] = h
+        _PRODUCTS_MEM_CACHE["payload"] = payload
+        _PRODUCTS_MEM_CACHE["scheme"] = scheme or "https"
+        _PRODUCTS_MEM_CACHE["exp"] = time.time() + _PRODUCTS_MEM_TTL_SEC
+        _PRODUCTS_MEM_CACHE["synced_at"] = time.time()
+
+
+def invalidate_products_mem_cache(host: str = "") -> None:
+    """إبطال كاش الذاكرة بعد مزامنة ناجحة أو عند refresh صريح."""
+    h = normalize_store_api_host(host)
+    with _PRODUCTS_MEM_LOCK:
+        if h and _PRODUCTS_MEM_CACHE.get("host") and _PRODUCTS_MEM_CACHE.get("host") != h:
+            return
+        _PRODUCTS_MEM_CACHE["host"] = ""
+        _PRODUCTS_MEM_CACHE["exp"] = 0.0
+        _PRODUCTS_MEM_CACHE["payload"] = None
+        _PRODUCTS_MEM_CACHE["scheme"] = ""
+        _PRODUCTS_MEM_CACHE["synced_at"] = 0.0
 
 
 class StoreApiError(Exception):
@@ -300,6 +358,22 @@ def _text(v: Any) -> str:
     return str(v or "").strip()
 
 
+def looks_like_hesabate_product_id(value: Any, *, not_barcode_keys: Optional[List[str]] = None) -> bool:
+    """
+    المعرّف الداخلي للصنف = حقل id من حساباتي (أرقام).
+    لا نقبل قيمة تطابق مفتاح باركود البحث — الباركود ليس pro_id.
+    """
+    s = _text(value)
+    if not s or not s.isdigit():
+        return False
+    if not_barcode_keys:
+        blocked = {_compact_code(k) for k in not_barcode_keys if k}
+        blocked.update({_text(k) for k in not_barcode_keys if k})
+        if s in blocked or _compact_code(s) in blocked:
+            return False
+    return True
+
+
 def _product_location(prod: Dict[str, Any], models: Optional[Dict[str, str]] = None) -> str:
     """
     موقع الرف عند هذا المتجر = حقل الموديل (model_id → model.name) في Store API.
@@ -437,7 +511,13 @@ def filter_raw_products(
         for v in _key_variants(k):
             keys.add(v)
     text = _text(text_query)
-    text_keys = set(_key_variants(text)) if text else set()
+    text_keys: set = set()
+    if text:
+        for part in re.split(r"[\s,/|;]+", text):
+            for v in _key_variants(part):
+                text_keys.add(v)
+        for v in _key_variants(text):
+            text_keys.add(v)
     text_lower = text.lower()
     if not keys and not text:
         return []
@@ -447,26 +527,31 @@ def filter_raw_products(
         pid = _text(prod.get("id"))
         if not pid or pid in seen:
             continue
-        # لا نطابق على id الرقمي وحده — يسبب إيجابيات خاطئة كثيرة
-        cand_codes: List[str] = []
-        for raw in (prod.get("barcode"), prod.get("model_no"), prod.get("other_codes")):
-            # other_codes قد يحوي عدة أكواد مفصولة
-            raw_s = _text(raw)
-            parts = re.split(r"[\s,/|;]+", raw_s) if raw_s else []
-            if raw_s and raw_s not in parts:
-                parts.insert(0, raw_s)
-            for part in parts:
-                for v in _key_variants(part):
-                    if v not in cand_codes:
-                        cand_codes.append(v)
-        name = _text(prod.get("name"))
-        note = _text(prod.get("note"))
+        # بحث الباركود: طابق حقل barcode أولاً بدقة، ثم other_codes كأكواد إضافية فقط
+        # لا نطابق model_no هنا حتى لا تُرجع عدة أصناف لنفس رقم الموديل
         hit = False
         if keys:
-            for c in cand_codes:
+            bc_keys: set = set()
+            for raw in (prod.get("barcode"), prod.get("other_codes")):
+                raw_s = _text(raw)
+                if not raw_s:
+                    continue
+                # فواصل لاتينية + عربية + + و \\ حتى لا تُدمج عدة باركودات في مفتاح واحد
+                parts = re.split(r"[\s,/|;\\+،؛]+", raw_s)
+                if raw_s and raw_s not in parts:
+                    parts.insert(0, raw_s)
+                for part in parts:
+                    part = part.strip().strip(":")
+                    if not part:
+                        continue
+                    for v in _key_variants(part):
+                        bc_keys.add(v)
+            for c in bc_keys:
                 if c in keys:
                     hit = True
                     break
+        name = _text(prod.get("name"))
+        note = _text(prod.get("note"))
         if (not hit) and text and not keys:
             # بحث نصي/رقم أصلي فقط عند عدم وجود مفاتيح باركود
             for f in (name, note, _text(prod.get("barcode")), _text(prod.get("model_no")), _text(prod.get("other_codes"))):
@@ -508,22 +593,34 @@ def map_products_to_location_rows(
         if not pid:
             continue
         item_name = _text(prod.get("name"))
+        # الباركود فقط من حقل barcode — لا نخلطه مع model_no/other_codes
         barcode = _text(prod.get("barcode"))
-        original_number = _text(prod.get("model_no")) or _text(prod.get("other_codes"))
+        original_number = _text(prod.get("model_no"))
+        other_codes = _text(prod.get("other_codes"))
         notes = _text(prod.get("note"))
+        if other_codes and other_codes != original_number:
+            # تبقى للملاحظات/العرض؛ البحث يعتمد على unit_barcodes → normalized_barcode
+            notes = f"{notes} {other_codes}".strip() if notes else other_codes
         company = companies.get(_text(prod.get("company_id")), "")
         brand = trades.get(_text(prod.get("trade_id")), "")
         quantity = _qty_text(prod.get("amount"))
         price = _qty_text(prod.get("price"))
         # الأولوية لموديل API (هذا هو موقع الرف)، ثم الكاش المحفوظ
         location = _product_location(prod, models)
-        if not location and barcode:
-            for key in (barcode, re.sub(r"[\s\-]+", "", barcode)):
-                val = _text(preserved.get(key))
-                if val and val not in ("0", "0.0"):
-                    location = val
+        if not location:
+            # جرّب الباركود الرئيسي ثم كل other_codes
+            for cand in [barcode] + re.split(r"[\s,/|;]+", other_codes):
+                cand = _text(cand)
+                if not cand:
+                    continue
+                for key in (cand, re.sub(r"[\s\-]+", "", cand)):
+                    val = _text(preserved.get(key))
+                    if val and val not in ("0", "0.0"):
+                        location = val
+                        break
+                if location:
                     break
-        if not any([item_name, barcode, original_number, location, notes, quantity]):
+        if not any([item_name, barcode, original_number, location, notes, quantity, other_codes]):
             continue
         out.append(
             {
@@ -537,9 +634,159 @@ def map_products_to_location_rows(
                 "quantity": quantity,
                 "price": price,
                 "product_id": pid,
+                # كل الباركودات الإضافية من حساباتي — تُفهرس كلها في normalized_barcode
+                "unit_barcodes": other_codes,
             }
         )
     return out
+
+
+def _products_download_extra(
+    *,
+    pro_id: str = "",
+    all_flag: str = "1",
+    barcode: str = "",
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {
+        "pro_id": pro_id,
+        "all": all_flag,
+        "view_items_by": "0",
+        "production_only": "0",
+    }
+    if barcode:
+        fields["barcode"] = barcode
+    if extra_fields:
+        fields.update(extra_fields)
+    return fields
+
+
+def _rows_look_filtered(rows: List[Dict[str, Any]], *, barcode_keys: Optional[List[str]] = None, text_query: str = "") -> bool:
+    """هل الرد يبدو نتيجة مفلترة (صنف/عدة أصناف) وليس الكتالوج الكامل؟"""
+    if not rows:
+        return False
+    if len(rows) > 40:
+        return False
+    if barcode_keys:
+        hits = filter_raw_products({"table": rows}, barcode_keys=barcode_keys, max_hits=40)
+        return bool(hits)
+    if text_query:
+        hits = filter_raw_products({"table": rows}, text_query=text_query, max_hits=40)
+        return bool(hits)
+    return len(rows) <= 5
+
+
+def fetch_products_for_lookup(
+    host: str,
+    token: str,
+    *,
+    barcode_keys: Optional[List[str]] = None,
+    text_query: str = "",
+    pro_id: str = "",
+    verify_ssl: bool = False,
+    reauth: Optional[Any] = None,
+    record_request: Optional[RecordRequestFn] = None,
+    preferred_scheme: str = "",
+    allow_full_catalog: bool = False,
+    bypass_mem_cache: bool = False,
+) -> Tuple[Dict[str, Any], str, str, int]:
+    """
+    جلب صنف واحد — منفصل عن استيراد الكتالوج.
+
+    - allow_full_catalog=True: للمزامنة الخلفية فقط (all=1).
+    - المسار التفاعلي: pro_id الداخلي فقط و/أو حقل barcode — لا تحويل الباركود/النص إلى pro_id.
+    - إن أعاد API جدولاً كبيراً رغم all=0 نرفضه في المسار التفاعلي (لا استخراج من كتالوج كامل).
+    """
+    keys = [k for k in (barcode_keys or []) if k]
+    bc = keys[0] if keys else ""
+    qt = _text(text_query)
+    pid = _text(pro_id)
+    scheme = preferred_scheme or "https"
+    req_n = 0
+
+    def _hits_from(products: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if keys:
+            return filter_raw_products(products, barcode_keys=keys, max_hits=10)
+        if pid and looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+            out = []
+            for row in _table_rows(products):
+                if _text(row.get("id")) == pid:
+                    out.append(row)
+                    if len(out) >= 10:
+                        break
+            if out:
+                return out
+        return filter_raw_products(products, text_query=qt, max_hits=10)
+
+    # 1) كاش ذاكرة — يُتخطى عند refresh صريح؛ نُرجع النتائج المطابقة فقط وليس الكتالوج
+    if not bypass_mem_cache:
+        cached = _products_cache_get(host)
+        if cached:
+            products, scheme = cached
+            hits = _hits_from(products)
+            if hits:
+                return {"status": "succes", "table": hits}, scheme, "mem_cache", 0
+
+    # 2) كتالوج كامل — مسار المزامنة فقط
+    if allow_full_catalog:
+        products, scheme = store_api_download(
+            host,
+            token,
+            "products",
+            _products_download_extra(pro_id="", all_flag="1"),
+            verify_ssl=verify_ssl,
+            reauth=reauth,
+            record_request=record_request,
+            preferred_scheme=scheme or preferred_scheme,
+        )
+        req_n += 1
+        _products_cache_set(host, products, scheme)
+        hits = _hits_from(products)
+        mode = "full_extract" if hits else "full_miss"
+        return products, scheme, mode, req_n
+
+    # 3) مسار تفاعلي ضيق — بدون all=1 وبدون اعتبار الباركود/النص pro_id
+    attempts: List[Tuple[str, Dict[str, Any]]] = []
+    if looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+        attempts.append(
+            ("single_pro_id", _products_download_extra(pro_id=pid, all_flag="0"))
+        )
+    if bc:
+        # حقل barcode منفصل — ليس معرّف الصنف الداخلي (pro_id)
+        attempts.append(
+            ("single_barcode_field", _products_download_extra(pro_id="", all_flag="0", barcode=bc))
+        )
+
+    for mode, extra in attempts:
+        try:
+            products, scheme = store_api_download(
+                host,
+                token,
+                "products",
+                extra,
+                verify_ssl=verify_ssl,
+                reauth=reauth,
+                record_request=record_request,
+                preferred_scheme=scheme or preferred_scheme,
+            )
+            req_n += 1
+        except StoreApiError:
+            continue
+        rows = _table_rows(products)
+        if not rows:
+            continue
+        # رفض الكتالوج الكامل داخل الطلب التفاعلي
+        if len(rows) > _SINGLE_LOOKUP_MAX_ROWS:
+            continue
+        hits = _hits_from(products)
+        if not hits and looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+            hits = [r for r in rows if _text(r.get("id")) == pid][:10]
+        if not hits and len(rows) <= 5:
+            hits = rows[:10]
+        if hits:
+            return {"status": "succes", "table": hits}, scheme, mode, req_n
+
+    return {"status": "succes", "table": []}, scheme, "single_miss", req_n
 
 
 def fetch_location_catalog(
@@ -558,13 +805,20 @@ def fetch_location_catalog(
     lookup_model: Optional[Dict[str, Any]] = None,
     need_lookup_refresh: bool = False,
     need_model_refresh: bool = True,
+    # عند البحث عن صنف واحد: لا تنزّل كل الكتالوج إن أمكن
+    lookup_barcode_keys: Optional[List[str]] = None,
+    lookup_text_query: str = "",
+    lookup_pro_id: str = "",
+    products_mode: str = "all",  # all | single
+    allow_full_on_single: bool = False,
+    bypass_mem_cache: bool = False,
 ) -> Dict[str, Any]:
     """
     سحب كتالوج المواقع بأقل طلبات ممكنة:
     - Auth فقط إذا انتهى الـ token
     - company/trades إذا انتهى كاش الجداول
     - model يُحدَّث مع كل مزامنة (أسماء المواقع تتغير كثيراً)
-    - products دائماً عند المزامنة
+    - products: كامل (مزامنة منفصلة) أو محاولة صنف واحد (تفاعلي — بلا كتالوج)
     موقع الرف = model.name عبر model_id
     """
     batch_count = {"n": 0}
@@ -642,21 +896,44 @@ def fetch_location_catalog(
         )
         model_refreshed = True
 
-    products, scheme = store_api_download(
-        host,
-        token,
-        "products",
-        {
-            "pro_id": "",
-            "all": "1",
-            "view_items_by": "0",
-            "production_only": "0",
-        },
-        verify_ssl=verify_ssl,
-        reauth=_reauth,
-        record_request=_rec,
-        preferred_scheme=scheme or preferred_scheme,
-    )
+    products_fetch_mode = "full"
+    if products_mode == "single" and (lookup_barcode_keys or lookup_text_query or lookup_pro_id):
+        # لا نمرّر record_request لكل محاولة فاشلة كأنها استخدام حقيقي مضاعف —
+        # نحتسب عبر fetch_products_for_lookup ثم نضيف للعداد.
+        before = int(batch_count["n"])
+
+        def _rec_lookup(h: str, action: str, type_name: str) -> None:
+            _rec(h, action, type_name)
+
+        products, scheme, products_fetch_mode, _delta = fetch_products_for_lookup(
+            host,
+            token,
+            barcode_keys=lookup_barcode_keys,
+            text_query=lookup_text_query,
+            pro_id=lookup_pro_id,
+            verify_ssl=verify_ssl,
+            reauth=_reauth,
+            record_request=_rec_lookup,
+            preferred_scheme=scheme or preferred_scheme,
+            # المسار التفاعلي: ممنوع تنزيل الكتالوج هنا حتى لو طُلب سابقاً بالخطأ
+            allow_full_catalog=False if products_mode == "single" else bool(allow_full_on_single),
+            bypass_mem_cache=bool(bypass_mem_cache),
+        )
+        # batch_count already updated via _rec_lookup
+        _ = before
+    else:
+        # مزامنة كاملة فقط عبر هذا الفرع (ليس من طلب بحث تفاعلي)
+        products, scheme = store_api_download(
+            host,
+            token,
+            "products",
+            _products_download_extra(pro_id="", all_flag="1"),
+            verify_ssl=verify_ssl,
+            reauth=_reauth,
+            record_request=_rec,
+            preferred_scheme=scheme or preferred_scheme,
+        )
+        _products_cache_set(host, products, scheme)
 
     return {
         "token": token,
@@ -668,6 +945,7 @@ def fetch_location_catalog(
         "model": model,
         "lookup_refreshed": lookup_refreshed,
         "model_refreshed": model_refreshed,
+        "products_fetch_mode": products_fetch_mode,
         "request_count": int(batch_count["n"]),
         "token_exp_mono": time.monotonic() + _TOKEN_TTL_SEC,
         "token_exp_unix": time.time() + _TOKEN_TTL_SEC,
