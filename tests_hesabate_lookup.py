@@ -173,6 +173,43 @@ def test_single_mode_skips_lookup_tables() -> None:
         h.store_api_download = orig_dl  # type: ignore
 
 
+def test_full_catalog_only_when_allowed() -> None:
+    calls: list = []
+
+    def fake_download(host, token, type_name, extra=None, **kwargs):
+        calls.append(dict(extra or {}))
+        return {"status": "succes", "table": [{"id": "1"}] * 3}, "https"
+
+    orig = h.store_api_download
+    h.store_api_download = fake_download  # type: ignore
+    try:
+        h.invalidate_products_mem_cache("example.hesabate.com")
+        _, _, mode, n = h.fetch_products_for_lookup(
+            "example.hesabate.com",
+            "tok",
+            barcode_keys=["999"],
+            allow_full_catalog=False,
+            bypass_mem_cache=True,
+        )
+        _eq(mode, "barcode_filter_unsupported", "interactive rejects barcode")
+        _eq(n, 0, "no request")
+        _eq(calls, [], "no download")
+
+        h.invalidate_products_mem_cache("example.hesabate.com")
+        _, _, mode2, n2 = h.fetch_products_for_lookup(
+            "example.hesabate.com",
+            "tok",
+            allow_full_catalog=True,
+            bypass_mem_cache=True,
+        )
+        _eq(mode2, "full_miss", "manual import path")
+        _eq(n2, 1, "one full request")
+        _eq(calls[0].get("all"), "1", "all=1")
+        _eq(calls[0].get("pro_id", ""), "", "no pro_id on full catalog")
+    finally:
+        h.store_api_download = orig  # type: ignore
+
+
 def main() -> None:
     test_looks_like_product_id()
     test_fetch_lookup_never_uses_barcode_as_pro_id([])
@@ -180,6 +217,7 @@ def main() -> None:
     test_reject_full_catalog_in_interactive()
     test_no_loose_fallback_small_unrelated_rows()
     test_single_mode_skips_lookup_tables()
+    test_full_catalog_only_when_allowed()
     print("tests_hesabate_lookup: OK")
 
 
