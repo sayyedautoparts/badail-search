@@ -7220,8 +7220,6 @@ def home() -> HTMLResponse:
           return;
         }
         document.getElementById('stats').innerText = 'جاري البحث...';
-        // مزامنة خلفية خفيفة — لا تعطّل ظهور نتيجة البحث
-        ensureHesabateLocationSyncQuiet(false);
         let data = null;
         try {
           const params = lqBc ? new URLSearchParams() : new URLSearchParams({ q: lqText });
@@ -7230,8 +7228,9 @@ def home() -> HTMLResponse:
             if (lqCanon) params.set('q_barcode_canonical', lqCanon);
             if (barcodeDebug) params.set('barcode_debug', '1');
           }
+          // مهلة أطول: إن لم يوجد محلياً قد يحدّث من حساباتي للصنف الجديد
           const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 30000);
+          const to = setTimeout(() => ctrl.abort(), 180000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
             method: 'GET',
             cache: 'no-store',
@@ -7244,7 +7243,7 @@ def home() -> HTMLResponse:
           data = parsed;
         } catch (err) {
           let hint = 'تحقق من الإنترنت ثم أعد المحاولة.';
-          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار. أعد المحاولة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت مهلة الانتظار أثناء التحديث من حساباتي. أعد المحاولة.';
           else if (err && err.message) {
             const m = String(err.message);
             if (m.includes('search-locations-')) hint = `ردّ الخادم (${m.replace('search-locations-', 'رمز ')}) — قد يكون السيرفر مشغولاً؛ أعد المحاولة بعد قليل.`;
@@ -7255,6 +7254,7 @@ def home() -> HTMLResponse:
           locTable.style.display = 'none';
           return;
         }
+        if (data && data.usage) renderHesabateUsage(data.usage, data.message || '');
         const rawRows = Array.isArray(data && data.rows) ? data.rows : [];
         const seenKeys = new Set();
         const safeRows = [];
@@ -7265,8 +7265,12 @@ def home() -> HTMLResponse:
           safeRows.push(r);
         });
         const safeTotal = safeRows.length;
+        const refreshed = !!(data && data.refreshed_on_miss);
         const locSrc = lqBc ? `بحث بالباركود | النتائج: ${safeTotal}` : `نتائج المواقع: ${safeTotal}`;
-        let statLine = `${locSrc} | مصدر سريع: المخزون المحلي`;
+        let statLine = refreshed
+          ? `${locSrc} | تم التحديث من حساباتي للصنف الجديد`
+          : `${locSrc} | مصدر سريع: المخزون المحلي`;
+        if (data && data.message) statLine += ` | ${data.message}`;
         if (barcodeDebug && data && data.barcode_meta) {
           statLine += ` | تتبع: ${data.barcode_meta.match_kind || ''} — مفاتيح: ${(data.barcode_meta.keys_tried || []).join(',')}`;
           logBarcodeClientDebug('search-result-meta', data.barcode_meta);
@@ -7294,8 +7298,8 @@ def home() -> HTMLResponse:
         locTable.style.display = showL ? 'table' : 'none';
         if (!showL) {
           document.getElementById('stats').innerText = lqBc
-            ? 'لا يوجد صنف بهذا الباركود في المخزون المحلي. جرّب «تحديث من حساباتي الآن».'
-            : 'لا توجد نتيجة. إن كان الصنف جديداً اضغط «تحديث من حساباتي الآن».';
+            ? 'لا يوجد صنف بهذا الباركود في حساباتي (بعد التحديث).'
+            : 'لا توجد نتيجة لهذا البحث في حساباتي.';
         }
         return;
       }
@@ -8730,6 +8734,44 @@ def search_locations(
                 )
 
                 prepared = _prepare_location_search_rows(rows)
+                # صنف جديد؟ إن لم يوجد محلياً اسحب من حساباتي مرة واحدة ثم أعد المطابقة
+                if (not prepared) and hesabate_configured():
+                    try:
+                        live = live_lookup_locations_from_hesabate(
+                            q_barcode=qb_raw,
+                            barcode_keys=b_keys,
+                        )
+                        if live.get("ok"):
+                            out_live = {
+                                "total_rows": int(live.get("total_rows") or 0),
+                                "rows": live.get("rows") or [],
+                                **meta,
+                                "has_more": False,
+                                "live": True,
+                                "refreshed_on_miss": True,
+                                "message": live.get("message")
+                                or (
+                                    "تم التحديث من حساباتي — الصنف غير موجود."
+                                    if not live.get("rows")
+                                    else "تم إيجاد الصنف بعد التحديث من حساباتي."
+                                ),
+                                "usage": live.get("usage") or {},
+                            }
+                            if debug_req:
+                                out_live["barcode_meta"] = {
+                                    "keys_tried": list(b_keys),
+                                    "match_kind": "hesabate_refresh_on_miss",
+                                    "raw_input": qb_raw,
+                                    "canonical_primary": bc_primary,
+                                    "client_canonical_hint": (q_barcode_canonical or "").strip(),
+                                    "server_canonical": normalize_barcode_lookup_key(qb_raw),
+                                }
+                            return out_live
+                    except Exception as exc:
+                        _barcode_search_debug_log(
+                            debug_req, "refresh-on-miss-failed", raw=str(exc)[:200]
+                        )
+
                 out = {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
                 if debug_req:
                     out["barcode_meta"] = {
@@ -8759,6 +8801,29 @@ def search_locations(
                 offset=off,
             )
             prepared = _prepare_location_search_rows(rows)
+            if (not prepared) and hesabate_configured() and looks_like_item_code(qt):
+                try:
+                    live = live_lookup_locations_from_hesabate(q_text=qt)
+                    if live.get("ok"):
+                        return {
+                            "total_rows": int(live.get("total_rows") or 0),
+                            "rows": live.get("rows") or [],
+                            **meta,
+                            "has_more": False,
+                            "live": True,
+                            "refreshed_on_miss": True,
+                            "message": live.get("message")
+                            or (
+                                "تم التحديث من حساباتي — الصنف غير موجود."
+                                if not live.get("rows")
+                                else "تم إيجاد الصنف بعد التحديث من حساباتي."
+                            ),
+                            "usage": live.get("usage") or {},
+                        }
+                except Exception as exc:
+                    _barcode_search_debug_log(
+                        debug_req, "refresh-on-miss-text-failed", raw=str(exc)[:200]
+                    )
             return {"total_rows": len(prepared), "rows": prepared, **meta, "has_more": has_more}
         except HTTPException:
             raise
