@@ -61,13 +61,15 @@ def test_fetch_lookup_uses_real_pro_id_all1(monkey_calls: list) -> None:
         products, scheme, mode, n = h.fetch_products_for_lookup(
             "example.hesabate.com",
             "tok",
-            barcode_keys=["999"],
+            barcode_keys=["OLD-BARCODE"],
             pro_id="77",
             allow_full_catalog=False,
             bypass_mem_cache=True,
         )
         _eq(mode, "single_pro_id", "mode")
+        # pro_id هو الهوية — حتى لو الباركود المطلوب قديم يختلف عن الحالي
         _eq(len(products.get("table") or []), 1, "one hit")
+        _eq(products["table"][0]["barcode"], "999", "updated barcode kept")
         _eq(monkey_calls[0].get("pro_id"), "77", "real pro_id sent")
         _eq(monkey_calls[0].get("all"), "1", "all=1 required for single item")
         _eq(n, 1, "one request")

@@ -796,10 +796,8 @@ def fetch_products_for_lookup(
         if len(rows) > _SINGLE_LOOKUP_MAX_ROWS:
             _note(products_fetch_mode="rejected_full_catalog")
             return {"status": "succes", "table": []}, scheme, "rejected_full_catalog", req_n
+        # المعرّف الداخلي هو الهوية الثابتة — الباركود قد يتغيّر في حساباتي
         hits = [r for r in rows if _text(r.get("id")) == pid]
-        # إن طُلب باركود محدد: لا تعرض الصنف إن لم يطابق (حتى مع pro_id صحيح)
-        if keys:
-            hits = filter_raw_products({"table": hits}, barcode_keys=keys, max_hits=10)
         if hits:
             _note(products_fetch_mode="single_pro_id")
             return {"status": "succes", "table": hits}, scheme, "single_pro_id", req_n
@@ -842,11 +840,13 @@ def fetch_location_catalog(
     products_mode: str = "all",  # all | single
     allow_full_on_single: bool = False,
     bypass_mem_cache: bool = False,
+    force_model_refresh: bool = False,
 ) -> Dict[str, Any]:
     """
     سحب كتالوج المواقع بأقل طلبات ممكنة:
     - Auth فقط إذا انتهى الـ token
-    - products single: لا يجلب company/trades/model — يستخدم الكاش إن وُجد ويعرض الصنف فوراً
+    - products single: لا يجلب company/trades افتراضياً — يعرض الصنف فوراً
+    - force_model_refresh: يجلب model حتى في single لتحديث أسماء المواقع
     - products all: يحدّث company/trades/model حسب الحاجة ثم الكتالوج
     موقع الرف = model.name عبر model_id (عند توفر كاش model)
     """
@@ -900,7 +900,8 @@ def fetch_location_catalog(
         lookup_barcode_keys or lookup_text_query or lookup_pro_id
     )
 
-    # في جلب صنف واحد: لا نعطّل العرض بانتظار company/trades/model
+    # في جلب صنف واحد: لا نعطّل العرض بانتظار company/trades
+    # لكن عند force_model_refresh نجلب model لتحديث اسم الموقع
     if not single_mode:
         if need_lookup_refresh or not company or not trades:
             t0 = time.perf_counter()
@@ -944,6 +945,20 @@ def fetch_location_catalog(
             )
             timing["model_ms"] = int((time.perf_counter() - t0) * 1000)
             model_refreshed = True
+    elif force_model_refresh:
+        t0 = time.perf_counter()
+        model, scheme = store_api_download(
+            host,
+            token,
+            "model",
+            verify_ssl=verify_ssl,
+            reauth=_reauth,
+            record_request=_rec,
+            preferred_scheme=scheme or preferred_scheme,
+            timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+        )
+        timing["model_ms"] = int((time.perf_counter() - t0) * 1000)
+        model_refreshed = True
 
     products_fetch_mode = "full"
     products_metrics: Dict[str, Any] = {}
@@ -982,7 +997,7 @@ def fetch_location_catalog(
 
     timing["total_ms"] = int((time.perf_counter() - t_all) * 1000)
     timing["request_count"] = int(batch_count["n"])
-    timing["skipped_lookup_tables"] = bool(single_mode)
+    timing["skipped_lookup_tables"] = bool(single_mode and not model_refreshed and not lookup_refreshed)
 
     return {
         "token": token,
