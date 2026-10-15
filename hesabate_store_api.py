@@ -340,26 +340,25 @@ def _key_variants(code: str) -> List[str]:
 def row_matches_barcode_keys(row: Dict[str, str], barcode_keys: List[str]) -> bool:
     if not barcode_keys:
         return False
-    keys = {_compact_code(k) for k in barcode_keys if _compact_code(k)}
+    keys: set = set()
+    for k in barcode_keys:
+        for v in _key_variants(k):
+            keys.add(v)
     if not keys:
         return False
-    candidates = [
-        _compact_code(row.get("barcode")),
-        _compact_code(row.get("original_number")),
-        _compact_code(row.get("product_id")),
-    ]
-    notes = _text(row.get("notes"))
-    if notes:
-        candidates.append(_compact_code(notes))
+    candidates: List[str] = []
+    for raw in (row.get("barcode"), row.get("original_number"), row.get("notes")):
+        raw_s = _text(raw)
+        parts = re.split(r"[\s,/|;]+", raw_s) if raw_s else []
+        if raw_s and raw_s not in parts:
+            parts.insert(0, raw_s)
+        for part in parts:
+            for v in _key_variants(part):
+                if v not in candidates:
+                    candidates.append(v)
     for c in candidates:
-        if not c:
-            continue
         if c in keys:
             return True
-        for k in keys:
-            # تجنّب تطابق أجزاء قصيرة جداً (مثل id=1 داخل رقم أطول)
-            if k and len(k) >= 4 and len(c) >= 4 and (k in c or c in k):
-                return True
     return False
 
 
@@ -426,10 +425,12 @@ def filter_raw_products(
     *,
     barcode_keys: Optional[List[str]] = None,
     text_query: str = "",
+    max_hits: int = 30,
 ) -> List[Dict[str, Any]]:
     """
-    تصفية سريعة على جدول products الخام قبل التحويل الكامل —
-    أسرع بكثير عند البحث عن صنف واحد من بين عشرات الآلاف.
+    تصفية سريعة على جدول products الخام قبل التحويل الكامل.
+    مطابقة الباركود/الرقم: مساواة تامة بعد التطبيع (مع/بدون أصفار بادئة) — بدون contains
+    حتى لا تُرجع مئات النتائج الخاطئة وتكسر الطلب.
     """
     keys: set = set()
     for k in barcode_keys or []:
@@ -446,16 +447,18 @@ def filter_raw_products(
         pid = _text(prod.get("id"))
         if not pid or pid in seen:
             continue
+        # لا نطابق على id الرقمي وحده — يسبب إيجابيات خاطئة كثيرة
         cand_codes: List[str] = []
-        for raw in (
-            prod.get("barcode"),
-            prod.get("model_no"),
-            prod.get("other_codes"),
-            prod.get("id"),
-        ):
-            for v in _key_variants(raw):
-                if v not in cand_codes:
-                    cand_codes.append(v)
+        for raw in (prod.get("barcode"), prod.get("model_no"), prod.get("other_codes")):
+            # other_codes قد يحوي عدة أكواد مفصولة
+            raw_s = _text(raw)
+            parts = re.split(r"[\s,/|;]+", raw_s) if raw_s else []
+            if raw_s and raw_s not in parts:
+                parts.insert(0, raw_s)
+            for part in parts:
+                for v in _key_variants(part):
+                    if v not in cand_codes:
+                        cand_codes.append(v)
         name = _text(prod.get("name"))
         note = _text(prod.get("note"))
         hit = False
@@ -464,28 +467,17 @@ def filter_raw_products(
                 if c in keys:
                     hit = True
                     break
-                for k in keys:
-                    if len(k) >= 4 and len(c) >= 4 and (k in c or c in k):
-                        hit = True
-                        break
-                if hit:
-                    break
-        if (not hit) and text:
+        if (not hit) and text and not keys:
+            # بحث نصي/رقم أصلي فقط عند عدم وجود مفاتيح باركود
             for f in (name, note, _text(prod.get("barcode")), _text(prod.get("model_no")), _text(prod.get("other_codes"))):
                 if not f:
                     continue
-                if text_lower in f.lower():
+                if text_lower and text_lower in f.lower():
                     hit = True
                     break
                 for fc in _key_variants(f):
                     if fc in text_keys:
                         hit = True
-                        break
-                    for tk in text_keys:
-                        if len(tk) >= 4 and len(fc) >= 4 and (tk in fc or fc in tk):
-                            hit = True
-                            break
-                    if hit:
                         break
                 if hit:
                     break
@@ -493,6 +485,8 @@ def filter_raw_products(
             continue
         seen.add(pid)
         out.append(prod)
+        if len(out) >= max(1, int(max_hits)):
+            break
     return out
 
 

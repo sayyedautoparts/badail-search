@@ -4316,16 +4316,18 @@ def upsert_matched_location_rows(mapped_rows: list[dict[str, str]]) -> int:
             nb = location_row_normalized_barcode_value(barcode, "")
             nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
             if barcode:
+                nb_key = normalize_barcode_lookup_key(barcode) or barcode
                 conn.execute(
                     """
                     DELETE FROM location_rows
                     WHERE source_file = ?
                       AND (
                         barcode = ?
-                        OR normalized_barcode LIKE ?
+                        OR normalized_barcode = ?
+                        OR normalized_barcode = ?
                       )
                     """,
-                    (source_key, barcode, f"% {_like_pattern_escape_sql(normalize_barcode_lookup_key(barcode) or barcode)} %"),
+                    (source_key, barcode, nb_key, f" {nb_key} "),
                 )
             elif original_number:
                 conn.execute(
@@ -7491,6 +7493,13 @@ def home() -> HTMLResponse:
             clearTimeout(to2);
             const live = await readJsonSafe(res2);
             if (!res2.ok) throw new Error(live.detail || `hesabate-lookup-${res2.status}`);
+            if (!live || live.ok === false) {
+              document.getElementById('stats').innerText = (live && live.message) || 'تعذر الجلب من حساباتي.';
+              locWrap.style.display = 'none';
+              locTable.style.display = 'none';
+              if (live && live.usage) renderHesabateUsage(live.usage, live.message || '');
+              return;
+            }
             data = live;
           } catch (err2) {
             let hint2 = 'تعذر الجلب من حساباتي. أعد المحاولة أو اضغط «تحديث من حساباتي الآن».';
@@ -9073,14 +9082,38 @@ def hesabate_lookup_item(payload: HesabateLookupIn) -> dict:
     qb = str(payload.barcode or "").strip()
     qt = str(payload.q or "").strip()
     if not qb and not qt:
-        raise HTTPException(status_code=400, detail="أدخل باركود أو رقم أصلي.")
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": "أدخل باركود أو رقم أصلي.",
+            "usage": hesabate_usage_summary(),
+        }
     if not hesabate_configured():
-        raise HTTPException(status_code=400, detail="حساباتي غير مُعدّ على السيرفر.")
-    live = live_lookup_locations_from_hesabate(
-        q_barcode=qb,
-        q_text=qt,
-        barcode_keys=barcode_search_keys(qb) if qb else None,
-    )
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": "حساباتي غير مُعدّ على السيرفر.",
+            "usage": hesabate_usage_summary(),
+        }
+    try:
+        live = live_lookup_locations_from_hesabate(
+            q_barcode=qb,
+            q_text=qt,
+            barcode_keys=barcode_search_keys(qb) if qb else None,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "live": True,
+            "total_rows": 0,
+            "rows": [],
+            "message": f"فشل الجلب: {type(exc).__name__}: {exc}",
+            "usage": hesabate_usage_summary(),
+        }
     return {
         **live,
         "refreshed_on_miss": True,
@@ -9207,25 +9240,26 @@ self.addEventListener('fetch', (event) => {{
     event.respondWith((async () => {{
       const cached = await caches.match('/');
       const net = fetch(req).then((res) => {{
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+        if (res && res.ok) {{
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+        }}
         return res;
       }});
-      if (cached) {{
-        net.catch(() => {{}});
-        return cached;
-      }}
-      return net.catch(() => caches.match('/'));
+      // فضّل الشبكة؛ عند فشل/500 استخدم الكاش الصالح فقط
+      return net.catch(async () => cached || Response.error());
     }})());
     return;
   }}
 
   event.respondWith(
-    caches.match(req).then((cached) => cached || fetch(req).then((res) => {{
-      const copy = res.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+    fetch(req).then((res) => {{
+      if (res && res.ok) {{
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+      }}
       return res;
-    }}).catch(() => caches.match('/')))
+    }}).catch(() => caches.match(req).then((cached) => cached || caches.match('/')))
   );
 }});
 """
