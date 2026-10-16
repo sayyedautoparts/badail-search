@@ -6847,16 +6847,19 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
+      /* Rongta RP4xx Series — لزيق دبل 120×25 مم */
       @page {
-        size: 12cm 2.5cm;
+        size: 120mm 25mm;
         margin: 0;
       }
       html, body {
-        width: 12cm !important;
-        height: 2.5cm !important;
+        width: 120mm !important;
+        height: 25mm !important;
         margin: 0 !important;
         padding: 0 !important;
         background: #fff !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
       body * { visibility: hidden !important; }
       .print-label-sheet, .print-label-sheet * { visibility: visible !important; }
@@ -7283,10 +7286,13 @@ def home() -> HTMLResponse:
         <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal(true);}" />
         <label class="field-label" for="printQtyInput">عدد الحبات للطباعة</label>
         <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-        <p class="muted" style="margin:6px 0 0;font-size:12px;">الطباعة لزيق دبل: ورقة 12×2.5 سم = ملصقان 6×2.5 سم، وكل محتوى داخل الملصق.</p>
+        <p class="muted" style="margin:6px 0 0;font-size:12px;">
+          الطابعة: <strong>Rongta RP4xx Series</strong> · لزيق دبل 120×25 مم (ملصقان 60×25 مم).
+          من نافذة الطباعة اختر هذه الطابعة، الحجم 120×25 مم، بدون هوامش، مقياس 100%.
+        </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
-          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة</button>
+          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
         </div>
         <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
         <div id="printOriginalWrap" style="display:none;margin-top:10px;">
@@ -7449,9 +7455,12 @@ def home() -> HTMLResponse:
     const SCRIPT_XLSX = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
     const SCRIPT_QR = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
     const SCRIPT_JSBARCODE = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js';
+    /** اسم الطابعة كما يظهر في ويندوز بعد تثبيت درايفر Rongta */
+    const RONGTA_PRINTER_NAME = 'Rongta RP4xx Series';
     const loadedScripts = {};
     let printBarcodeItem = null;
     let printBarcodeRows = [];
+    let printJobTitleRestore = null;
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
     let snapshotLoadPromise = null;
     let lastNotifiedVersion = '';
@@ -8456,8 +8465,30 @@ def home() -> HTMLResponse:
       }
       // أعد للصنف المعتاد قبل نافذة الطباعة
       sheet.className = 'print-label-sheet';
-      setPrintFetchStatus(`جاهز للطباعة · ${qty} ملصق (لزيق دبل 12×2.5 سم)`);
-      window.print();
+      setPrintFetchStatus(
+        `جاهز · ${qty} ملصق · اختر الطابعة «${RONGTA_PRINTER_NAME}» · حجم 120×25 مم · مقياس 100% · بدون هوامش`
+      );
+      try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
+      // اسم مهمة الطباعة يساعد تمييز المهمة؛ اختيار الطابعة من نافذة النظام
+      printJobTitleRestore = document.title;
+      document.title = `Barcode-${barcode} · ${RONGTA_PRINTER_NAME}`;
+      const restoreTitle = () => {
+        if (printJobTitleRestore != null) {
+          document.title = printJobTitleRestore;
+          printJobTitleRestore = null;
+        }
+        window.removeEventListener('afterprint', restoreTitle);
+      };
+      window.addEventListener('afterprint', restoreTitle);
+      // المتصفح لا يفرض الطابعة برمجياً — لازم Rongta تكون مختارة/افتراضية على الجهاز
+      setTimeout(() => {
+        try {
+          window.print();
+        } catch (_) {
+          restoreTitle();
+          setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن درايفر Rongta RP4xx Series مثبت.');
+        }
+      }, 50);
     }
 
     async function forceHesabateFullImport() {
