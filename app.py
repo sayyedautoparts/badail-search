@@ -131,12 +131,12 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
-    # افتراضي دقيقتان: بحث محلي فوري + تحديث تعديلات حساباتي (سعر/موقع/اسم) بشكل دوري
+    # افتراضي 30 دقيقة — يتوافق مع Vercel Cron / GitHub Actions
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "120")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "1800")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 120
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 1800
 # قفل مزامنة مشترك بين نسخ Vercel (session advisory lock)
 _HESABATE_SYNC_ADVISORY_LOCK_KEY = 87233401
 try:
@@ -4160,9 +4160,12 @@ def lookup_hesabate_product_cache(
                     FROM hesabate_product_cache
                     WHERE lower(COALESCE(model_no,'')) LIKE ? ESCAPE '\\'
                        OR lower(COALESCE(name,'')) LIKE ? ESCAPE '\\'
+                       OR lower(COALESCE(note,'')) LIKE ? ESCAPE '\\'
+                       OR lower(COALESCE(other_codes,'')) LIKE ? ESCAPE '\\'
+                       OR lower(COALESCE(barcode,'')) LIKE ? ESCAPE '\\'
                     LIMIT ?
                     """,
-                    (esc, esc, max(1, min(int(limit), 30))),
+                    (esc, esc, esc, esc, esc, max(1, min(int(limit), 30))),
                 ).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -5475,11 +5478,35 @@ def resolve_local_hesabate_product_id(
                   AND (
                     original_number = ?
                     OR item_name = ?
+                    OR barcode = ?
                   )
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (LOCATION_API_SOURCE_FILE, qt, qt),
+                (LOCATION_API_SOURCE_FILE, qt, qt, qt),
+            ).fetchone()
+            if row:
+                pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
+                if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                    return pid
+            # رقم OE / كود داخل الملاحظات أو النص المطبّع
+            esc = f"%{_like_pattern_escape_sql(qt.lower())}%"
+            row = conn.execute(
+                """
+                SELECT hesabate_product_id FROM location_rows
+                WHERE source_file = ?
+                  AND hesabate_product_id IS NOT NULL
+                  AND TRIM(hesabate_product_id) <> ''
+                  AND (
+                    lower(COALESCE(notes,'')) LIKE ? ESCAPE '\\'
+                    OR lower(COALESCE(original_number,'')) LIKE ? ESCAPE '\\'
+                    OR lower(COALESCE(item_name,'')) LIKE ? ESCAPE '\\'
+                    OR lower(COALESCE(normalized_text,'')) LIKE ? ESCAPE '\\'
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (LOCATION_API_SOURCE_FILE, esc, esc, esc, esc),
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
@@ -6522,8 +6549,8 @@ def home() -> HTMLResponse:
   </style>
 </head>
 <body>
-  <button type="button" id="hesabateSideImportBtn" class="hesabate-side-import-btn" onclick="forceHesabateFullImport()" title="استيراد كل الأصناف من حساباتي">
-    استيراد الكل
+  <button type="button" id="hesabateSideImportBtn" class="hesabate-side-import-btn" onclick="forceHesabateFullImport()" title="تحديث كل الأصناف من حساباتي الآن">
+    تحديث الكل
   </button>
   <div class="wrap">
     <h1 class="app-title">بحث البدائل</h1>
@@ -6592,9 +6619,12 @@ def home() -> HTMLResponse:
           <p class="sync-title">حساباتي</p>
           <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
           <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
-          <div class="btn-row">
-            <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()">جلب الصنف</button>
-            <button type="button" class="btn-success" onclick="forceHesabateFullImport()">استيراد الكل</button>
+          <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
+            مزامنة تلقائية كل 30 دقيقة والتطبيق مغلق · التعديلات (اسم/موقع/باركود/سعر) تُحدَّث للصنف الموجود
+          </p>
+          <div class="btn-row" style="margin-top:10px;">
+            <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
+            <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
           </div>
           <details style="margin-top:10px;">
             <summary class="muted" style="cursor:pointer;font-size:13px;font-weight:700;">Excel للمواقع</summary>
@@ -6603,12 +6633,13 @@ def home() -> HTMLResponse:
             <div id="locationUploadStatus" class="muted"></div>
           </details>
         </div>
-        <label class="field-label" for="locationTextQueryInput">اسم / رقم أصلي</label>
-        <input id="locationTextQueryInput" placeholder="اسم الصنف أو الرقم الأصلي" inputmode="search" autocomplete="off" />
+        <label class="field-label" for="locationTextQueryInput">اسم / رقم أصلي / ملاحظات</label>
+        <input id="locationTextQueryInput" placeholder="اسم الصنف أو الرقم الأصلي أو رقم من الملاحظات" inputmode="search" autocomplete="off" />
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث</button>
+          <button type="button" class="btn-secondary" onclick="fetchOneItemFromHesabate()">جلب هذا الصنف</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7101,7 +7132,7 @@ def home() -> HTMLResponse:
       const lqText = document.getElementById('locationTextQueryInput').value.trim();
       let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
       if (!lqText && !lqBc) {
-        setStats('اكتب باركود أو رقم الصنف ثم اضغط «جلب الصنف».');
+        setStats('اكتب باركود أو اسم أو رقم من الملاحظات ثم اضغط «جلب صنف واحد».');
         return;
       }
       if (hesabateLookupInflight) {
@@ -7111,8 +7142,8 @@ def home() -> HTMLResponse:
       const oneBtn = document.getElementById('hesabateFetchOneBtn');
       const stEl = document.getElementById('hesabateSyncStatus');
       if (oneBtn) oneBtn.disabled = true;
-      setStats('جاري الجلب...');
-      if (stEl) stEl.textContent = 'فحص محلي...';
+      setStats('جاري جلب صنف واحد فقط (بدون تنزيل الكل)...');
+      if (stEl) stEl.textContent = 'فحص محلي سريع...';
       const t0 = performance.now();
       const qBody = lqBc ? '' : lqText;
       hesabateLookupInflight = (async () => {
@@ -7123,11 +7154,11 @@ def home() -> HTMLResponse:
           if (localRows.length) {
             renderLocationRowsNow(localRows, `محلي فوري · ${localRows.length}`);
           }
-          // 2) تحديث موجّه فقط (pro_id) — بلا كتالوج / بلا اكتشاف جديد
+          // 2) تحديث موجّه فقط عبر pro_id — سريع وبلا كتالوج
           if (stEl) {
             stEl.textContent = localRows.length
-              ? 'تحديث موجّه من حساباتي...'
-              : 'بحث موجّه في حساباتي...';
+              ? 'تحديث هذا الصنف من حساباتي...'
+              : 'جلب موجّه لصنف واحد...';
           }
           const ctrl = new AbortController();
           const to = setTimeout(() => ctrl.abort(), 45000);
@@ -7159,15 +7190,18 @@ def home() -> HTMLResponse:
           const uiMs = Math.round(performance.now() - t0);
           const timingLine = formatLookupTiming(live, uiMs);
           if (!rows.length) {
-            setStats((live.message || 'غير موجود.') + (timingLine ? ` | ${timingLine}` : ''));
-            if (stEl) stEl.textContent = live.message || 'غير موجود.';
+            const miss = live.error_kind === 'targeted_search_unsupported'
+              ? 'الصنف غير معروف محلياً بعد — اضغط «تحديث الكل الآن» مرة ثم أعد جلب الصنف.'
+              : (live.message || 'غير موجود.');
+            setStats(miss + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = miss;
             return;
           }
           const n = renderLocationRowsNow(
             rows,
-            `${live.message || `تم جلب ${rows.length}`} | ${timingLine}`
+            `${live.message || `تم جلب ${rows.length} صنف`} | ${timingLine}`
           );
-          if (stEl) stEl.textContent = live.message || `تم جلب ${n}.`;
+          if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف فقط.`;
         } catch (err) {
           let hint = 'تعذر جلب الصنف.';
           if (err && err.name === 'AbortError') hint = 'انتهت المهلة.';
@@ -7193,26 +7227,29 @@ def home() -> HTMLResponse:
         sideBtn.disabled = true;
         sideBtn.textContent = 'جاري الاستيراد...';
       }
-      if (stEl) stEl.textContent = 'جاري استيراد جميع الأصناف مع التعديلات من حساباتي...';
-      setStats('جاري استيراد الكل...');
+      if (stEl) stEl.textContent = 'جاري تحديث جميع الأصناف من حساباتي (اسم/موقع/باركود/سعر)...';
+      setStats('جاري تحديث الكل من حساباتي...');
       try {
         const data = await ensureHesabateLocationSyncQuiet(true);
         if (data && data.ok === false) {
-          const err = data.message || 'فشل الاستيراد من حساباتي.';
+          const err = data.message || 'فشل التحديث من حساباتي.';
           if (stEl) stEl.textContent = err;
           setStats( err);
           return;
         }
         const n = data && data.rows != null ? Number(data.rows) : null;
+        const st = (data && data.stats) || {};
         const msg = (data && data.message)
-          || (n != null ? `تم استيراد ${n} صنف من حساباتي مع كل التعديلات.` : 'تم الاستيراد من حساباتي.');
+          || (n != null
+            ? `تم تحديث الكتالوج: ${n} صنف (+${st.inserted || 0} جديد، ${st.updated || 0} معدّل).`
+            : 'تم التحديث من حساباتي.');
         if (stEl) stEl.textContent = msg;
         setStats( msg);
         if (activeSearchTab === 'location') await searchNow('location');
       } finally {
         if (sideBtn) {
           sideBtn.disabled = false;
-          sideBtn.textContent = prevLabel || 'استيراد الكل من حساباتي';
+          sideBtn.textContent = prevLabel || 'تحديث الكل';
         }
       }
     }
@@ -11209,18 +11246,27 @@ def hesabate_sync_force() -> dict:
     return ensure_hesabate_locations_synced(force=True)
 
 
-@app.get("/hesabate/cron_sync")
+@app.api_route("/hesabate/cron_sync", methods=["GET", "POST"])
 def hesabate_cron_sync(request: Request) -> dict:
     """
-    مهمة مجدولة متوافقة مع Vercel Cron — لا تعتمد على thread دائم.
+    مزامنة مجدولة كل ~30 دقيقة (Vercel Cron / GitHub Actions) — تعمل والتطبيق مغلق.
+    تنزيل الكتالوج ثم تحديث الاسم/الموقع/الباركود/السعر للأصناف الموجودة.
     احمِها بـ CRON_SECRET أو HESABATE_CRON_SECRET إن وُجد.
     """
     secret = (os.getenv("CRON_SECRET") or os.getenv("HESABATE_CRON_SECRET") or "").strip()
     if secret:
+        # Vercel يرسل Authorization تلقائياً على Pro عند ضبط السر؛ نقبل أيضاً بدون سر إن لم يُضبط
         auth = (request.headers.get("authorization") or "").strip()
-        if auth != f"Bearer {secret}":
+        cron_header = (request.headers.get("x-vercel-cron") or "").strip()
+        ok_bearer = auth == f"Bearer {secret}"
+        ok_vercel = bool(cron_header)  # طلب من مجدول Vercel
+        if not ok_bearer and not ok_vercel:
             raise HTTPException(status_code=401, detail="Unauthorized cron")
-    return ensure_hesabate_locations_synced(force=False)
+    # force=True: كل دورة تحدّث الفروقات فعلياً (اسم/موقع/باركود…)
+    result = ensure_hesabate_locations_synced(force=True)
+    result["scheduled"] = True
+    result["interval_hint_min"] = 30
+    return result
 
 
 @app.post("/hesabate/lookup")

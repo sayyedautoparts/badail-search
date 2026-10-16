@@ -1,0 +1,33 @@
+# Backup schedule if Vercel cron is unavailable: every 30 minutes.
+# Required GitHub secrets: APP_URL (e.g. https://badail-search.vercel.app), CRON_SECRET (same as Vercel).
+name: Hesabate catalog sync
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger Hesabate sync
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ]; then
+            echo "Missing GitHub secret APP_URL — skipping (Vercel cron may still run)."
+            exit 0
+          fi
+          URL="${APP_URL%/}/hesabate/cron_sync"
+          HDR=()
+          if [ -n "${CRON_SECRET:-}" ]; then
+            HDR=(-H "Authorization: Bearer ${CRON_SECRET}")
+          fi
+          echo "POST/GET sync -> $URL"
+          curl -fsS --max-time 290 -X GET "$URL" "${HDR[@]}" -o /tmp/sync.json
+          head -c 2000 /tmp/sync.json
+          echo
