@@ -6800,8 +6800,99 @@ def home() -> HTMLResponse:
       color: var(--primary);
       box-shadow: 0 2px 8px rgba(21, 32, 51, .08);
     }
+    .print-barcode-tab-btn {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0 0 10px;
+      padding: 14px 12px;
+      min-height: 48px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #1b8a52 0%, #146c40 100%);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 900;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(20, 108, 64, .28);
+    }
+    .print-barcode-tab-btn.active,
+    .print-barcode-tab-btn:active {
+      filter: brightness(1.05);
+      box-shadow: 0 2px 10px rgba(20, 108, 64, .4);
+    }
+    .print-preview-card {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #cfe3d6;
+      background: #f4fbf6;
+    }
+    .print-preview-card .pv-name {
+      font-weight: 900;
+      font-size: 1.05rem;
+      margin: 0 0 8px;
+      color: var(--ink);
+    }
+    .print-preview-card .pv-row {
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      font-weight: 700;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .print-label-sheet { display: none; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
+    @media print {
+      body * { visibility: hidden !important; }
+      .print-label-sheet, .print-label-sheet * { visibility: visible !important; }
+      .print-label-sheet {
+        display: block !important;
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 0;
+      }
+      .print-label {
+        page-break-after: always;
+        break-after: page;
+        width: 100%;
+        min-height: 28mm;
+        box-sizing: border-box;
+        padding: 2mm 3mm;
+        text-align: center;
+        font-family: Tahoma, Arial, sans-serif;
+        color: #000;
+      }
+      .print-label:last-child { page-break-after: auto; break-after: auto; }
+      .print-label .pl-name {
+        font-size: 13px;
+        font-weight: 900;
+        margin: 0 0 2mm;
+        line-height: 1.25;
+      }
+      .print-label .pl-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 3mm;
+        font-size: 11px;
+        font-weight: 800;
+        margin: 0 0 2mm;
+      }
+      .print-label .pl-meta span { flex: 1; }
+      .print-label .pl-meta .pl-loc { text-align: left; }
+      .print-label .pl-meta .pl-orig { text-align: right; }
+      .print-label svg { max-width: 100%; height: 14mm; }
+      .print-label .pl-bc-text {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .04em;
+        margin-top: 1mm;
+      }
+    }
     .sync-box {
       margin: 0 0 12px;
       padding: 12px;
@@ -7046,11 +7137,39 @@ def home() -> HTMLResponse:
     </details>
 
     <div class="card">
+      <button type="button" id="tabPrintBtn" class="print-barcode-tab-btn" onclick="setSearchTab('print')">طباعة باركود</button>
       <div class="tabs">
         <button id="tabMainBtn" type="button" class="tab-btn active" onclick="setSearchTab('main')">رئيسي</button>
         <button id="tabSizeBtn" type="button" class="tab-btn" onclick="setSearchTab('size')">قياسات</button>
         <button id="tabWiperBtn" type="button" class="tab-btn" onclick="setSearchTab('wiper')">قشطان</button>
         <button id="tabLocBtn" type="button" class="tab-btn" onclick="setSearchTab('location')">موقع</button>
+      </div>
+
+      <div id="printSearchPanel" class="search-panel">
+        <label class="field-label" for="printQueryInput">رقم الصنف أو باركود القطعة</label>
+        <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();fetchItemForBarcodePrint();}" />
+        <label class="field-label" for="printQtyInput">عدد الحبات للطباعة</label>
+        <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+        <div class="btn-row" style="margin-top:10px;">
+          <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
+          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة</button>
+        </div>
+        <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
+        <div id="printOriginalWrap" style="display:none;margin-top:10px;">
+          <label class="field-label" for="printOriginalSelect">اختر الرقم الأصلي للطباعة</label>
+          <select id="printOriginalSelect"></select>
+        </div>
+        <div id="printPreviewCard" class="print-preview-card" style="display:none;">
+          <p class="pv-name" id="printPvName">—</p>
+          <div class="pv-row">
+            <span id="printPvOriginal">الأصلي: —</span>
+            <span id="printPvLocation">الموقع: —</span>
+          </div>
+          <div style="text-align:center;">
+            <svg id="printPvBarcode"></svg>
+            <div id="printPvBarcodeText" style="font-weight:800;margin-top:4px;"></div>
+          </div>
+        </div>
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
@@ -7164,6 +7283,8 @@ def home() -> HTMLResponse:
     </div>
   </div>
 
+  <div id="printLabelSheet" class="print-label-sheet" aria-hidden="true"></div>
+
   <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
       <strong>مسح الباركود</strong>
@@ -7193,7 +7314,10 @@ def home() -> HTMLResponse:
     const LOCATION_TAB_SOURCE_FILE = 'مواقع_من_التطبيق.xlsx';
     const SCRIPT_XLSX = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
     const SCRIPT_QR = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+    const SCRIPT_JSBARCODE = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js';
     const loadedScripts = {};
+    let printBarcodeItem = null;
+    let printBarcodeRows = [];
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
     let snapshotLoadPromise = null;
     let lastNotifiedVersion = '';
@@ -7221,6 +7345,10 @@ def home() -> HTMLResponse:
       if (typeof Html5Qrcode !== 'undefined') return;
       await loadExternalScript(SCRIPT_QR);
     }
+    async function ensureJsBarcodeLib() {
+      if (typeof JsBarcode !== 'undefined') return;
+      await loadExternalScript(SCRIPT_JSBARCODE);
+    }
     function setSyncInfo(message) {
       document.getElementById('syncInfo').innerText = message || '';
     }
@@ -7236,21 +7364,41 @@ def home() -> HTMLResponse:
       if (tab === 'size') activeSearchTab = 'size';
       else if (tab === 'wiper') activeSearchTab = 'wiper';
       else if (tab === 'location') activeSearchTab = 'location';
+      else if (tab === 'print') activeSearchTab = 'print';
       else activeSearchTab = 'main';
       localStorage.setItem('activeSearchTab', activeSearchTab);
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('tabLocBtn').classList.toggle('active', activeSearchTab === 'location');
+      const printBtn = document.getElementById('tabPrintBtn');
+      if (printBtn) printBtn.classList.toggle('active', activeSearchTab === 'print');
       document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
+      const printPanel = document.getElementById('printSearchPanel');
+      if (printPanel) printPanel.classList.toggle('active', activeSearchTab === 'print');
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
       } else {
         stopHesabateLocationPoller();
+      }
+      if (activeSearchTab === 'print') {
+        ensureJsBarcodeLib().catch(() => {});
+        document.getElementById('names').innerHTML = '';
+        document.getElementById('resultsTable').style.display = 'none';
+        const wiperWrap = document.getElementById('wipersTableWrap');
+        const wipersTable = document.getElementById('wipersTable');
+        const locWrap = document.getElementById('locationsTableWrap');
+        const locTable = document.getElementById('locationsTable');
+        if (wiperWrap) wiperWrap.style.display = 'none';
+        if (wipersTable) wipersTable.style.display = 'none';
+        if (locWrap) locWrap.style.display = 'none';
+        if (locTable) locTable.style.display = 'none';
+        setStats('');
+        return;
       }
       searchNow('auto');
     }
@@ -7734,6 +7882,266 @@ def home() -> HTMLResponse:
       })();
       return hesabateLookupInflight;
     }
+
+    function splitPrintQuery(raw) {
+      const t = lightSanitizeBarcodeValue(raw);
+      if (!t) return { barcode: '', q: '' };
+      // رقم صنف حساباتي غالباً أرقام قصيرة؛ غير ذلك باركود
+      if (/^\d{1,7}$/.test(t)) return { barcode: '', q: t };
+      return { barcode: t, q: '' };
+    }
+    function splitOriginalTokens(raw) {
+      return String(raw || '')
+        .split(/[\s,/|;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    function collectPrintOriginalOptions(rows) {
+      const seen = new Set();
+      const opts = [];
+      (Array.isArray(rows) ? rows : []).forEach((r) => {
+        splitOriginalTokens(r && r.original_number).forEach((tok) => {
+          const key = tok.toLowerCase();
+          if (seen.has(key)) return;
+          seen.add(key);
+          opts.push(tok);
+        });
+      });
+      return opts;
+    }
+    function pickPrintRowForOriginal(rows, original) {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) return null;
+      const want = String(original || '').trim().toLowerCase();
+      if (!want) return list[0];
+      const exact = list.find((r) => {
+        const toks = splitOriginalTokens(r && r.original_number).map((t) => t.toLowerCase());
+        return toks.includes(want) || String(r.original_number || '').trim().toLowerCase() === want;
+      });
+      return exact || list[0];
+    }
+    function setPrintFetchStatus(msg) {
+      const el = document.getElementById('printFetchStatus');
+      if (el) el.textContent = msg || '';
+    }
+    function renderPrintBarcodeSvg(svgEl, code, opts) {
+      if (!svgEl || typeof JsBarcode === 'undefined') return false;
+      const value = String(code || '').trim();
+      if (!value) {
+        svgEl.innerHTML = '';
+        return false;
+      }
+      try {
+        JsBarcode(svgEl, value, Object.assign({
+          format: 'CODE128',
+          displayValue: false,
+          margin: 0,
+          width: 2,
+          height: 56,
+          background: '#ffffff',
+          lineColor: '#000000'
+        }, opts || {}));
+        return true;
+      } catch (_) {
+        try {
+          JsBarcode(svgEl, value, {
+            format: 'CODE39',
+            displayValue: false,
+            margin: 0,
+            width: 1.6,
+            height: 56,
+            background: '#ffffff',
+            lineColor: '#000000'
+          });
+          return true;
+        } catch (err2) {
+          svgEl.innerHTML = '';
+          return false;
+        }
+      }
+    }
+    function updatePrintBarcodePreview() {
+      const card = document.getElementById('printPreviewCard');
+      const sel = document.getElementById('printOriginalSelect');
+      const chosen = sel && sel.value ? sel.value : '';
+      const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
+      if (!row) {
+        if (card) card.style.display = 'none';
+        return;
+      }
+      printBarcodeItem = row;
+      const name = String(row.item_name || '').trim() || '—';
+      const original = chosen || String(row.original_number || '').trim() || '—';
+      const location = String(row.location || '').trim() || '—';
+      const barcode = String(row.barcode || '').trim()
+        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((s) => s.trim()).filter(Boolean)[0]
+        || '';
+      const nameEl = document.getElementById('printPvName');
+      const origEl = document.getElementById('printPvOriginal');
+      const locEl = document.getElementById('printPvLocation');
+      const bcTextEl = document.getElementById('printPvBarcodeText');
+      const svg = document.getElementById('printPvBarcode');
+      if (nameEl) nameEl.textContent = name;
+      if (origEl) origEl.textContent = 'الأصلي: ' + original;
+      if (locEl) locEl.textContent = 'الموقع: ' + location;
+      if (bcTextEl) bcTextEl.textContent = barcode || '—';
+      if (card) card.style.display = 'block';
+      ensureJsBarcodeLib().then(() => {
+        renderPrintBarcodeSvg(svg, barcode, { height: 48, width: 1.8 });
+      }).catch(() => {});
+    }
+    function applyPrintLookupRows(rows, message) {
+      printBarcodeRows = Array.isArray(rows) ? rows.slice() : [];
+      const originals = collectPrintOriginalOptions(printBarcodeRows);
+      const wrap = document.getElementById('printOriginalWrap');
+      const sel = document.getElementById('printOriginalSelect');
+      if (sel) {
+        sel.innerHTML = '';
+        originals.forEach((o) => {
+          const opt = document.createElement('option');
+          opt.value = o;
+          opt.textContent = o;
+          sel.appendChild(opt);
+        });
+        sel.onchange = () => updatePrintBarcodePreview();
+      }
+      if (wrap) wrap.style.display = originals.length > 1 ? 'block' : 'none';
+      if (!printBarcodeRows.length) {
+        printBarcodeItem = null;
+        const card = document.getElementById('printPreviewCard');
+        if (card) card.style.display = 'none';
+        setPrintFetchStatus(message || 'هذا الصنف مش داخل على حساباتي');
+        return;
+      }
+      printBarcodeItem = pickPrintRowForOriginal(printBarcodeRows, originals[0] || '');
+      setPrintFetchStatus(message || `تم جلب الصنف · ${printBarcodeRows.length}`);
+      updatePrintBarcodePreview();
+    }
+    async function fetchItemForBarcodePrint() {
+      const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+      if (!raw) {
+        setPrintFetchStatus('اكتب رقم الصنف أو الباركود ثم اضغط جلب.');
+        return;
+      }
+      const { barcode, q } = splitPrintQuery(raw);
+      const btn = document.getElementById('printFetchBtn');
+      if (btn) btn.disabled = true;
+      setPrintFetchStatus('جاري جلب الصنف من حساباتي...');
+      const t0 = performance.now();
+      try {
+        let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
+        let localRows = Array.isArray(live && live.rows) ? live.rows : [];
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), localRows.length ? 45000 : 280000);
+        try {
+          live = await lookupHesabateItemOnce(
+            barcode, q, false, ctrl.signal, true, !localRows.length
+          );
+        } finally {
+          clearTimeout(to);
+        }
+        if (
+          live && live.ok !== false
+          && !(Array.isArray(live.rows) && live.rows.length)
+          && localRows.length
+          && (live.products_fetch_mode === 'local_only_no_pro_id'
+            || live.products_fetch_mode === 'targeted_search_unsupported')
+        ) {
+          const ctrl2 = new AbortController();
+          const to2 = setTimeout(() => ctrl2.abort(), 280000);
+          try {
+            live = await lookupHesabateItemOnce(barcode, q, false, ctrl2.signal, true, true);
+          } finally {
+            clearTimeout(to2);
+          }
+        }
+        const apiRows = Array.isArray(live && live.rows) ? live.rows : [];
+        const uiMs = Math.round(performance.now() - t0);
+        const timingLine = formatLookupTiming(live, uiMs);
+        if (!live || live.ok === false) {
+          applyPrintLookupRows([], (live && live.message) || 'تعذر جلب الصنف.');
+          return;
+        }
+        if (live.usage) renderHesabateUsage(live.usage, live.message || '');
+        applyHesabateSearchVersion(live);
+        if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
+          applyPrintLookupRows([], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
+          return;
+        }
+        if (!apiRows.length) {
+          applyPrintLookupRows([], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
+          return;
+        }
+        applyPrintLookupRows(
+          apiRows,
+          `${live.message || `تم جلب ${apiRows.length} صنف`} | ${timingLine}`
+        );
+      } catch (err) {
+        let hint = 'تعذر جلب الصنف.';
+        if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
+        else if (err && err.message) hint = String(err.message);
+        applyPrintLookupRows([], hint);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+    async function printBarcodeLabels() {
+      if (!printBarcodeItem && !(printBarcodeRows && printBarcodeRows.length)) {
+        setPrintFetchStatus('اجلب الصنف أولاً قبل الطباعة.');
+        return;
+      }
+      const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
+      const qty = Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
+      const sel = document.getElementById('printOriginalSelect');
+      const chosen = sel && sel.value ? sel.value : '';
+      const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
+      if (!row) {
+        setPrintFetchStatus('لا يوجد صنف للطباعة.');
+        return;
+      }
+      const name = String(row.item_name || '').trim() || '—';
+      const original = chosen || String(row.original_number || '').trim() || '—';
+      const location = String(row.location || '').trim() || '—';
+      const barcode = String(row.barcode || '').trim()
+        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((s) => s.trim()).filter(Boolean)[0]
+        || '';
+      if (!barcode) {
+        setPrintFetchStatus('لا يوجد باركود لهذا الصنف للطباعة.');
+        return;
+      }
+      try {
+        await ensureJsBarcodeLib();
+      } catch (_) {
+        setPrintFetchStatus('تعذر تحميل مكتبة الباركود.');
+        return;
+      }
+      let sheet = document.getElementById('printLabelSheet');
+      if (!sheet) {
+        sheet = document.createElement('div');
+        sheet.id = 'printLabelSheet';
+        sheet.className = 'print-label-sheet';
+        document.body.appendChild(sheet);
+      }
+      sheet.innerHTML = '';
+      for (let i = 0; i < qty; i++) {
+        const label = document.createElement('div');
+        label.className = 'print-label';
+        label.innerHTML =
+          `<div class="pl-name"></div>` +
+          `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
+          `<svg class="pl-bc"></svg>` +
+          `<div class="pl-bc-text"></div>`;
+        label.querySelector('.pl-name').textContent = name;
+        label.querySelector('.pl-orig').textContent = original;
+        label.querySelector('.pl-loc').textContent = location;
+        label.querySelector('.pl-bc-text').textContent = barcode;
+        sheet.appendChild(label);
+        renderPrintBarcodeSvg(label.querySelector('.pl-bc'), barcode, { height: 52, width: 1.7 });
+      }
+      setPrintFetchStatus(`جاهز للطباعة · ${qty} ملصق`);
+      window.print();
+    }
+
     async function forceHesabateFullImport() {
       const stEl = document.getElementById('hesabateSyncStatus');
       if (hesabateEnsureInflight) {
@@ -10076,6 +10484,16 @@ def home() -> HTMLResponse:
       const locWrap = document.getElementById('locationsTableWrap');
       const locTable = document.getElementById('locationsTable');
 
+      if (effectiveMode === 'print') {
+        document.getElementById('names').innerHTML = '';
+        document.getElementById('resultsTable').style.display = 'none';
+        wiperWrap.style.display = 'none';
+        wipersTable.style.display = 'none';
+        locWrap.style.display = 'none';
+        locTable.style.display = 'none';
+        return;
+      }
+
       if (effectiveMode === 'location') {
         const lqText = document.getElementById('locationTextQueryInput').value.trim();
         let lqBc = lightSanitizeBarcodeValue(document.getElementById('locationBarcodeQueryInput').value);
@@ -10450,15 +10868,21 @@ def home() -> HTMLResponse:
       document.getElementById('wiperModelInput').value = localStorage.getItem('lastWiperModel') || '';
       document.getElementById('wiperEngineInput').value = localStorage.getItem('lastWiperEngine') || '';
       const savedTab = localStorage.getItem('activeSearchTab') || 'main';
-      activeSearchTab = (savedTab === 'size' || savedTab === 'wiper' || savedTab === 'location') ? savedTab : 'main';
+      activeSearchTab = (savedTab === 'size' || savedTab === 'wiper' || savedTab === 'location' || savedTab === 'print')
+        ? savedTab
+        : 'main';
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('tabLocBtn').classList.toggle('active', activeSearchTab === 'location');
+      const printBtnInit = document.getElementById('tabPrintBtn');
+      if (printBtnInit) printBtnInit.classList.toggle('active', activeSearchTab === 'print');
       document.getElementById('mainSearchPanel').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
+      const printPanelInit = document.getElementById('printSearchPanel');
+      if (printPanelInit) printPanelInit.classList.toggle('active', activeSearchTab === 'print');
       {
         let lt = localStorage.getItem('lastLocationTextQuery');
         if (lt == null || lt === '') {
@@ -10475,6 +10899,9 @@ def home() -> HTMLResponse:
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
+      }
+      if (activeSearchTab === 'print') {
+        ensureJsBarcodeLib().catch(() => {});
       }
       refreshHesabateStatus();
 
