@@ -6790,7 +6790,27 @@ def home() -> HTMLResponse:
     #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) { width: 16%; }
     #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 11%; }
     #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 11%; }
-    #locationsTable td:nth-child(1) .cell-text { font-weight: 700; color: var(--ink); }
+    /* اسم الصنف الطويل: لفّ النص بدل الاختفاء */
+    #locationsTable td:nth-child(1) {
+      overflow: visible;
+      vertical-align: top;
+    }
+    #locationsTable td:nth-child(1) .cell {
+      align-items: flex-start;
+      overflow: visible;
+      min-height: 44px;
+      height: auto;
+    }
+    #locationsTable td:nth-child(1) .cell-text {
+      font-weight: 700;
+      color: var(--ink);
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
     #locationsTable td:nth-child(2) .cell-text { font-weight: 800; color: #0b3d2e; }
     #locationsTable td:nth-child(3) .cell-text { font-weight: 600; color: #334155; }
     #locationsTable td:nth-child(4) .cell-text { font-weight: 700; color: #1e293b; }
@@ -7300,14 +7320,24 @@ def home() -> HTMLResponse:
       const table = document.getElementById('locationsTable');
       if (!table || table.style.display === 'none') return;
       const isMobile = window.matchMedia('(max-width: 767px)').matches;
-      const maxByCol = isMobile ? [12, 11, 11, 11, 12, 12] : [16, 15, 15, 15, 16, 16];
+      const maxByCol = isMobile ? [13, 11, 11, 11, 12, 12] : [15, 15, 15, 15, 16, 16];
       const minPx = isMobile ? 7 : 9;
-      const fitEl = (el, cell, maxPx) => {
+      const fitEl = (el, cell, maxPx, wrap) => {
         if (!el || !cell) return;
+        if (wrap) {
+          el.style.whiteSpace = 'normal';
+          el.style.overflow = 'visible';
+          el.style.textOverflow = 'unset';
+          el.style.wordBreak = 'break-word';
+          el.style.overflowWrap = 'anywhere';
+          el.style.fontSize = maxPx + 'px';
+          return;
+        }
         el.style.whiteSpace = 'nowrap';
         el.style.overflow = 'hidden';
         el.style.textOverflow = 'clip';
         el.style.wordBreak = 'normal';
+        el.style.overflowWrap = 'normal';
         let size = maxPx;
         const len = (el.textContent || '').trim().length;
         if (len > 14) size = Math.min(size, maxPx - 1);
@@ -7329,7 +7359,8 @@ def home() -> HTMLResponse:
         if (!el || !cell || el.classList.contains('cell-empty')) return;
         const col = td.cellIndex;
         const maxPx = maxByCol[col] != null ? maxByCol[col] : (isMobile ? 11 : 14);
-        fitEl(el, cell, maxPx);
+        // العمود الأول = اسم الصنف — لفّ النص
+        fitEl(el, cell, maxPx, col === 0 && td.tagName === 'TD');
       });
     }
     async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
