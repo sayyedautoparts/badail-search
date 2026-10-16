@@ -6331,7 +6331,7 @@ def live_lookup_locations_from_hesabate(
             fetch_mode = "single_pro_id"
             not_found = False
         else:
-            msg = "المعرّف الداخلي لم يُرجع صنفاً مطابقاً من حساباتي."
+            msg = "هذا الصنف مش داخل على حساباتي"
             fetch_mode = "single_miss"
             not_found = True
         logger.info(
@@ -7442,7 +7442,12 @@ def home() -> HTMLResponse:
             live.error_kind === 'targeted_search_unsupported'
             || live.products_fetch_mode === 'targeted_search_unsupported'
           ));
-          if (rows.length) {
+          if (live && live.products_fetch_mode === 'single_miss') {
+            // pro_id محلي لكن حساباتي ما رجّعت صنف — لا تعرض الجدول المحلي
+            const miss = 'هذا الصنف مش داخل على حساباتي';
+            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = miss;
+          } else if (rows.length) {
             renderLocationRowsNow(
               rows,
               `${live.message || 'محدّث'} | محلي ${localMs != null ? localMs + 'ms' : '—'} → تحديث ${uiMs}ms | ${timingLine}`
@@ -7574,9 +7579,7 @@ def home() -> HTMLResponse:
               clearTimeout(to2);
             }
           }
-          const rows = Array.isArray(live && live.rows) && live.rows.length
-            ? live.rows
-            : localRows;
+          const apiRows = Array.isArray(live && live.rows) ? live.rows : [];
           if (!live || live.ok === false) {
             const err = (live && live.message) || 'تعذر جلب الصنف.';
             if (localRows.length) {
@@ -7592,9 +7595,18 @@ def home() -> HTMLResponse:
           if (live.usage) renderHesabateUsage(live.usage, live.message || '');
           const uiMs = Math.round(performance.now() - t0);
           const timingLine = formatLookupTiming(live, uiMs);
+          // المعرف الداخلي ما رجّع صنفاً من حساباتي — امسح الجدول ولا تعرض المحلي
+          if (live.products_fetch_mode === 'single_miss' || (live.not_found && !apiRows.length && (live.resolved_pro_ids || []).length)) {
+            const miss = 'هذا الصنف مش داخل على حساباتي';
+            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = miss;
+            return;
+          }
+          const rows = apiRows.length ? apiRows : localRows;
           if (!rows.length) {
-            setStats((live.message || 'غير موجود في حساباتي.') + (timingLine ? ` | ${timingLine}` : ''));
-            if (stEl) stEl.textContent = live.message || 'غير موجود.';
+            const miss = live.message || 'هذا الصنف مش داخل على حساباتي';
+            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = miss;
             return;
           }
           const imported = !!(live.catalog_imported || live.products_fetch_mode === 'catalog_import_match');
