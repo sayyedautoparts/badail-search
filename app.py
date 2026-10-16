@@ -6847,50 +6847,135 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
+      @page {
+        size: 12cm 2.5cm;
+        margin: 0;
+      }
+      html, body {
+        width: 12cm !important;
+        height: 2.5cm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+      }
       body * { visibility: hidden !important; }
       .print-label-sheet, .print-label-sheet * { visibility: visible !important; }
       .print-label-sheet {
         display: block !important;
         position: absolute;
-        inset: 0;
+        left: 0;
+        top: 0;
+        width: 12cm;
         margin: 0;
         padding: 0;
+        background: #fff;
       }
-      .print-label {
+      /* صف لزيق دبل: ملصقان جنب بعض = ورقة واحدة */
+      .print-label-row {
+        display: flex;
+        flex-direction: row;
+        width: 12cm;
+        height: 2.5cm;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
         page-break-after: always;
         break-after: page;
-        width: 100%;
-        min-height: 28mm;
+        page-break-inside: avoid;
+        break-inside: avoid;
+        overflow: hidden;
+      }
+      .print-label-row:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+      .print-label {
+        width: 6cm;
+        max-width: 6cm;
+        height: 2.5cm;
+        max-height: 2.5cm;
         box-sizing: border-box;
-        padding: 2mm 3mm;
+        padding: 1mm 1.5mm;
+        margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
         color: #000;
+        overflow: hidden !important;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
       }
-      .print-label:last-child { page-break-after: auto; break-after: auto; }
+      .print-label.print-label-empty {
+        visibility: hidden !important;
+      }
       .print-label .pl-name {
-        font-size: 13px;
+        flex: 0 0 auto;
+        max-height: 7.2mm;
+        font-size: 9px;
         font-weight: 900;
-        margin: 0 0 2mm;
-        line-height: 1.25;
+        margin: 0;
+        line-height: 1.15;
+        overflow: hidden !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
       }
       .print-label .pl-meta {
+        flex: 0 0 auto;
         display: flex;
         justify-content: space-between;
-        gap: 3mm;
-        font-size: 11px;
+        align-items: center;
+        gap: 1mm;
+        font-size: 7.5px;
         font-weight: 800;
-        margin: 0 0 2mm;
+        margin: 0.4mm 0 0.5mm;
+        max-height: 3.2mm;
+        overflow: hidden !important;
+        white-space: nowrap;
       }
-      .print-label .pl-meta span { flex: 1; }
-      .print-label .pl-meta .pl-loc { text-align: left; }
-      .print-label .pl-meta .pl-orig { text-align: right; }
-      .print-label svg { max-width: 100%; height: 14mm; }
+      .print-label .pl-meta span {
+        flex: 1 1 0;
+        min-width: 0;
+        overflow: hidden !important;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .print-label .pl-meta .pl-loc { text-align: left; direction: ltr; }
+      .print-label .pl-meta .pl-orig { text-align: right; direction: ltr; }
+      .print-label .pl-bc-wrap {
+        flex: 1 1 auto;
+        min-height: 0;
+        max-height: 11mm;
+        overflow: hidden !important;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+      }
+      .print-label .pl-bc-wrap svg {
+        display: block;
+        max-width: 100% !important;
+        max-height: 8mm !important;
+        width: auto !important;
+        height: 8mm !important;
+        overflow: hidden;
+      }
       .print-label .pl-bc-text {
-        font-size: 11px;
+        flex: 0 0 auto;
+        max-width: 100%;
+        font-size: 7.5px;
         font-weight: 800;
-        letter-spacing: .04em;
-        margin-top: 1mm;
+        letter-spacing: .03em;
+        margin-top: 0.3mm;
+        line-height: 1;
+        overflow: hidden !important;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        direction: ltr;
       }
     }
     .sync-box {
@@ -7150,6 +7235,7 @@ def home() -> HTMLResponse:
         <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();fetchItemForBarcodePrint();}" />
         <label class="field-label" for="printQtyInput">عدد الحبات للطباعة</label>
         <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+        <p class="muted" style="margin:6px 0 0;font-size:12px;">الطباعة لزيق دبل: ورقة 12×2.5 سم = ملصقان 6×2.5 سم، وكل محتوى داخل الملصق.</p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة</button>
@@ -8085,6 +8171,40 @@ def home() -> HTMLResponse:
         if (btn) btn.disabled = false;
       }
     }
+    function fitPrintBoxText(el, maxPx, minPx) {
+      if (!el) return;
+      let size = maxPx;
+      el.style.fontSize = size + 'px';
+      // صغّر الخط حتى يبقى النص داخل الصندوق
+      for (let i = 0; i < 24 && size > minPx; i++) {
+        if (el.scrollHeight <= el.clientHeight + 0.5 && el.scrollWidth <= el.clientWidth + 0.5) break;
+        size -= 0.5;
+        el.style.fontSize = size + 'px';
+      }
+    }
+    function buildPrintLabelEl(data) {
+      const label = document.createElement('div');
+      label.className = 'print-label' + (data && data.empty ? ' print-label-empty' : '');
+      label.innerHTML =
+        `<div class="pl-name"></div>` +
+        `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
+        `<div class="pl-bc-wrap"><svg class="pl-bc"></svg><div class="pl-bc-text"></div></div>`;
+      if (data && !data.empty) {
+        label.querySelector('.pl-name').textContent = data.name || '—';
+        label.querySelector('.pl-orig').textContent = data.original || '—';
+        label.querySelector('.pl-loc').textContent = data.location || '—';
+        label.querySelector('.pl-bc-text').textContent = data.barcode || '';
+        // عرض وحدة الباركود يتقلص حسب طول الرمز حتى ما يطلع برا الملصق (~54mm)
+        const codeLen = Math.max(6, String(data.barcode || '').length);
+        const moduleW = Math.max(0.7, Math.min(1.5, 54 / (codeLen * 11)));
+        renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
+          height: 30,
+          width: moduleW,
+          margin: 0
+        });
+      }
+      return label;
+    }
     async function printBarcodeLabels() {
       if (!printBarcodeItem && !(printBarcodeRows && printBarcodeRows.length)) {
         setPrintFetchStatus('اجلب الصنف أولاً قبل الطباعة.');
@@ -8123,22 +8243,24 @@ def home() -> HTMLResponse:
         document.body.appendChild(sheet);
       }
       sheet.innerHTML = '';
-      for (let i = 0; i < qty; i++) {
-        const label = document.createElement('div');
-        label.className = 'print-label';
-        label.innerHTML =
-          `<div class="pl-name"></div>` +
-          `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
-          `<svg class="pl-bc"></svg>` +
-          `<div class="pl-bc-text"></div>`;
-        label.querySelector('.pl-name').textContent = name;
-        label.querySelector('.pl-orig').textContent = original;
-        label.querySelector('.pl-loc').textContent = location;
-        label.querySelector('.pl-bc-text').textContent = barcode;
-        sheet.appendChild(label);
-        renderPrintBarcodeSvg(label.querySelector('.pl-bc'), barcode, { height: 52, width: 1.7 });
+      const payload = { name, original, location, barcode };
+      // لزيق دبل: كل ورقة = ملصقان (6سم × 2.5سم) داخل 12سم × 2.5سم
+      for (let i = 0; i < qty; i += 2) {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'print-label-row';
+        const left = buildPrintLabelEl(payload);
+        const right = (i + 1 < qty) ? buildPrintLabelEl(payload) : buildPrintLabelEl({ empty: true });
+        rowEl.appendChild(left);
+        rowEl.appendChild(right);
+        sheet.appendChild(rowEl);
+        fitPrintBoxText(left.querySelector('.pl-name'), 10, 6);
+        fitPrintBoxText(left.querySelector('.pl-meta'), 8, 5.5);
+        if (!right.classList.contains('print-label-empty')) {
+          fitPrintBoxText(right.querySelector('.pl-name'), 10, 6);
+          fitPrintBoxText(right.querySelector('.pl-meta'), 8, 5.5);
+        }
       }
-      setPrintFetchStatus(`جاهز للطباعة · ${qty} ملصق`);
+      setPrintFetchStatus(`جاهز للطباعة · ${qty} ملصق (لزيق دبل 12×2.5 سم)`);
       window.print();
     }
 
