@@ -7232,7 +7232,7 @@ def home() -> HTMLResponse:
 
       <div id="printSearchPanel" class="search-panel">
         <label class="field-label" for="printQueryInput">رقم الصنف أو باركود القطعة</label>
-        <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();fetchItemForBarcodePrint();}" />
+        <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal(true);}" />
         <label class="field-label" for="printQtyInput">عدد الحبات للطباعة</label>
         <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
         <p class="muted" style="margin:6px 0 0;font-size:12px;">الطباعة لزيق دبل: ورقة 12×2.5 سم = ملصقان 6×2.5 سم، وكل محتوى داخل الملصق.</p>
@@ -8096,12 +8096,119 @@ def home() -> HTMLResponse:
         printBarcodeItem = null;
         const card = document.getElementById('printPreviewCard');
         if (card) card.style.display = 'none';
-        setPrintFetchStatus(message || 'هذا الصنف مش داخل على حساباتي');
-        return;
+        setPrintFetchStatus(message || 'غير موجود في قاعدة المواقع');
+        return false;
       }
       printBarcodeItem = pickPrintRowForOriginal(printBarcodeRows, originals[0] || '');
-      setPrintFetchStatus(message || `تم جلب الصنف · ${printBarcodeRows.length}`);
+      setPrintFetchStatus(message || `تم تجهيز الصنف · ${printBarcodeRows.length}`);
       updatePrintBarcodePreview();
+      return true;
+    }
+    function rankLocationRowsForPrint(rawRows) {
+      const ranked = (Array.isArray(rawRows) ? rawRows : []).slice().sort((a, b) => {
+        const aApi = String(a.source_file || '') === 'حساباتي_API' ? 0 : 1;
+        const bApi = String(b.source_file || '') === 'حساباتي_API' ? 0 : 1;
+        if (aApi !== bApi) return aApi - bApi;
+        return Number(b.id || 0) - Number(a.id || 0);
+      });
+      const seen = new Set();
+      const out = [];
+      ranked.forEach((r) => {
+        const pid = String(r.hesabate_product_id || r.product_id || '').trim();
+        const k = pid
+          || String(r.barcode || r.original_number || r.item_name || '').trim().toLowerCase();
+        if (k && seen.has(k)) return;
+        if (k) seen.add(k);
+        out.push(r);
+      });
+      return out;
+    }
+    async function searchLocationsLocal(paramsObj) {
+      const params = new URLSearchParams(paramsObj || {});
+      params.set('_', String(Date.now()));
+      const res = await fetch(`/search_locations?${params.toString()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' }
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) throw new Error((data && data.detail) || `search-locations-${res.status}`);
+      return Array.isArray(data && data.rows) ? data.rows : [];
+    }
+    async function lookupLocalLocationsForPrint(raw) {
+      const t = lightSanitizeBarcodeValue(raw);
+      if (!t) return [];
+      const { barcode, q } = splitPrintQuery(t);
+      let rows = [];
+      if (barcode) {
+        const canon = normalizeBarcodeLookupKeyClient(barcode);
+        const p = { q_barcode: barcode, limit: '40' };
+        if (canon) p.q_barcode_canonical = canon;
+        rows = await searchLocationsLocal(p);
+        if (!rows.length && (q || t)) {
+          rows = await searchLocationsLocal({ q: q || t, limit: '40' });
+        }
+      } else {
+        rows = await searchLocationsLocal({ q: q || t, limit: '40' });
+        if (!rows.length) {
+          const canon = normalizeBarcodeLookupKeyClient(t);
+          const p = { q_barcode: t, limit: '40' };
+          if (canon) p.q_barcode_canonical = canon;
+          rows = await searchLocationsLocal(p);
+        }
+      }
+      return rankLocationRowsForPrint(rows);
+    }
+    let printLocalLookupGen = 0;
+    let printLocalDebounceTimer = null;
+    async function resolvePrintItemFromLocal(showEmptyMsg) {
+      const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+      if (!raw) {
+        if (showEmptyMsg) setPrintFetchStatus('اكتب رقم الصنف أو الباركود.');
+        return false;
+      }
+      const gen = ++printLocalLookupGen;
+      setPrintFetchStatus('بحث في قاعدة المواقع...');
+      try {
+        const rows = await lookupLocalLocationsForPrint(raw);
+        if (gen !== printLocalLookupGen) return false;
+        if (rows.length) {
+          return applyPrintLookupRows(rows, `من قاعدة المواقع · ${rows.length}`);
+        }
+        printBarcodeRows = [];
+        printBarcodeItem = null;
+        const card = document.getElementById('printPreviewCard');
+        if (card) card.style.display = 'none';
+        const wrap = document.getElementById('printOriginalWrap');
+        if (wrap) wrap.style.display = 'none';
+        if (showEmptyMsg) {
+          setPrintFetchStatus('مش موجود بقاعدة المواقع — اضغط «جلب هذا الصنف» من حساباتي.');
+        } else {
+          setPrintFetchStatus('');
+        }
+        return false;
+      } catch (err) {
+        if (gen !== printLocalLookupGen) return false;
+        if (showEmptyMsg) {
+          setPrintFetchStatus((err && err.message) || 'تعذر البحث في قاعدة المواقع.');
+        }
+        return false;
+      }
+    }
+    function schedulePrintLocalLookup() {
+      clearTimeout(printLocalDebounceTimer);
+      printLocalDebounceTimer = setTimeout(() => {
+        const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+        if (!raw || raw.length < 2) {
+          printBarcodeRows = [];
+          printBarcodeItem = null;
+          const card = document.getElementById('printPreviewCard');
+          if (card) card.style.display = 'none';
+          setPrintFetchStatus('');
+          return;
+        }
+        resolvePrintItemFromLocal(false);
+      }, 280);
     }
     async function fetchItemForBarcodePrint() {
       const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
@@ -8109,19 +8216,26 @@ def home() -> HTMLResponse:
         setPrintFetchStatus('اكتب رقم الصنف أو الباركود ثم اضغط جلب.');
         return;
       }
-      const { barcode, q } = splitPrintQuery(raw);
       const btn = document.getElementById('printFetchBtn');
       if (btn) btn.disabled = true;
-      setPrintFetchStatus('جاري جلب الصنف من حساباتي...');
-      const t0 = performance.now();
       try {
+        // أولاً قاعدة المواقع المحلية — بدون جلب من حساباتي إن وُجد
+        setPrintFetchStatus('بحث في قاعدة المواقع...');
+        const localRows = await lookupLocalLocationsForPrint(raw);
+        if (localRows.length) {
+          applyPrintLookupRows(localRows, `من قاعدة المواقع · ${localRows.length}`);
+          return;
+        }
+        const { barcode, q } = splitPrintQuery(raw);
+        setPrintFetchStatus('غير موجود محلياً — جاري الجلب من حساباتي...');
+        const t0 = performance.now();
         let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
-        let localRows = Array.isArray(live && live.rows) ? live.rows : [];
+        let cacheRows = Array.isArray(live && live.rows) ? live.rows : [];
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), localRows.length ? 45000 : 280000);
+        const to = setTimeout(() => ctrl.abort(), cacheRows.length ? 45000 : 280000);
         try {
           live = await lookupHesabateItemOnce(
-            barcode, q, false, ctrl.signal, true, !localRows.length
+            barcode, q, false, ctrl.signal, true, !cacheRows.length
           );
         } finally {
           clearTimeout(to);
@@ -8129,7 +8243,7 @@ def home() -> HTMLResponse:
         if (
           live && live.ok !== false
           && !(Array.isArray(live.rows) && live.rows.length)
-          && localRows.length
+          && cacheRows.length
           && (live.products_fetch_mode === 'local_only_no_pro_id'
             || live.products_fetch_mode === 'targeted_search_unsupported')
         ) {
@@ -8207,8 +8321,8 @@ def home() -> HTMLResponse:
     }
     async function printBarcodeLabels() {
       if (!printBarcodeItem && !(printBarcodeRows && printBarcodeRows.length)) {
-        setPrintFetchStatus('اجلب الصنف أولاً قبل الطباعة.');
-        return;
+        const ok = await resolvePrintItemFromLocal(true);
+        if (!ok) return;
       }
       const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
       const qty = Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
@@ -8216,7 +8330,7 @@ def home() -> HTMLResponse:
       const chosen = sel && sel.value ? sel.value : '';
       const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
       if (!row) {
-        setPrintFetchStatus('لا يوجد صنف للطباعة.');
+        setPrintFetchStatus('لا يوجد صنف للطباعة — تأكد أنه موجود بقاعدة المواقع أو اجلبه.');
         return;
       }
       const name = String(row.item_name || '').trim() || '—';
@@ -11026,6 +11140,13 @@ def home() -> HTMLResponse:
         ensureJsBarcodeLib().catch(() => {});
       }
       refreshHesabateStatus();
+
+      const printQueryInput = document.getElementById('printQueryInput');
+      if (printQueryInput) {
+        printQueryInput.addEventListener('input', () => {
+          schedulePrintLocalLookup();
+        });
+      }
 
       queryInput.addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
