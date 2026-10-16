@@ -6174,10 +6174,6 @@ def live_lookup_locations_from_hesabate(
         products_ms_sum = 0
         model_refreshed = False
         scheme = preferred_scheme
-        # أقل طلبات: صنف واحد كافٍ للبحث/الجلب (كان حتى 5 × products + model)
-        pro_ids = [p for p in pro_ids if str(p or "").strip()][:1]
-        # جدول model من الكاش إن وُجد؛ يُجلب فقط إن ناقص أو model_id غير معروف (داخل API)
-        need_force_model = not bool(model_payload)
 
         for idx, pid in enumerate(pro_ids):
             fetched = hesabate_api.fetch_location_catalog(
@@ -6201,7 +6197,8 @@ def live_lookup_locations_from_hesabate(
                 lookup_text_query="",
                 allow_full_on_single=False,
                 bypass_mem_cache=True,
-                force_model_refresh=need_force_model and idx == 0,
+                # حدّث جدول model مع كل refresh حتى يتغيّر الموقع/اسم الرف فوراً
+                force_model_refresh=bool(refresh) and idx == 0,
             )
             request_count += int(fetched.get("request_count") or 0)
             api_timing = fetched.get("timing_ms") if isinstance(fetched.get("timing_ms"), dict) else {}
@@ -6217,7 +6214,6 @@ def live_lookup_locations_from_hesabate(
             if fetched.get("model_refreshed") and isinstance(fetched.get("model"), dict):
                 model_payload = fetched.get("model") or model_payload
                 model_refreshed = True
-                need_force_model = False
             products = fetched.get("products") or {}
             table = products.get("table") if isinstance(products, dict) else None
             rows = [r for r in (table or []) if isinstance(r, dict)]
@@ -6231,8 +6227,6 @@ def live_lookup_locations_from_hesabate(
                 continue
             hit = [r for r in rows if str(r.get("id") or "") == pid]
             raw_hits.extend(hit)
-            if hit:
-                break
 
         timing["products_ms"] = products_ms_sum
         if request_count:
@@ -7007,7 +7001,7 @@ def home() -> HTMLResponse:
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
-          <button type="button" onclick="searchNow('location', {liveCheck: true})">بحث</button>
+          <button type="button" onclick="searchNow('location')">بحث</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7865,7 +7859,7 @@ def home() -> HTMLResponse:
       setBarcodeScanStatus('تم التقاط الباركود');
       try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
       await closeBarcodeScanner();
-      searchNow('location', { liveCheck: true });
+      searchNow('location');
     }
 
     async function openLocationBarcodeScanner() {
@@ -10047,22 +10041,18 @@ def home() -> HTMLResponse:
           if (k) seenKeys.add(k);
           safeRows.push(r);
         });
-        // الكتابة التلقائية: محلي فقط (0 طلب).
-        // زر بحث / Enter / كاميرا (liveCheck): تحقّق موجّه بطلب products واحد لتحديث الموقع.
+        // تحقق حي من حساباتي بعد كل بحث (باركود مكتمل أو نص مربوط بـ pro_id)
+        // حتى يتحدّث الموقع/السعر فور التعديل في حساباتي
+        const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
         const localHasProId = safeRows.some(r => String(r.hesabate_product_id || '').trim());
-        const completeBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
-        const willAutoBcMiss = completeBc && !safeRows.length;
-        const willAutoLive = liveCheck && (
-          completeBc || (!lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId)
-        );
-        const willAuto = willAutoBcMiss || willAutoLive;
+        const willAutoText = !lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId;
+        const willAuto = willAutoBc || willAutoText;
         if (safeRows.length) {
           renderLocationRowsNow(
             safeRows,
-            `محلي فوري · ${safeRows.length} · ${localMs}ms`
-              + (willAutoLive ? ' · جاري تحديث الموقع من حساباتي...' : '')
+            `محلي فوري · ${safeRows.length} · ${localMs}ms` + (willAuto ? ' · جاري التحقق من حساباتي...' : '')
           );
-        } else if (willAuto) {
+        } else if (willAutoBc) {
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
           setStats('بحث موجّه في حساباتي...');
@@ -10073,8 +10063,8 @@ def home() -> HTMLResponse:
         }
         if (willAuto) {
           autoRefreshLocationQuery(
-            completeBc ? lqBc : '',
-            (!lqBc && willAutoLive) ? lqText : '',
+            willAutoBc ? lqBc : '',
+            willAutoText ? lqText : '',
             gen,
             safeRows.length > 0,
             localMs
@@ -10432,22 +10422,12 @@ def home() -> HTMLResponse:
           }, 250);
         });
       });
-      const locTextEl = document.getElementById('locationTextQueryInput');
-      if (locTextEl) {
-        locTextEl.addEventListener('input', () => {
-          clearTimeout(searchDebounceTimer);
-          searchDebounceTimer = setTimeout(() => {
-            if (activeSearchTab === 'location') searchNow('location');
-          }, 300);
-        });
-        locTextEl.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
-          }
-        });
-      }
+      document.getElementById('locationTextQueryInput').addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          if (activeSearchTab === 'location') searchNow('location');
+        }, 300);
+      });
       const locBcEl = document.getElementById('locationBarcodeQueryInput');
       if (locBcEl) {
         locBcEl.addEventListener('input', () => {
@@ -10460,7 +10440,7 @@ def home() -> HTMLResponse:
           if (e.key === 'Enter') {
             e.preventDefault();
             clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
+            if (activeSearchTab === 'location') searchNow('location');
           }
         });
         locBcEl.addEventListener('paste', () => {
@@ -10468,7 +10448,7 @@ def home() -> HTMLResponse:
             locBcEl.value = lightSanitizeBarcodeValue(locBcEl.value);
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-              if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
+              if (activeSearchTab === 'location') searchNow('location');
             }, 150);
           }, 0);
         });
