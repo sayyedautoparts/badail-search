@@ -6348,10 +6348,14 @@ def live_lookup_locations_from_hesabate(
                 "live": True,
                 "fast_path": False,
                 "verified": bool(prepared),
+                # لا تستبدل single_miss بـ catalog_import_then_single حتى تبقى الواجهة قادرة على إخفاء الجدول
                 "products_fetch_mode": (
-                    "catalog_import_then_single" if catalog_import_used else fetch_mode
+                    "catalog_import_then_single"
+                    if catalog_import_used and prepared
+                    else fetch_mode
                 ),
                 "catalog_imported": bool(catalog_import_used),
+                "missing_from_hesabate": bool(not_found and not prepared and pro_ids),
                 "resolved_pro_id": pro_ids[0] if pro_ids else "",
                 "resolved_pro_ids": pro_ids,
                 "barcode_filter_effective": False,
@@ -6605,51 +6609,6 @@ def home() -> HTMLResponse:
       font-size: 12.5px;
       font-weight: 800;
       color: var(--secondary-ink);
-    }
-    .hesabate-side-import-btn {
-      position: fixed;
-      left: 12px;
-      top: 42%;
-      z-index: 1200;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      width: 52px;
-      min-height: 120px;
-      padding: 12px 8px;
-      border: none;
-      border-radius: 16px;
-      background: linear-gradient(180deg, #1b7a4a 0%, #145c38 100%);
-      color: #fff;
-      font-size: 14px;
-      font-weight: 800;
-      line-height: 1.2;
-      box-shadow: 0 8px 24px rgba(20, 92, 56, .35);
-      cursor: pointer;
-      writing-mode: vertical-rl;
-      text-orientation: mixed;
-      letter-spacing: .02em;
-      font-family: inherit;
-    }
-    .hesabate-side-import-btn.visible { display: flex; }
-    .hesabate-side-import-btn:disabled {
-      opacity: .75;
-      cursor: wait;
-      background: linear-gradient(180deg, #6a8f7a 0%, #4f6f5d 100%);
-    }
-    .hesabate-side-import-btn:not(:disabled):active { transform: scale(.97); }
-    @media (max-width: 640px) {
-      .hesabate-side-import-btn {
-        left: 8px;
-        top: auto;
-        bottom: 18px;
-        width: auto;
-        min-height: 0;
-        padding: 12px 16px;
-        writing-mode: horizontal-tb;
-        border-radius: 999px;
-        font-size: 14px;
-      }
     }
     .drop-zone { margin-top: 8px; border: 2px dashed #b8c4e6; border-radius: 10px; padding: 12px; text-align: center; color: #445; background: #f8faff; }
     .drop-zone.active { border-color: #2d5fff; background: #eef3ff; }
@@ -6911,9 +6870,6 @@ def home() -> HTMLResponse:
   </style>
 </head>
 <body>
-  <button type="button" id="hesabateSideImportBtn" class="hesabate-side-import-btn" onclick="forceHesabateFullImport()" title="تحديث كل الأصناف من حساباتي الآن">
-    تحديث الكل
-  </button>
   <div class="wrap">
     <h1 class="app-title">بحث البدائل</h1>
 
@@ -6986,7 +6942,6 @@ def home() -> HTMLResponse:
             مزامنة تلقائية كل ساعتين (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · الزر اليدوي يعمل دائماً
           </p>
           <div class="btn-row" style="margin-top:10px;">
-            <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
             <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
           </div>
           <details style="margin-top:10px;">
@@ -7001,7 +6956,7 @@ def home() -> HTMLResponse:
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
-          <button type="button" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
+          <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7136,8 +7091,6 @@ def home() -> HTMLResponse:
       document.getElementById('sizeSearchPanel').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
-      const sideImportBtn = document.getElementById('hesabateSideImportBtn');
-      if (sideImportBtn) sideImportBtn.classList.toggle('visible', activeSearchTab === 'location');
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
@@ -7277,6 +7230,28 @@ def home() -> HTMLResponse:
     async function forceHesabateLocationSync() {
       await forceHesabateFullImport();
     }
+    function isMissingFromHesabate(live) {
+      if (!live || live.ok === false) return false;
+      const rows = Array.isArray(live.rows) ? live.rows : [];
+      if (rows.length) return false;
+      if (live.missing_from_hesabate) return true;
+      if (live.products_fetch_mode === 'single_miss') return true;
+      const hasPro = Array.isArray(live.resolved_pro_ids) && live.resolved_pro_ids.length > 0;
+      if (live.not_found && hasPro) return true;
+      const msg = String(live.message || '');
+      return msg.includes('مش داخل على حساباتي') || msg.includes('لم يُرجع صنفاً مطابقاً');
+    }
+    function clearLocationTable(statsText) {
+      const locWrap = document.getElementById('locationsTableWrap');
+      const locTable = document.getElementById('locationsTable');
+      if (locTable) {
+        const lBody = locTable.querySelector('tbody');
+        if (lBody) lBody.innerHTML = '';
+        locTable.style.display = 'none';
+      }
+      if (locWrap) locWrap.style.display = 'none';
+      if (statsText != null) setStats(statsText);
+    }
     function renderLocationRowsNow(rawRows, statsText) {
       const locWrap = document.getElementById('locationsTableWrap');
       const locTable = document.getElementById('locationsTable');
@@ -7288,6 +7263,10 @@ def home() -> HTMLResponse:
         if (k) seenKeys.add(k);
         safeRows.push(r);
       });
+      if (!safeRows.length) {
+        clearLocationTable(statsText || 'لا نتيجة.');
+        return 0;
+      }
       setStats( statsText || `نتائج المواقع: ${safeRows.length}`);
       const lBody = locTable.querySelector('tbody');
       lBody.innerHTML = '';
@@ -7442,10 +7421,9 @@ def home() -> HTMLResponse:
             live.error_kind === 'targeted_search_unsupported'
             || live.products_fetch_mode === 'targeted_search_unsupported'
           ));
-          if (live && live.products_fetch_mode === 'single_miss') {
-            // pro_id محلي لكن حساباتي ما رجّعت صنف — لا تعرض الجدول المحلي
+          if (isMissingFromHesabate(live)) {
             const miss = 'هذا الصنف مش داخل على حساباتي';
-            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            clearLocationTable(miss + (timingLine ? ` | ${timingLine}` : ''));
             if (stEl) stEl.textContent = miss;
           } else if (rows.length) {
             renderLocationRowsNow(
@@ -7596,16 +7574,16 @@ def home() -> HTMLResponse:
           const uiMs = Math.round(performance.now() - t0);
           const timingLine = formatLookupTiming(live, uiMs);
           // المعرف الداخلي ما رجّع صنفاً من حساباتي — امسح الجدول ولا تعرض المحلي
-          if (live.products_fetch_mode === 'single_miss' || (live.not_found && !apiRows.length && (live.resolved_pro_ids || []).length)) {
+          if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
             const miss = 'هذا الصنف مش داخل على حساباتي';
-            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            clearLocationTable(miss + (timingLine ? ` | ${timingLine}` : ''));
             if (stEl) stEl.textContent = miss;
             return;
           }
-          const rows = apiRows.length ? apiRows : localRows;
+          const rows = apiRows.length ? apiRows : [];
           if (!rows.length) {
             const miss = live.message || 'هذا الصنف مش داخل على حساباتي';
-            renderLocationRowsNow([], miss + (timingLine ? ` | ${timingLine}` : ''));
+            clearLocationTable(miss + (timingLine ? ` | ${timingLine}` : ''));
             if (stEl) stEl.textContent = miss;
             return;
           }
@@ -7629,16 +7607,10 @@ def home() -> HTMLResponse:
       return hesabateLookupInflight;
     }
     async function forceHesabateFullImport() {
-      const sideBtn = document.getElementById('hesabateSideImportBtn');
       const stEl = document.getElementById('hesabateSyncStatus');
-      const prevLabel = sideBtn ? sideBtn.textContent : '';
       if (hesabateEnsureInflight) {
         if (stEl) stEl.textContent = 'استيراد جارٍ بالفعل... انتظر حتى ينتهي.';
         return;
-      }
-      if (sideBtn) {
-        sideBtn.disabled = true;
-        sideBtn.textContent = 'جاري الاستيراد...';
       }
       if (stEl) stEl.textContent = 'جاري تحديث جميع الأصناف من حساباتي (اسم/موقع/باركود/سعر)...';
       setStats('جاري تحديث الكل من حساباتي...');
@@ -7660,10 +7632,7 @@ def home() -> HTMLResponse:
         setStats( msg);
         if (activeSearchTab === 'location') await searchNow('location');
       } finally {
-        if (sideBtn) {
-          sideBtn.disabled = false;
-          sideBtn.textContent = prevLabel || 'تحديث الكل';
-        }
+        /* no-op */
       }
     }
 
@@ -7871,7 +7840,7 @@ def home() -> HTMLResponse:
       setBarcodeScanStatus('تم التقاط الباركود');
       try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
       await closeBarcodeScanner();
-      searchNow('location');
+      fetchOneItemFromHesabate();
     }
 
     async function openLocationBarcodeScanner() {
@@ -7886,8 +7855,6 @@ def home() -> HTMLResponse:
         document.getElementById('sizeSearchPanel').classList.toggle('active', false);
         document.getElementById('wiperSearchPanel').classList.toggle('active', false);
         document.getElementById('locationSearchPanel').classList.toggle('active', true);
-        const sideImportBtn = document.getElementById('hesabateSideImportBtn');
-        if (sideImportBtn) sideImportBtn.classList.add('visible');
       }
       const modal = document.getElementById('barcodeModal');
       const regionId = 'barcodeScannerRegion';
@@ -10374,10 +10341,6 @@ def home() -> HTMLResponse:
       document.getElementById('wiperSearchPanel').classList.toggle('active', activeSearchTab === 'wiper');
       document.getElementById('locationSearchPanel').classList.toggle('active', activeSearchTab === 'location');
       {
-        const sideImportBtn = document.getElementById('hesabateSideImportBtn');
-        if (sideImportBtn) sideImportBtn.classList.toggle('visible', activeSearchTab === 'location');
-      }
-      {
         let lt = localStorage.getItem('lastLocationTextQuery');
         if (lt == null || lt === '') {
           const legacy = localStorage.getItem('lastLocationQuery');
@@ -10432,12 +10395,22 @@ def home() -> HTMLResponse:
           }, 250);
         });
       });
-      document.getElementById('locationTextQueryInput').addEventListener('input', () => {
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          if (activeSearchTab === 'location') searchNow('location');
-        }, 300);
-      });
+      const locTextEl = document.getElementById('locationTextQueryInput');
+      if (locTextEl) {
+        locTextEl.addEventListener('input', () => {
+          clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            if (activeSearchTab === 'location') searchNow('location');
+          }, 300);
+        });
+        locTextEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            clearTimeout(searchDebounceTimer);
+            if (activeSearchTab === 'location') fetchOneItemFromHesabate();
+          }
+        });
+      }
       const locBcEl = document.getElementById('locationBarcodeQueryInput');
       if (locBcEl) {
         locBcEl.addEventListener('input', () => {
@@ -10450,7 +10423,7 @@ def home() -> HTMLResponse:
           if (e.key === 'Enter') {
             e.preventDefault();
             clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') searchNow('location');
+            if (activeSearchTab === 'location') fetchOneItemFromHesabate();
           }
         });
         locBcEl.addEventListener('paste', () => {
@@ -10458,7 +10431,7 @@ def home() -> HTMLResponse:
             locBcEl.value = lightSanitizeBarcodeValue(locBcEl.value);
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-              if (activeSearchTab === 'location') searchNow('location');
+              if (activeSearchTab === 'location') fetchOneItemFromHesabate();
             }, 150);
           }, 0);
         });
