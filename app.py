@@ -6895,7 +6895,7 @@ def home() -> HTMLResponse:
         height: 2.5cm;
         max-height: 2.5cm;
         box-sizing: border-box;
-        padding: 1mm 1.5mm;
+        padding: 0.6mm 1.2mm 0.4mm;
         margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
@@ -6911,72 +6911,120 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-name {
         flex: 0 0 auto;
-        max-height: 7.2mm;
-        font-size: 9px;
+        width: 100%;
+        max-width: 100%;
+        max-height: 7.5mm;
+        font-size: 14px;
         font-weight: 900;
         margin: 0;
-        line-height: 1.15;
+        line-height: 1.1;
         overflow: hidden !important;
         word-break: break-word;
         overflow-wrap: anywhere;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
+        text-align: center;
       }
       .print-label .pl-meta {
         flex: 0 0 auto;
         display: flex;
-        justify-content: space-between;
+        flex-direction: row;
+        direction: ltr;
+        justify-content: flex-start;
         align-items: center;
-        gap: 1mm;
-        font-size: 7.5px;
+        gap: 3.5mm;
+        font-size: 8px;
         font-weight: 800;
-        margin: 0.4mm 0 0.5mm;
-        max-height: 3.2mm;
+        margin: 0.3mm 0 0.2mm;
+        max-height: 3mm;
         overflow: hidden !important;
         white-space: nowrap;
+        width: 100%;
       }
       .print-label .pl-meta span {
-        flex: 1 1 0;
+        flex: 0 1 auto;
         min-width: 0;
+        max-width: 48%;
         overflow: hidden !important;
         text-overflow: ellipsis;
         white-space: nowrap;
+        text-align: left;
+        direction: ltr;
       }
-      .print-label .pl-meta .pl-loc { text-align: left; direction: ltr; }
-      .print-label .pl-meta .pl-orig { text-align: right; direction: ltr; }
       .print-label .pl-bc-wrap {
         flex: 1 1 auto;
         min-height: 0;
-        max-height: 11mm;
         overflow: hidden !important;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
+        gap: 0;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
         max-width: 100% !important;
-        max-height: 8mm !important;
+        max-height: 12mm !important;
         width: auto !important;
-        height: 8mm !important;
+        height: 12mm !important;
         overflow: hidden;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 7.5px;
+        font-size: 8px;
         font-weight: 800;
-        letter-spacing: .03em;
-        margin-top: 0.3mm;
+        letter-spacing: .02em;
+        margin: 0;
+        padding: 0;
         line-height: 1;
         overflow: hidden !important;
         text-overflow: ellipsis;
         white-space: nowrap;
         direction: ltr;
       }
+    }
+    /* قياس مؤقت قبل الطباعة حتى يشتغل تكبير/تصغير الاسم */
+    .print-label-sheet.print-measure {
+      display: block !important;
+      position: fixed !important;
+      left: -10000px !important;
+      top: 0 !important;
+      width: 12cm !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+      z-index: -1 !important;
+    }
+    .print-label-sheet.print-measure .print-label-row {
+      display: flex;
+      width: 12cm;
+      height: 2.5cm;
+    }
+    .print-label-sheet.print-measure .print-label {
+      width: 6cm;
+      max-width: 6cm;
+      height: 2.5cm;
+      max-height: 2.5cm;
+      box-sizing: border-box;
+      padding: 0.6mm 1.2mm 0.4mm;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      font-family: Tahoma, Arial, sans-serif;
+    }
+    .print-label-sheet.print-measure .pl-name {
+      max-height: 7.5mm;
+      overflow: hidden;
+      font-weight: 900;
+      line-height: 1.1;
+      width: 100%;
+    }
+    .print-label-sheet.print-measure .pl-meta {
+      display: flex;
+      direction: ltr;
+      justify-content: flex-start;
+      gap: 3.5mm;
+      max-height: 3mm;
+      overflow: hidden;
+      white-space: nowrap;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -8285,14 +8333,43 @@ def home() -> HTMLResponse:
         if (btn) btn.disabled = false;
       }
     }
-    function fitPrintBoxText(el, maxPx, minPx) {
+    function fitPrintNameDynamic(el) {
       if (!el) return;
+      const maxPx = 15;
+      const minPx = 6.5;
+      // جرّب سطر واحد بحجم كبير أولاً (يكبر للاسم القصير)
+      el.style.display = 'block';
+      el.style.whiteSpace = 'nowrap';
+      el.style.overflow = 'hidden';
+      el.style.webkitLineClamp = 'unset';
+      el.style.lineClamp = 'unset';
       let size = maxPx;
       el.style.fontSize = size + 'px';
-      // صغّر الخط حتى يبقى النص داخل الصندوق
-      for (let i = 0; i < 24 && size > minPx; i++) {
-        if (el.scrollHeight <= el.clientHeight + 0.5 && el.scrollWidth <= el.clientWidth + 0.5) break;
-        size -= 0.5;
+      while (size > minPx && el.scrollWidth > el.clientWidth + 0.5) {
+        size -= 0.4;
+        el.style.fontSize = size + 'px';
+      }
+      // إذا ما زال طويل — سطرين مع تصغير ديناميكي حسب عرض العمود
+      if (el.scrollWidth > el.clientWidth + 0.5) {
+        el.style.whiteSpace = 'normal';
+        el.style.wordBreak = 'break-word';
+        el.style.overflowWrap = 'anywhere';
+        el.style.display = '-webkit-box';
+        el.style.webkitBoxOrient = 'vertical';
+        el.style.webkitLineClamp = '2';
+        el.style.lineClamp = '2';
+        while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
+          size -= 0.4;
+          el.style.fontSize = size + 'px';
+        }
+      }
+    }
+    function fitPrintMetaLeft(el) {
+      if (!el) return;
+      let size = 9;
+      el.style.fontSize = size + 'px';
+      while (size > 6 && el.scrollWidth > el.clientWidth + 0.5) {
+        size -= 0.4;
         el.style.fontSize = size + 'px';
       }
     }
@@ -8308,13 +8385,15 @@ def home() -> HTMLResponse:
         label.querySelector('.pl-orig').textContent = data.original || '—';
         label.querySelector('.pl-loc').textContent = data.location || '—';
         label.querySelector('.pl-bc-text').textContent = data.barcode || '';
-        // عرض وحدة الباركود يتقلص حسب طول الرمز حتى ما يطلع برا الملصق (~54mm)
+        // باركود أعرض/أطول ضمن عرض الملصق (~57mm)
         const codeLen = Math.max(6, String(data.barcode || '').length);
-        const moduleW = Math.max(0.7, Math.min(1.5, 54 / (codeLen * 11)));
+        const moduleW = Math.max(0.85, Math.min(2.1, 57 / (codeLen * 11)));
         renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
-          height: 30,
+          height: 46,
           width: moduleW,
-          margin: 0
+          margin: 0,
+          marginTop: 0,
+          marginBottom: 0
         });
       }
       return label;
@@ -8356,6 +8435,7 @@ def home() -> HTMLResponse:
         sheet.className = 'print-label-sheet';
         document.body.appendChild(sheet);
       }
+      sheet.className = 'print-label-sheet print-measure';
       sheet.innerHTML = '';
       const payload = { name, original, location, barcode };
       // لزيق دبل: كل ورقة = ملصقان (6سم × 2.5سم) داخل 12سم × 2.5سم
@@ -8367,13 +8447,15 @@ def home() -> HTMLResponse:
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
-        fitPrintBoxText(left.querySelector('.pl-name'), 10, 6);
-        fitPrintBoxText(left.querySelector('.pl-meta'), 8, 5.5);
+        fitPrintNameDynamic(left.querySelector('.pl-name'));
+        fitPrintMetaLeft(left.querySelector('.pl-meta'));
         if (!right.classList.contains('print-label-empty')) {
-          fitPrintBoxText(right.querySelector('.pl-name'), 10, 6);
-          fitPrintBoxText(right.querySelector('.pl-meta'), 8, 5.5);
+          fitPrintNameDynamic(right.querySelector('.pl-name'));
+          fitPrintMetaLeft(right.querySelector('.pl-meta'));
         }
       }
+      // أعد للصنف المعتاد قبل نافذة الطباعة
+      sheet.className = 'print-label-sheet';
       setPrintFetchStatus(`جاهز للطباعة · ${qty} ملصق (لزيق دبل 12×2.5 سم)`);
       window.print();
     }
