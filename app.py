@@ -7007,7 +7007,7 @@ def home() -> HTMLResponse:
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
-          <button type="button" onclick="searchNow('location')">بحث</button>
+          <button type="button" onclick="searchNow('location', {liveCheck: true})">بحث</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7865,7 +7865,7 @@ def home() -> HTMLResponse:
       setBarcodeScanStatus('تم التقاط الباركود');
       try { if (navigator.vibrate) navigator.vibrate(18); } catch (_) {}
       await closeBarcodeScanner();
-      searchNow('location');
+      searchNow('location', { liveCheck: true });
     }
 
     async function openLocationBarcodeScanner() {
@@ -9967,7 +9967,9 @@ def home() -> HTMLResponse:
       await searchNow();
     }
 
-    async function searchNow(mode = 'auto') {
+    async function searchNow(mode = 'auto', opts) {
+      const options = (opts && typeof opts === 'object') ? opts : {};
+      const liveCheck = options.liveCheck === true;
       const effectiveMode = mode === 'auto' ? activeSearchTab : mode;
 
       const wiperWrap = document.getElementById('wipersTableWrap');
@@ -10045,15 +10047,22 @@ def home() -> HTMLResponse:
           if (k) seenKeys.add(k);
           safeRows.push(r);
         });
-        // وفّر طلبات حساباتي: النتيجة المحلية تكفي.
-        // جلب API فقط عند باركود مكتمل بلا نتيجة محلية (أو عبر زر «جلب صنف واحد»).
-        const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc) && !safeRows.length);
+        // الكتابة التلقائية: محلي فقط (0 طلب).
+        // زر بحث / Enter / كاميرا (liveCheck): تحقّق موجّه بطلب products واحد لتحديث الموقع.
+        const localHasProId = safeRows.some(r => String(r.hesabate_product_id || '').trim());
+        const completeBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
+        const willAutoBcMiss = completeBc && !safeRows.length;
+        const willAutoLive = liveCheck && (
+          completeBc || (!lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId)
+        );
+        const willAuto = willAutoBcMiss || willAutoLive;
         if (safeRows.length) {
           renderLocationRowsNow(
             safeRows,
             `محلي فوري · ${safeRows.length} · ${localMs}ms`
+              + (willAutoLive ? ' · جاري تحديث الموقع من حساباتي...' : '')
           );
-        } else if (willAutoBc) {
+        } else if (willAuto) {
           locWrap.style.display = 'none';
           locTable.style.display = 'none';
           setStats('بحث موجّه في حساباتي...');
@@ -10062,8 +10071,14 @@ def home() -> HTMLResponse:
           locTable.style.display = 'none';
           setStats(lqBc ? 'لا يوجد صنف بهذا الباركود.' : 'لا توجد نتيجة.');
         }
-        if (willAutoBc) {
-          autoRefreshLocationQuery(lqBc, '', gen, false, localMs);
+        if (willAuto) {
+          autoRefreshLocationQuery(
+            completeBc ? lqBc : '',
+            (!lqBc && willAutoLive) ? lqText : '',
+            gen,
+            safeRows.length > 0,
+            localMs
+          );
         }
         return;
       }
@@ -10417,12 +10432,22 @@ def home() -> HTMLResponse:
           }, 250);
         });
       });
-      document.getElementById('locationTextQueryInput').addEventListener('input', () => {
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          if (activeSearchTab === 'location') searchNow('location');
-        }, 300);
-      });
+      const locTextEl = document.getElementById('locationTextQueryInput');
+      if (locTextEl) {
+        locTextEl.addEventListener('input', () => {
+          clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            if (activeSearchTab === 'location') searchNow('location');
+          }, 300);
+        });
+        locTextEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            clearTimeout(searchDebounceTimer);
+            if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
+          }
+        });
+      }
       const locBcEl = document.getElementById('locationBarcodeQueryInput');
       if (locBcEl) {
         locBcEl.addEventListener('input', () => {
@@ -10435,7 +10460,7 @@ def home() -> HTMLResponse:
           if (e.key === 'Enter') {
             e.preventDefault();
             clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') searchNow('location');
+            if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
           }
         });
         locBcEl.addEventListener('paste', () => {
@@ -10443,7 +10468,7 @@ def home() -> HTMLResponse:
             locBcEl.value = lightSanitizeBarcodeValue(locBcEl.value);
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-              if (activeSearchTab === 'location') searchNow('location');
+              if (activeSearchTab === 'location') searchNow('location', { liveCheck: true });
             }, 150);
           }, 0);
         });
