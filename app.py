@@ -791,7 +791,7 @@ class HesabateLookupIn(BaseModel):
     cache_only: bool = False
     # يتجاوز كاش الذاكرة وكاش DB ويجلب بالمعرّف الداخلي فقط (pro_id+all=1)
     refresh: bool = False
-    # مهمل: لا يُشغّل مزامنة كتالوج من البحث (متوافق مع العملاء القدامى)
+    # زر «جلب الصنف» فقط: إن لم يوجد pro_id محلي استورد الكتالوج ثم أعد البحث عن الصنف
     discover_new: bool = False
 
 
@@ -5820,11 +5820,10 @@ def live_lookup_locations_from_hesabate(
     """
     جلب/تحديث موجّه من حساباتي:
     - بدون refresh: محلي ثم كاش DB
-    - مع refresh: يتجاوز الكاش ويجلب فقط عبر pro_id+all=1 (مُختبر)
-    - لا تنزيل كتالوج كامل من البحث أبداً — حتى مع discover_new
-    - بدون pro_id معروف: targeted_search_unsupported (حد API)
+    - مع refresh: يتجاوز الكاش ويجلب عبر pro_id+all=1
+    - discover_new=True (زر جلب الصنف فقط): إن غاب pro_id يستورد الكتالوج ثم يعيد البحث
+    - البحث التلقائي يبقي discover_new=False (لا كتالوج)
     """
-    del discover_new  # ignored — full catalog must stay manual-only
     t_total = time.perf_counter()
     timing: dict[str, Any] = {
         "db_ms": 0,
@@ -5833,6 +5832,7 @@ def live_lookup_locations_from_hesabate(
         "save_ms": 0,
         "map_ms": 0,
         "model_ms": 0,
+        "catalog_import_ms": 0,
         "total_ms": 0,
     }
     api_cap = {
@@ -6000,6 +6000,88 @@ def live_lookup_locations_from_hesabate(
     # محاولة أخيرة: اربط الصف المحلي بالكاش ثم حدّث
     if not pro_ids and local_fallback:
         pro_ids = backfill_hesabate_product_ids_for_rows(local_fallback)
+
+    # زر «جلب الصنف»: صنف جديد غير معروف محلياً — استيراد كتالوج ثم مطابقة
+    catalog_import_used = False
+    if not pro_ids and discover_new and not cache_only:
+        t_imp = time.perf_counter()
+        logger.info(
+            "hesabate_lookup discover_new importing catalog barcode=%s q=%s",
+            qb,
+            qt[:80] if qt else "",
+        )
+        sync_res = ensure_hesabate_locations_synced(force=True)
+        timing["catalog_import_ms"] = int((time.perf_counter() - t_imp) * 1000)
+        catalog_import_used = not bool(sync_res.get("skipped"))
+        if sync_res.get("ok") is False:
+            return _finish(
+                {
+                    "ok": False,
+                    "live": True,
+                    "products_fetch_mode": "catalog_import_failed",
+                    "error_kind": "api_error",
+                    "not_found": False,
+                    "total_rows": 0,
+                    "rows": [],
+                    "message": sync_res.get("message") or "فشل استيراد الكتالوج للعثور على الصنف الجديد.",
+                    "request_count": int(sync_res.get("request_count") or 0),
+                    "timing_ms": {**timing, **(sync_res.get("timing_ms") or {})},
+                }
+            )
+        # بعد الاستيراد: ابحث محلياً ثم حدّث موجّهاً إن وُجد pro_id
+        pro_ids = resolve_local_hesabate_product_ids(
+            barcode_keys=keys or None, text_query=qt, limit=5
+        )
+        local_fallback = _lookup_location_rows_for_live(
+            barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+        )
+        if not local_fallback and keys and qt:
+            local_fallback = _lookup_location_rows_for_live(
+                barcode_keys=None, text_query=qt, limit=10
+            )
+        if not pro_ids and local_fallback:
+            pro_ids = backfill_hesabate_product_ids_for_rows(local_fallback)
+        # إن وُجدت صفوف بعد الاستيراد بدون حاجة لطلب صنف إضافي
+        if local_fallback and not pro_ids:
+            return _finish(
+                {
+                    "ok": True,
+                    "live": True,
+                    "verified": True,
+                    "products_fetch_mode": "catalog_import_match",
+                    "catalog_imported": catalog_import_used,
+                    "not_found": False,
+                    "total_rows": len(local_fallback),
+                    "rows": local_fallback[:10],
+                    "resolved_pro_ids": [],
+                    "message": (
+                        f"تم استيراد الكتالوج وإيجاد {len(local_fallback)} صنف · "
+                        f"{timing['catalog_import_ms']}ms"
+                    ),
+                    "request_count": int(sync_res.get("request_count") or 0),
+                }
+            )
+        if not pro_ids and not local_fallback:
+            return _finish(
+                {
+                    "ok": True,
+                    "live": True,
+                    "products_fetch_mode": "catalog_import_miss",
+                    "catalog_imported": catalog_import_used,
+                    "error_kind": "not_found",
+                    "not_found": True,
+                    "total_rows": 0,
+                    "rows": [],
+                    "resolved_pro_ids": [],
+                    "message": (
+                        "تم استيراد الكتالوج من حساباتي لكن لم يُعثر على صنف مطابق "
+                        "للباركود/الاسم/الرقم الذي أدخلته."
+                    ),
+                    "request_count": int(sync_res.get("request_count") or 0),
+                }
+            )
+        # pro_ids موجودة → نتابع الجلب الموجّه أدناه لأحدث سعر/كمية
+
     if not pro_ids:
         if local_fallback:
             return _finish(
@@ -6017,7 +6099,7 @@ def live_lookup_locations_from_hesabate(
                     "resolved_pro_ids": [],
                     "message": (
                         f"نتيجة محلية · {len(local_fallback)} — الصنف غير مربوط بكاش حساباتي بعد. "
-                        "اضغط «تحديث الكل الآن» مرة واحدة ثم أعد جلب الصنف."
+                        "اضغط «جلب صنف واحد» لاستيراد الصنف من حساباتي."
                     ),
                     "request_count": 0,
                 }
@@ -6036,8 +6118,8 @@ def live_lookup_locations_from_hesabate(
                 "rows": [],
                 "resolved_pro_ids": [],
                 "message": (
-                    "الصنف غير موجود في الفهرس المحلي بعد. "
-                    "اضغط «تحديث الكل الآن» لاستيراد الكتالوج، ثم أعد البحث/جلب الصنف."
+                    "الصنف غير موجود في الفهرس المحلي. "
+                    "اضغط «جلب صنف واحد» لاستيراده من حساباتي (قد يستغرق دقيقة)."
                 ),
                 "request_count": 0,
             }
@@ -6240,7 +6322,10 @@ def live_lookup_locations_from_hesabate(
                 "live": True,
                 "fast_path": False,
                 "verified": bool(prepared),
-                "products_fetch_mode": fetch_mode,
+                "products_fetch_mode": (
+                    "catalog_import_then_single" if catalog_import_used else fetch_mode
+                ),
+                "catalog_imported": bool(catalog_import_used),
                 "resolved_pro_id": pro_ids[0] if pro_ids else "",
                 "resolved_pro_ids": pro_ids,
                 "barcode_filter_effective": False,
@@ -6252,7 +6337,9 @@ def live_lookup_locations_from_hesabate(
                 "has_more": False,
                 "limit": len(prepared),
                 "offset": 0,
-                "message": msg,
+                "message": (
+                    f"صنف جديد · {msg}" if catalog_import_used and prepared else msg
+                ),
                 "request_count": request_count,
             }
         )
@@ -7191,7 +7278,7 @@ def home() -> HTMLResponse:
         }
       });
     }
-    async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh) {
+    async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
       const res = await fetch('/hesabate/lookup', {
         method: 'POST',
         cache: 'no-store',
@@ -7202,7 +7289,7 @@ def home() -> HTMLResponse:
           q: q || '',
           cache_only: !!cacheOnly,
           refresh: !!refresh,
-          discover_new: false
+          discover_new: !!discoverNew
         })
       });
       const live = await readJsonSafe(res);
@@ -7328,6 +7415,9 @@ def home() -> HTMLResponse:
       if (t.db_ms != null) parts.push(`DB ${t.db_ms}ms`);
       if (t.auth_ms != null) parts.push(`Auth ${t.auth_ms}ms`);
       if (t.products_ms != null) parts.push(`products ${t.products_ms}ms`);
+      if (t.catalog_import_ms != null && Number(t.catalog_import_ms) > 0) {
+        parts.push(`استيراد ${t.catalog_import_ms}ms`);
+      }
       if (t.products_bytes != null && t.products_bytes >= 0) {
         parts.push(`${Math.round(Number(t.products_bytes) / 1024)}KB`);
       }
@@ -7351,30 +7441,54 @@ def home() -> HTMLResponse:
       const oneBtn = document.getElementById('hesabateFetchOneBtn');
       const stEl = document.getElementById('hesabateSyncStatus');
       if (oneBtn) oneBtn.disabled = true;
-      setStats('جاري جلب صنف واحد فقط (بدون تنزيل الكل)...');
+      setStats('جاري جلب الصنف من حساباتي...');
       if (stEl) stEl.textContent = 'فحص محلي سريع...';
       const t0 = performance.now();
       const qBody = lqBc ? '' : lqText;
       hesabateLookupInflight = (async () => {
         try {
           // 1) محلي فوري
-          let live = await lookupHesabateItemOnce(lqBc, qBody, true, undefined, false);
+          let live = await lookupHesabateItemOnce(lqBc, qBody, true, undefined, false, false);
           let localRows = Array.isArray(live && live.rows) ? live.rows : [];
           if (localRows.length) {
             renderLocationRowsNow(localRows, `محلي فوري · ${localRows.length}`);
           }
-          // 2) تحديث موجّه فقط عبر pro_id — سريع وبلا كتالوج
+          // 2) تحديث موجّه؛ إن كان صنفاً جديداً يستورد الكتالوج تلقائياً ثم يعيد المطابقة
           if (stEl) {
             stEl.textContent = localRows.length
               ? 'تحديث هذا الصنف من حساباتي...'
-              : 'جلب موجّه لصنف واحد...';
+              : 'صنف جديد؟ جاري الجلب من حساباتي (قد يستغرق دقيقة)...';
+          }
+          if (!localRows.length) {
+            setStats('جاري جلب الصنف الجديد من حساباتي...');
           }
           const ctrl = new AbortController();
-          const to = setTimeout(() => ctrl.abort(), 45000);
+          // استيراد كتالوج لصنف جديد قد يتجاوز دقيقة
+          const to = setTimeout(() => ctrl.abort(), localRows.length ? 45000 : 280000);
           try {
-            live = await lookupHesabateItemOnce(lqBc, qBody, false, ctrl.signal, true);
+            live = await lookupHesabateItemOnce(
+              lqBc, qBody, false, ctrl.signal, true, !localRows.length
+            );
           } finally {
             clearTimeout(to);
+          }
+          // إن بقي بلا نتيجة بعد التحديث الموجّه — جرّب استيراد مرة (صف محلي بلا pro_id)
+          if (
+            live && live.ok !== false
+            && !(Array.isArray(live.rows) && live.rows.length)
+            && localRows.length
+            && (live.products_fetch_mode === 'local_only_no_pro_id'
+              || live.products_fetch_mode === 'targeted_search_unsupported')
+          ) {
+            if (stEl) stEl.textContent = 'جاري ربط الصنف باستيراد من حساباتي...';
+            setStats('جاري استيراد الصنف من حساباتي...');
+            const ctrl2 = new AbortController();
+            const to2 = setTimeout(() => ctrl2.abort(), 280000);
+            try {
+              live = await lookupHesabateItemOnce(lqBc, qBody, false, ctrl2.signal, true, true);
+            } finally {
+              clearTimeout(to2);
+            }
           }
           const rows = Array.isArray(live && live.rows) && live.rows.length
             ? live.rows
@@ -7390,32 +7504,24 @@ def home() -> HTMLResponse:
             if (live && live.usage) renderHesabateUsage(live.usage, live.message || '');
             return;
           }
-          if (live.catalog_downloaded) {
-            setStats('خطأ: تنزيل كتالوج داخل جلب صنف — أُوقف.');
-            return;
-          }
           applyHesabateSearchVersion(live);
           if (live.usage) renderHesabateUsage(live.usage, live.message || '');
           const uiMs = Math.round(performance.now() - t0);
           const timingLine = formatLookupTiming(live, uiMs);
           if (!rows.length) {
-            const miss = (live.error_kind === 'targeted_search_unsupported'
-              || live.products_fetch_mode === 'targeted_search_unsupported'
-              || live.products_fetch_mode === 'local_only_no_pro_id')
-              ? (live.message || 'الصنف غير مربوط بعد — اضغط «تحديث الكل الآن» ثم أعد جلب الصنف.')
-              : (live.message || 'غير موجود.');
-            setStats(miss + (timingLine ? ` | ${timingLine}` : ''));
-            if (stEl) stEl.textContent = miss;
+            setStats((live.message || 'غير موجود في حساباتي.') + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = live.message || 'غير موجود.';
             return;
           }
+          const imported = !!(live.catalog_imported || live.products_fetch_mode === 'catalog_import_match');
           const n = renderLocationRowsNow(
             rows,
-            `${live.message || `تم جلب ${rows.length} صنف`} | ${timingLine}`
+            `${live.message || (imported ? `تم جلب صنف جديد · ${rows.length}` : `تم جلب ${rows.length} صنف`)} | ${timingLine}`
           );
-          if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف فقط.`;
+          if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف.`;
         } catch (err) {
           let hint = 'تعذر جلب الصنف.';
-          if (err && err.name === 'AbortError') hint = 'انتهت المهلة.';
+          if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة أو استخدم «تحديث الكل الآن».';
           else if (err && err.message) hint = String(err.message);
           setStats(hint);
           await refreshHesabateStatus();
@@ -11499,9 +11605,8 @@ def hesabate_cron_sync(request: Request) -> dict:
 def hesabate_lookup_item(payload: HesabateLookupIn) -> dict:
     """
     جلب/تحديث موجّه من حساباتي.
-    refresh=True يتجاوز كاش DB/الذاكرة ويجلب فقط عبر pro_id+all=1.
-    بدون pro_id محلي معروف: targeted_search_unsupported (لا تنزيل كتالوج).
-    discover_new يُتجاهل — استيراد الكتالوج يدوي فقط عبر زر الاستيراد.
+    refresh=True يتجاوز كاش DB/الذاكرة ويجلب عبر pro_id+all=1.
+    discover_new=True (زر جلب الصنف): إن غاب pro_id يستورد الكتالوج ثم يعيد مطابقة الصنف.
     """
     qb = str(payload.barcode or "").strip()
     qt = str(payload.q or "").strip()
