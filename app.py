@@ -6174,6 +6174,10 @@ def live_lookup_locations_from_hesabate(
         products_ms_sum = 0
         model_refreshed = False
         scheme = preferred_scheme
+        # أقل طلبات: صنف واحد كافٍ للبحث/الجلب (كان حتى 5 × products + model)
+        pro_ids = [p for p in pro_ids if str(p or "").strip()][:1]
+        # جدول model من الكاش إن وُجد؛ يُجلب فقط إن ناقص أو model_id غير معروف (داخل API)
+        need_force_model = not bool(model_payload)
 
         for idx, pid in enumerate(pro_ids):
             fetched = hesabate_api.fetch_location_catalog(
@@ -6197,9 +6201,7 @@ def live_lookup_locations_from_hesabate(
                 lookup_text_query="",
                 allow_full_on_single=False,
                 bypass_mem_cache=True,
-                # عند refresh (جلب صنف): حدّث جدول model مرة واحدة حتى يتغيّر اسم الموقع
-                # فشل model لا يُسقط الجلب (soft-fail داخل fetch_location_catalog)
-                force_model_refresh=bool(refresh) and idx == 0,
+                force_model_refresh=need_force_model and idx == 0,
             )
             request_count += int(fetched.get("request_count") or 0)
             api_timing = fetched.get("timing_ms") if isinstance(fetched.get("timing_ms"), dict) else {}
@@ -6215,6 +6217,7 @@ def live_lookup_locations_from_hesabate(
             if fetched.get("model_refreshed") and isinstance(fetched.get("model"), dict):
                 model_payload = fetched.get("model") or model_payload
                 model_refreshed = True
+                need_force_model = False
             products = fetched.get("products") or {}
             table = products.get("table") if isinstance(products, dict) else None
             rows = [r for r in (table or []) if isinstance(r, dict)]
@@ -6228,6 +6231,8 @@ def live_lookup_locations_from_hesabate(
                 continue
             hit = [r for r in rows if str(r.get("id") or "") == pid]
             raw_hits.extend(hit)
+            if hit:
+                break
 
         timing["products_ms"] = products_ms_sum
         if request_count:
@@ -10040,15 +10045,13 @@ def home() -> HTMLResponse:
           if (k) seenKeys.add(k);
           safeRows.push(r);
         });
-        const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
-        const localHasProId = safeRows.some(r => String(r.hesabate_product_id || '').trim());
-        // نص: حدّث فقط إن وُجد pro_id محلي — وإلا الرسالة كانت تُفهم كخطأ
-        const willAutoText = !lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId;
-        const willAuto = willAutoBc || willAutoText;
+        // وفّر طلبات حساباتي: النتيجة المحلية تكفي.
+        // جلب API فقط عند باركود مكتمل بلا نتيجة محلية (أو عبر زر «جلب صنف واحد»).
+        const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc) && !safeRows.length);
         if (safeRows.length) {
           renderLocationRowsNow(
             safeRows,
-            `محلي فوري · ${safeRows.length} · ${localMs}ms` + (willAuto ? ' · جاري التحقق من حساباتي...' : '')
+            `محلي فوري · ${safeRows.length} · ${localMs}ms`
           );
         } else if (willAutoBc) {
           locWrap.style.display = 'none';
@@ -10059,14 +10062,8 @@ def home() -> HTMLResponse:
           locTable.style.display = 'none';
           setStats(lqBc ? 'لا يوجد صنف بهذا الباركود.' : 'لا توجد نتيجة.');
         }
-        if (willAuto) {
-          autoRefreshLocationQuery(
-            willAutoBc ? lqBc : '',
-            willAutoText ? lqText : '',
-            gen,
-            safeRows.length > 0,
-            localMs
-          );
+        if (willAutoBc) {
+          autoRefreshLocationQuery(lqBc, '', gen, false, localMs);
         }
         return;
       }
