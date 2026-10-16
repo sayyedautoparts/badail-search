@@ -20,15 +20,26 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${APP_URL:-}" ]; then
-            echo "Missing GitHub secret APP_URL — skipping (Vercel cron may still run)."
-            exit 0
+            echo "::error::Missing GitHub secret APP_URL (e.g. https://badail-search.vercel.app)"
+            exit 1
           fi
           URL="${APP_URL%/}/hesabate/cron_sync"
-          HDR=()
+          HDR=(-H "Accept: application/json")
           if [ -n "${CRON_SECRET:-}" ]; then
-            HDR=(-H "Authorization: Bearer ${CRON_SECRET}")
+            HDR+=(-H "Authorization: Bearer ${CRON_SECRET}")
           fi
           echo "GET sync -> $URL"
-          curl -fsS --max-time 290 -X GET "$URL" "${HDR[@]}" -o /tmp/sync.json
-          head -c 2000 /tmp/sync.json
+          HTTP_CODE=$(curl -sS --max-time 290 -o /tmp/sync.json -w "%{http_code}" -X GET "$URL" "${HDR[@]}")
+          echo "HTTP $HTTP_CODE"
+          head -c 2500 /tmp/sync.json || true
           echo
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::cron_sync failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          # فشل منطقي من السيرفر
+          if grep -q '"ok"[[:space:]]*:[[:space:]]*false' /tmp/sync.json; then
+            echo "::error::cron_sync returned ok=false"
+            exit 1
+          fi
+          echo "Sync trigger OK"
