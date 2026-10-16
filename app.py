@@ -6683,9 +6683,9 @@ def home() -> HTMLResponse:
       border-radius: 12px;
       border: 1px dashed #b8c4e6;
     }
-    /* جدول المواقع — النص كامل ظاهر، الخط يتكيّف مع الخانة */
+    /* جدول المواقع — عرض كامل بدون سحب، خط يتكيّف مع عرض الخانة */
     #locationsTableWrap {
-      overflow-x: auto;
+      overflow-x: hidden;
       overflow-y: visible;
       width: 100%;
       max-width: 100%;
@@ -6698,7 +6698,7 @@ def home() -> HTMLResponse:
     #locationsTable {
       table-layout: fixed;
       width: 100%;
-      min-width: 640px;
+      min-width: 0;
       font-size: 14px;
       border-collapse: collapse;
     }
@@ -6707,12 +6707,13 @@ def home() -> HTMLResponse:
       padding: 0;
       vertical-align: middle;
       border-bottom: 1px solid #e8edf5;
+      overflow: hidden;
     }
     #locationsTable tbody tr:nth-child(even) { background: #f7f9fd; }
     #locationsTable tbody tr:hover { background: #eef4ff; }
     #locationsTable tbody tr:last-child td { border-bottom: none; }
     #locationsTable th {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 800;
       color: #102038;
       background: #eef2f8;
@@ -6728,23 +6729,26 @@ def home() -> HTMLResponse:
       justify-content: flex-start;
       box-sizing: border-box;
       width: 100%;
-      min-height: 48px;
-      padding: 10px 12px;
+      min-height: 44px;
+      padding: 8px 6px;
+      overflow: hidden;
     }
     #locationsTable th .cell {
-      min-height: 44px;
-      padding: 10px 12px;
+      min-height: 40px;
+      padding: 8px 6px;
       font-weight: 800;
       color: #102038;
     }
     #locationsTable .cell-text {
       display: block;
       width: 100%;
-      white-space: normal;
-      overflow: visible;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-      line-height: 1.35;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: clip;
+      word-break: normal;
+      overflow-wrap: normal;
+      line-height: 1.25;
       font-variant-numeric: tabular-nums;
     }
     #locationsTable .cell-empty {
@@ -6753,12 +6757,12 @@ def home() -> HTMLResponse:
       white-space: nowrap;
     }
     /* الصنف | الموقع | الشركة | الأصلي | الكمية | السعر */
-    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 32%; }
+    #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 30%; }
     #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { width: 16%; }
     #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) { width: 16%; }
     #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) { width: 16%; }
-    #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 10%; }
-    #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 10%; }
+    #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 11%; }
+    #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 11%; }
     #locationsTable td:nth-child(1) .cell-text { font-weight: 700; color: var(--ink); }
     #locationsTable td:nth-child(2) .cell-text { font-weight: 800; color: #0b3d2e; }
     #locationsTable td:nth-child(3) .cell-text { font-weight: 600; color: #334155; }
@@ -6769,25 +6773,40 @@ def home() -> HTMLResponse:
     #locationsTable td:nth-child(6) .cell {
       justify-content: center;
       text-align: center;
+      padding-left: 4px;
+      padding-right: 4px;
     }
     #locationsTable td:nth-child(5) .cell-text { font-weight: 800; color: #0d47a1; text-align: center; }
     #locationsTable td:nth-child(6) .cell-text { font-weight: 800; color: #1b5e20; text-align: center; }
     @media (max-width: 767px) {
       #locationsTableWrap {
-        margin-left: -8px;
-        margin-right: -8px;
-        width: calc(100% + 16px);
-        max-width: none;
+        margin-left: 0;
+        margin-right: 0;
+        width: 100%;
+        max-width: 100%;
         border-radius: 12px;
+        overflow-x: hidden;
       }
-      #locationsTable { min-width: 560px; }
-      #locationsTable .cell { min-height: 44px; padding: 8px; }
-      #locationsTable th .cell { min-height: 40px; }
-      #locationsTable th { font-size: 12px; }
+      #locationsTable {
+        min-width: 0;
+        width: 100%;
+        font-size: 11px;
+      }
+      #locationsTable th { font-size: 10px; }
+      #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 28%; }
+      #locationsTable th:nth-child(2), #locationsTable td:nth-child(2) { width: 15%; }
+      #locationsTable th:nth-child(3), #locationsTable td:nth-child(3) { width: 15%; }
+      #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) { width: 18%; }
+      #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 12%; }
+      #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 12%; }
+      #locationsTable .cell { min-height: 38px; padding: 6px 3px; }
+      #locationsTable th .cell { min-height: 34px; padding: 6px 3px; }
     }
     @media (min-width: 768px) {
-      #locationsTable .cell { min-height: 52px; padding: 12px 14px; }
-      #locationsTable th .cell { min-height: 46px; }
+      #locationsTable { font-size: 15px; }
+      #locationsTable th { font-size: 13px; }
+      #locationsTable .cell { min-height: 50px; padding: 10px 10px; }
+      #locationsTable th .cell { min-height: 44px; }
     }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
@@ -6936,7 +6955,6 @@ def home() -> HTMLResponse:
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
           <button type="button" onclick="searchNow('location')">بحث</button>
-          <button type="button" class="btn-secondary" onclick="fetchOneItemFromHesabate()">جلب هذا الصنف</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7248,34 +7266,36 @@ def home() -> HTMLResponse:
       const table = document.getElementById('locationsTable');
       if (!table || table.style.display === 'none') return;
       const isMobile = window.matchMedia('(max-width: 767px)').matches;
-      const maxByCol = isMobile ? [14, 13, 13, 13, 14, 14] : [16, 15, 15, 15, 16, 16];
-      const minPx = 10;
-      table.querySelectorAll('tbody td').forEach((td) => {
-        const el = td.querySelector('.cell-text:not(.cell-empty)');
-        const cell = td.querySelector('.cell');
+      const maxByCol = isMobile ? [12, 11, 11, 11, 12, 12] : [16, 15, 15, 15, 16, 16];
+      const minPx = isMobile ? 7 : 9;
+      const fitEl = (el, cell, maxPx) => {
         if (!el || !cell) return;
-        const col = td.cellIndex;
-        const maxPx = maxByCol[col] != null ? maxByCol[col] : 14;
+        el.style.whiteSpace = 'nowrap';
+        el.style.overflow = 'hidden';
+        el.style.textOverflow = 'clip';
+        el.style.wordBreak = 'normal';
         let size = maxPx;
-        el.style.fontSize = size + 'px';
-        el.style.whiteSpace = 'normal';
-        // قصير → خط أكبر؛ طويل → يصغّر حتى يظهر كاملاً داخل عرض الخانة بعد الالتفاف
         const len = (el.textContent || '').trim().length;
-        if (len > 18) size = Math.min(size, maxPx - 1);
-        if (len > 32) size = Math.min(size, maxPx - 2);
-        if (len > 48) size = Math.min(size, maxPx - 3);
-        if (len > 70) size = Math.min(size, maxPx - 4);
+        if (len > 14) size = Math.min(size, maxPx - 1);
+        if (len > 22) size = Math.min(size, maxPx - 2);
+        if (len > 32) size = Math.min(size, maxPx - 3);
+        if (len > 44) size = Math.min(size, maxPx - 4);
         size = Math.max(minPx, size);
         el.style.fontSize = size + 'px';
         let guard = 0;
-        while (guard < 16 && size > minPx) {
-          const tooWide = el.scrollWidth > cell.clientWidth + 1;
-          const tooTall = el.scrollHeight > 84;
-          if (!tooWide && !tooTall) break;
+        while (guard < 24 && size > minPx && el.scrollWidth > cell.clientWidth + 1) {
           size -= 0.5;
           el.style.fontSize = size + 'px';
           guard += 1;
         }
+      };
+      table.querySelectorAll('thead th, tbody td').forEach((td) => {
+        const el = td.querySelector('.cell-text');
+        const cell = td.querySelector('.cell');
+        if (!el || !cell || el.classList.contains('cell-empty')) return;
+        const col = td.cellIndex;
+        const maxPx = maxByCol[col] != null ? maxByCol[col] : (isMobile ? 11 : 14);
+        fitEl(el, cell, maxPx);
       });
     }
     async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
