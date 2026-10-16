@@ -7001,7 +7001,7 @@ def home() -> HTMLResponse:
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
-          <button type="button" onclick="searchNow('location')">بحث</button>
+          <button type="button" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -9961,9 +9961,7 @@ def home() -> HTMLResponse:
       await searchNow();
     }
 
-    async function searchNow(mode = 'auto', opts) {
-      const options = (opts && typeof opts === 'object') ? opts : {};
-      const liveCheck = options.liveCheck === true;
+    async function searchNow(mode = 'auto') {
       const effectiveMode = mode === 'auto' ? activeSearchTab : mode;
 
       const wiperWrap = document.getElementById('wipersTableWrap');
