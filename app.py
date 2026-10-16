@@ -4300,6 +4300,29 @@ def record_hesabate_sync_batch(request_count: int) -> None:
     flush_hesabate_usage_pending(last_sync_requests=int(request_count or 0))
 
 
+def bump_hesabate_auto_sync_count() -> int:
+    """عداد مرات المزامنة التلقائية الناجحة (cron / جدولة) — ليس الزر اليدوي."""
+    try:
+        n = int(app_kv_get("hesabate_auto_sync_count", "0") or "0") + 1
+    except (TypeError, ValueError):
+        n = 1
+    n = max(1, n)
+    app_kv_set("hesabate_auto_sync_count", str(n))
+    app_kv_set("hesabate_auto_sync_last_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    return n
+
+
+def hesabate_auto_sync_stats() -> dict[str, Any]:
+    try:
+        count = int(app_kv_get("hesabate_auto_sync_count", "0") or "0")
+    except (TypeError, ValueError):
+        count = 0
+    return {
+        "auto_sync_count": max(0, count),
+        "auto_sync_last_at": app_kv_get("hesabate_auto_sync_last_at", ""),
+    }
+
+
 def hesabate_usage_summary() -> dict:
     st = _load_hesabate_usage()
     with _hesabate_usage_mem_lock:
@@ -4318,6 +4341,7 @@ def hesabate_usage_summary() -> dict:
         "sync_min_interval_sec": HESABATE_SYNC_MIN_INTERVAL_SEC,
         "last_location_sync_at": app_kv_get("hesabate_last_sync_at", ""),
         "last_location_rows": app_kv_get("hesabate_last_rows", "0"),
+        **hesabate_auto_sync_stats(),
     }
 
 
@@ -6935,6 +6959,7 @@ def home() -> HTMLResponse:
           <p class="sync-title">حساباتي</p>
           <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
           <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
+          <p id="hesabateAutoSyncCounter" class="sync-meta"><strong>تحديث تلقائي:</strong> —</p>
           <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
             مزامنة تلقائية كل ساعتين (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · الزر اليدوي يعمل دائماً
           </p>
@@ -7104,6 +7129,7 @@ def home() -> HTMLResponse:
     function renderHesabateUsage(usage, message, meta) {
       const st = document.getElementById('hesabateSyncStatus');
       const ctr = document.getElementById('hesabateRequestCounter');
+      const autoCtr = document.getElementById('hesabateAutoSyncCounter');
       meta = meta || {};
       if (!usage) {
         if (st) st.textContent = message || 'تعذّر قراءة حالة المزامنة.';
@@ -7112,12 +7138,17 @@ def home() -> HTMLResponse:
       const count = Number(usage.count || 0);
       const limit = Number(usage.limit || 0);
       const remaining = Number(usage.remaining || 0);
-      const month = usage.month || '';
       const lastSync = meta.last_sync_at || usage.last_location_sync_at || usage.last_sync_at || '';
       const rows = usage.last_location_rows || '0';
       const lastErr = meta.last_error || '';
+      const autoN = Number(usage.auto_sync_count || 0);
+      const autoLast = usage.auto_sync_last_at || '';
       if (ctr) {
         ctr.innerHTML = `<strong>طلبات API:</strong> ${count.toLocaleString('en-US')} / ${limit.toLocaleString('en-US')} (متبقي ${remaining.toLocaleString('en-US')})`;
+      }
+      if (autoCtr) {
+        autoCtr.innerHTML = `<strong>تحديث تلقائي:</strong> ${autoN.toLocaleString('en-US')} مرة`
+          + (autoLast ? ` · آخر مرة ${autoLast}` : '');
       }
       let line = usage.configured
         ? (message || 'المزامنة تعمل')
@@ -11537,6 +11568,8 @@ def hesabate_status() -> dict:
         "last_sync_at": app_kv_get("hesabate_last_sync_at", ""),
         "last_error": last_err,
         "sync_min_interval_sec": HESABATE_SYNC_MIN_INTERVAL_SEC,
+        "auto_sync_count": usage.get("auto_sync_count", 0),
+        "auto_sync_last_at": usage.get("auto_sync_last_at", ""),
         "catalog_mode": "full_download_compare",
         "api_note": (
             "Store API: Auth + download (products/company/trades/model). "
@@ -11618,6 +11651,13 @@ def hesabate_cron_sync(request: Request) -> dict:
     result["scheduled"] = True
     result["interval_hint_min"] = 120
     result["schedule"] = schedule_meta
+    # عدّ فقط عند نجاح مزامنة فعلية (ليس صمت ليلي / قفل / فشل)
+    if result.get("ok") and not result.get("skipped"):
+        result["auto_sync_count"] = bump_hesabate_auto_sync_count()
+        result["auto_sync_last_at"] = app_kv_get("hesabate_auto_sync_last_at", "")
+    else:
+        result.update(hesabate_auto_sync_stats())
+    result["usage"] = hesabate_usage_summary()
     return result
 
 
