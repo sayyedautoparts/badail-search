@@ -9,9 +9,14 @@ import unicodedata
 import hashlib
 import json
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -131,12 +136,16 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
-    # افتراضي 30 دقيقة — يتوافق مع Vercel Cron / GitHub Actions
+    # افتراضي ساعتان — مع نافذة صمت ليلاً بتوقيت فلسطين (انظر hesabate_auto_sync_allowed_now)
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "1800")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "7200")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 1800
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 7200
+# صمت المزامنة التلقائية: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem)
+HESABATE_AUTO_SYNC_TZ = os.getenv("HESABATE_AUTO_SYNC_TZ") or "Asia/Jerusalem"
+HESABATE_AUTO_SYNC_QUIET_START_HOUR = 21  # 9 مساءً
+HESABATE_AUTO_SYNC_QUIET_END_HOUR = 6  # 6 صباحاً
 # قفل مزامنة مشترك بين نسخ Vercel (session advisory lock)
 _HESABATE_SYNC_ADVISORY_LOCK_KEY = 87233401
 try:
@@ -5291,6 +5300,34 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             pass
 
 
+def palestine_now() -> datetime:
+    """الوقت الحالي بتوقيت فلسطين (Asia/Jerusalem، مع DST)."""
+    if ZoneInfo is not None:
+        try:
+            return datetime.now(ZoneInfo(HESABATE_AUTO_SYNC_TZ))
+        except Exception:
+            pass
+    # احتياطي: UTC+2 شتاءً تقريباً
+    return datetime.now(timezone.utc) + timedelta(hours=2)
+
+
+def hesabate_auto_sync_allowed_now() -> tuple[bool, dict[str, Any]]:
+    """
+    المزامنة التلقائية متاحة من 06:00 حتى قبل 21:00 بتوقيت فلسطين.
+    من 9 مساءً إلى 6 صباحاً: صمت (لا fetch تلقائي).
+    """
+    now = palestine_now()
+    hour = int(now.hour)
+    quiet = hour >= HESABATE_AUTO_SYNC_QUIET_START_HOUR or hour < HESABATE_AUTO_SYNC_QUIET_END_HOUR
+    meta = {
+        "tz": HESABATE_AUTO_SYNC_TZ,
+        "local_time": now.strftime("%Y-%m-%d %H:%M:%S%z"),
+        "quiet_hours": f"{HESABATE_AUTO_SYNC_QUIET_START_HOUR:02d}:00-{HESABATE_AUTO_SYNC_QUIET_END_HOUR:02d}:00",
+        "in_quiet_hours": quiet,
+    }
+    return (not quiet), meta
+
+
 def ensure_hesabate_locations_synced(*, force: bool = False) -> dict:
     return sync_locations_from_hesabate(force=force)
 
@@ -6793,7 +6830,7 @@ def home() -> HTMLResponse:
           <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
           <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
           <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
-            مزامنة تلقائية كل 30 دقيقة والتطبيق مغلق · التعديلات (اسم/موقع/باركود/سعر) تُحدَّث للصنف الموجود
+            مزامنة تلقائية كل ساعتين (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · الزر اليدوي يعمل دائماً
           </p>
           <div class="btn-row" style="margin-top:10px;">
             <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
@@ -11423,23 +11460,38 @@ def hesabate_sync_force() -> dict:
 @app.api_route("/hesabate/cron_sync", methods=["GET", "POST"])
 def hesabate_cron_sync(request: Request) -> dict:
     """
-    مزامنة مجدولة كل ~30 دقيقة (Vercel Cron / GitHub Actions) — تعمل والتطبيق مغلق.
-    تنزيل الكتالوج ثم تحديث الاسم/الموقع/الباركود/السعر للأصناف الموجودة.
+    مزامنة مجدولة كل ~ساعتين (GitHub Actions / Vercel) — تعمل والتطبيق مغلق.
+    صمت تلقائي 21:00–06:00 بتوقيت فلسطين. الزر اليدوي لا يتأثر.
     احمِها بـ CRON_SECRET أو HESABATE_CRON_SECRET إن وُجد.
     """
     secret = (os.getenv("CRON_SECRET") or os.getenv("HESABATE_CRON_SECRET") or "").strip()
     if secret:
-        # Vercel يرسل Authorization تلقائياً على Pro عند ضبط السر؛ نقبل أيضاً بدون سر إن لم يُضبط
         auth = (request.headers.get("authorization") or "").strip()
         cron_header = (request.headers.get("x-vercel-cron") or "").strip()
         ok_bearer = auth == f"Bearer {secret}"
-        ok_vercel = bool(cron_header)  # طلب من مجدول Vercel
+        ok_vercel = bool(cron_header)
         if not ok_bearer and not ok_vercel:
             raise HTTPException(status_code=401, detail="Unauthorized cron")
-    # force=True: كل دورة تحدّث الفروقات فعلياً (اسم/موقع/باركود…)
+    allowed, schedule_meta = hesabate_auto_sync_allowed_now()
+    if not allowed:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "quiet_hours_palestine",
+            "scheduled": True,
+            "interval_hint_min": 120,
+            "message": (
+                "توقفت المزامنة التلقائية ليلاً (9 مساءً – 6 صباحاً بتوقيت فلسطين). "
+                f"الوقت المحلي: {schedule_meta.get('local_time')}"
+            ),
+            "schedule": schedule_meta,
+            "search_version": _hesabate_search_data_version(),
+            "usage": hesabate_usage_summary(),
+        }
     result = ensure_hesabate_locations_synced(force=True)
     result["scheduled"] = True
-    result["interval_hint_min"] = 30
+    result["interval_hint_min"] = 120
+    result["schedule"] = schedule_meta
     return result
 
 

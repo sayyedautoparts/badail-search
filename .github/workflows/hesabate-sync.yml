@@ -1,10 +1,11 @@
-# Backup schedule if Vercel cron is unavailable: every 30 minutes.
-# Required GitHub secrets: APP_URL (e.g. https://badail-search.vercel.app), CRON_SECRET (same as Vercel).
+# Automatic Hesabate catalog sync every 2 hours.
+# Server also skips 21:00–06:00 Palestine time (Asia/Jerusalem).
+# Required GitHub secrets: APP_URL, CRON_SECRET (optional but recommended).
 name: Hesabate catalog sync
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */2 * * *"
   workflow_dispatch:
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
           if [ -n "${CRON_SECRET:-}" ]; then
             HDR=(-H "Authorization: Bearer ${CRON_SECRET}")
           fi
-          echo "POST/GET sync -> $URL"
+          echo "GET sync -> $URL"
           curl -fsS --max-time 290 -X GET "$URL" "${HDR[@]}" -o /tmp/sync.json
           head -c 2000 /tmp/sync.json
           echo
