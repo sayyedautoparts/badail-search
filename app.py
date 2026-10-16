@@ -5429,7 +5429,7 @@ def resolve_local_hesabate_product_id(
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("product_id") or "").strip()
-                if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                if _is_trusted_hesabate_product_id(pid):
                     return pid
         # 2) كاش المنتجات
         try:
@@ -5440,7 +5440,7 @@ def resolve_local_hesabate_product_id(
             )
             for prod in cached_raw or []:
                 pid = str(prod.get("id") or "").strip()
-                if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                if _is_trusted_hesabate_product_id(pid):
                     return pid
         except Exception:
             pass
@@ -5466,7 +5466,7 @@ def resolve_local_hesabate_product_id(
                 ).fetchone()
                 if row:
                     pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
-                    if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                    if _is_trusted_hesabate_product_id(pid):
                         return pid
         qt = str(text_query or "").strip()
         if qt:
@@ -5489,7 +5489,7 @@ def resolve_local_hesabate_product_id(
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
-                if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                if _is_trusted_hesabate_product_id(pid):
                     return pid
             # رقم OE / كود داخل الملاحظات أو النص المطبّع
             esc = f"%{_like_pattern_escape_sql(qt.lower())}%"
@@ -5513,7 +5513,7 @@ def resolve_local_hesabate_product_id(
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
-                if pid and hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+                if _is_trusted_hesabate_product_id(pid):
                     return pid
     except Exception:
         pass
@@ -5521,6 +5521,112 @@ def resolve_local_hesabate_product_id(
         conn.close()
     return ""
 
+
+
+def _is_trusted_hesabate_product_id(pid: str) -> bool:
+    """معرّف محفوظ في DB/كاش — أرقام فقط، دون رفضه لأنه يطابق نص البحث."""
+    s = str(pid or "").strip()
+    return bool(s) and s.isdigit() and len(s) <= 12
+
+
+def backfill_hesabate_product_ids_for_rows(rows: list[dict[str, Any]]) -> list[str]:
+    """
+    اربط صفوفاً محلية بلا pro_id مع كاش حساباتي (باركود/أصلي/اسم/ملاحظات)
+    وحدّث hesabate_product_id عند النجاح.
+    """
+    if not rows:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    conn = get_db()
+    try:
+        ensure_hesabate_product_cache_schema(conn)
+        ensure_location_rows_import_schema(conn)
+        for r in rows:
+            existing = str(r.get("hesabate_product_id") or "").strip()
+            if _is_trusted_hesabate_product_id(existing):
+                if existing not in seen:
+                    seen.add(existing)
+                    found.append(existing)
+                continue
+            pid = ""
+            bc = str(r.get("barcode") or "").strip()
+            on = str(r.get("original_number") or "").strip()
+            name = str(r.get("item_name") or "").strip()
+            notes = str(r.get("notes") or "").strip()
+            bkeys = barcode_search_keys(bc) if bc else []
+            if bkeys:
+                placeholders = ", ".join(["?"] * len(bkeys[:16]))
+                row = conn.execute(
+                    f"""
+                    SELECT product_id FROM hesabate_barcode_index
+                    WHERE barcode_key IN ({placeholders})
+                    LIMIT 1
+                    """,
+                    tuple(bkeys[:16]),
+                ).fetchone()
+                if row:
+                    pid = str(sql_row_to_dict(row).get("product_id") or "").strip()
+            if not pid:
+                cached = lookup_hesabate_product_cache(
+                    barcode_keys=bkeys or None,
+                    text_query=on or name or notes or "",
+                    limit=5,
+                )
+                for prod in cached or []:
+                    cand = str(prod.get("id") or "").strip()
+                    if not _is_trusted_hesabate_product_id(cand):
+                        continue
+                    # فضّل تطابق باركود/أصلي دقيق
+                    pbc = str(prod.get("barcode") or "").strip()
+                    pmodel = str(prod.get("model_no") or "").strip()
+                    if bc and pbc and normalize_barcode_lookup_key(bc) == normalize_barcode_lookup_key(pbc):
+                        pid = cand
+                        break
+                    if on and (on == pmodel or on in str(prod.get("note") or "") or on in str(prod.get("other_codes") or "")):
+                        pid = cand
+                        break
+                    if not pid:
+                        pid = cand
+            if not _is_trusted_hesabate_product_id(pid):
+                continue
+            rid = r.get("id")
+            try:
+                if rid is not None and str(rid).isdigit():
+                    conn.execute(
+                        """
+                        UPDATE location_rows
+                        SET hesabate_product_id = ?
+                        WHERE id = ?
+                          AND (hesabate_product_id IS NULL OR TRIM(hesabate_product_id) = '')
+                        """,
+                        (pid, int(rid)),
+                    )
+                elif bc:
+                    conn.execute(
+                        """
+                        UPDATE location_rows
+                        SET hesabate_product_id = ?
+                        WHERE barcode = ?
+                          AND (hesabate_product_id IS NULL OR TRIM(hesabate_product_id) = '')
+                        """,
+                        (pid, bc),
+                    )
+            except Exception:
+                pass
+            r["hesabate_product_id"] = pid
+            if pid not in seen:
+                seen.add(pid)
+                found.append(pid)
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return found
 
 
 def resolve_local_hesabate_product_ids(
@@ -5536,11 +5642,15 @@ def resolve_local_hesabate_product_ids(
     seen: set[str] = set()
     lim = max(1, min(int(limit), 10))
 
-    def _add(pid: str) -> None:
+    def _add(pid: str, *, trusted: bool = False) -> None:
         pid = str(pid or "").strip()
         if not pid or pid in seen:
             return
-        if not hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
+        # معرّفات DB/الكاش موثوقة — لا تُرفض لأنها تطابق رقم البحث
+        if trusted:
+            if not _is_trusted_hesabate_product_id(pid):
+                return
+        elif not hesabate_api.looks_like_hesabate_product_id(pid, not_barcode_keys=keys):
             return
         seen.add(pid)
         out.append(pid)
@@ -5549,11 +5659,11 @@ def resolve_local_hesabate_product_ids(
     if keys:
         single = resolve_local_hesabate_product_id(barcode_keys=keys, text_query="")
         if single:
-            _add(single)
+            _add(single, trusted=True)
     if qt and len(out) < lim:
         single_t = resolve_local_hesabate_product_id(barcode_keys=None, text_query=qt)
         if single_t:
-            _add(single_t)
+            _add(single_t, trusted=True)
 
     # 2) صفوف البحث المحلية (قد يكون pro_id فارغاً في صف Excel)
     rows = _lookup_location_rows_for_live(
@@ -5563,7 +5673,7 @@ def resolve_local_hesabate_product_ids(
         rows = _lookup_location_rows_for_live(barcode_keys=None, text_query=qt, limit=max(lim, 10))
     row_barcodes: list[str] = []
     for r in rows:
-        _add(str(r.get("hesabate_product_id") or ""))
+        _add(str(r.get("hesabate_product_id") or ""), trusted=True)
         bc = str(r.get("barcode") or "").strip()
         if bc:
             row_barcodes.extend(barcode_search_keys(bc)[:6])
@@ -5580,16 +5690,22 @@ def resolve_local_hesabate_product_ids(
                 text_query="" if cache_keys else qt,
                 limit=lim,
             )
-            if not cached and qt and cache_keys:
+            if not cached and qt:
                 cached = lookup_hesabate_product_cache(barcode_keys=None, text_query=qt, limit=lim)
             for prod in cached or []:
-                _add(str(prod.get("id") or ""))
+                _add(str(prod.get("id") or ""), trusted=True)
                 if len(out) >= lim:
                     break
         except Exception:
             pass
 
-    # 4) إن وُجد pro_id من الكاش وصف محلي بلا معرّف — اربطهما لاحقاً عبر الحفظ عند الجلب
+    # 4) اربط الصفوف المحلية الفارغة بالكاش ثم أعد المحاولة
+    if len(out) < lim and rows:
+        for pid in backfill_hesabate_product_ids_for_rows(rows):
+            _add(pid, trusted=True)
+            if len(out) >= lim:
+                break
+
     return out[:lim]
 
 
@@ -5837,15 +5953,17 @@ def live_lookup_locations_from_hesabate(
         text_query=qt,
         limit=5,
     )
-    if not pro_ids:
-        # لا تُفرغ الواجهة: أعد النتيجة المحلية إن وُجدت (صنف موجود مسبقاً)
+    local_fallback = _lookup_location_rows_for_live(
+        barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+    )
+    if not local_fallback and keys and qt:
         local_fallback = _lookup_location_rows_for_live(
-            barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+            barcode_keys=None, text_query=qt, limit=10
         )
-        if not local_fallback and keys and qt:
-            local_fallback = _lookup_location_rows_for_live(
-                barcode_keys=None, text_query=qt, limit=10
-            )
+    # محاولة أخيرة: اربط الصف المحلي بالكاش ثم حدّث
+    if not pro_ids and local_fallback:
+        pro_ids = backfill_hesabate_product_ids_for_rows(local_fallback)
+    if not pro_ids:
         if local_fallback:
             return _finish(
                 {
@@ -5861,8 +5979,8 @@ def live_lookup_locations_from_hesabate(
                     "rows": local_fallback,
                     "resolved_pro_ids": [],
                     "message": (
-                        f"نتيجة محلية · {len(local_fallback)} — لا يوجد pro_id للتحديث الموجّه. "
-                        "اضغط «تحديث الكل الآن» مرة لربط الأصناف بحساباتي."
+                        f"نتيجة محلية · {len(local_fallback)} — الصنف غير مربوط بكاش حساباتي بعد. "
+                        "اضغط «تحديث الكل الآن» مرة واحدة ثم أعد جلب الصنف."
                     ),
                     "request_count": 0,
                 }
