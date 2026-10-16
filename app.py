@@ -2205,29 +2205,68 @@ def _location_search_row_rank(d: dict[str, Any]) -> tuple[int, int]:
     return (api_rank, rid)
 
 
+def _location_search_dedupe_keys(d: dict[str, Any]) -> list[str]:
+    """مفاتيح دمج لنفس الصنف: product_id ثم باركود ثم أصلي|اسم."""
+    keys: list[str] = []
+    pid = str(d.get("hesabate_product_id") or "").strip()
+    if pid:
+        keys.append(f"pid:{pid}")
+    bc_raw = str(d.get("barcode") or "")
+    bc = normalize_barcode_lookup_key(bc_raw)
+    if bc:
+        keys.append(f"bc:{bc}")
+    for tok in _extract_location_unit_barcodes_from_cell(bc_raw):
+        for k in barcode_search_keys(tok):
+            keys.append(f"bc:{k}")
+    on = str(d.get("original_number") or "").strip().lower()
+    nm = str(d.get("item_name") or "").strip().lower()
+    if on or nm:
+        keys.append(f"nm:{on}|{nm}")
+    out: list[str] = []
+    for k in keys:
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
 def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    best_by_key: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
+    """يفضّل صف حساباتي_API عند تكرار نفس الصنف (باركود / product_id)."""
+    winners: list[dict[str, Any]] = []
+    key_to_winner_idx: dict[str, int] = {}
     anon_i = 0
     for row in rows:
         d = sql_row_to_dict(row)
         rid = d.get("id", "")
         d["row_key"] = f"{d.get('source_file', '')}|{d.get('source_sheet', '')}|{rid}"
         d["location"] = clean_shelf_location(d.get("location"))
-        dedupe = (
-            normalize_barcode_lookup_key(str(d.get("barcode") or ""))
-            or f"{str(d.get('original_number') or '').strip().lower()}|{str(d.get('item_name') or '').strip().lower()}"
-        )
-        if not dedupe:
+        dkeys = _location_search_dedupe_keys(d)
+        if not dkeys:
             anon_i += 1
-            dedupe = f"__anon_{anon_i}"
-        prev = best_by_key.get(dedupe)
-        if prev is None:
-            best_by_key[dedupe] = d
-            order.append(dedupe)
-        elif _location_search_row_rank(d) < _location_search_row_rank(prev):
-            best_by_key[dedupe] = d
-    return [{str(k): _json_safe_value(v) for k, v in best_by_key[key].items()} for key in order]
+            dkeys = [f"__anon_{anon_i}"]
+        collide_idx = None
+        for k in dkeys:
+            if k in key_to_winner_idx:
+                collide_idx = key_to_winner_idx[k]
+                break
+        if collide_idx is None:
+            idx = len(winners)
+            winners.append(d)
+            for k in dkeys:
+                key_to_winner_idx[k] = idx
+            continue
+        prev = winners[collide_idx]
+        if _location_search_row_rank(d) < _location_search_row_rank(prev):
+            winners[collide_idx] = d
+            for k, ix in list(key_to_winner_idx.items()):
+                if ix == collide_idx:
+                    del key_to_winner_idx[k]
+            for k in dkeys:
+                key_to_winner_idx[k] = collide_idx
+            # أعد ربط مفاتيح الصف السابق غير المتعارضة إن لزم — يكفي استبدال الفائز
+        else:
+            for k in dkeys:
+                key_to_winner_idx.setdefault(k, collide_idx)
+    return [{str(k): _json_safe_value(v) for k, v in d.items()} for d in winners]
 
 
 def location_catalog_row_count() -> int:
@@ -4831,78 +4870,39 @@ def upsert_location_rows_delta_from_api(
             conn.executemany(insert_sql, chunk)
             inserted += len(chunk)
 
-        # انسخ آخر بيانات حساباتي إلى صفوف Excel/أخرى بنفس الباركود أو product_id
-        # حتى يعرض زر «بحث» المحلي دائماً الموقع/السعر المحدّث
-        for r in mapped_rows:
-            pid = str(r.get("product_id") or "").strip()
-            barcode = str(r.get("barcode") or "").strip()
-            if not pid and not barcode:
-                continue
-            item_name = str(r.get("item_name") or "")
-            location = clean_shelf_location(r.get("location"))
-            company = str(r.get("company") or "")
-            original_number = str(r.get("original_number") or "")
-            brand = str(r.get("brand") or "")
-            notes = str(r.get("notes") or "")
-            quantity = str(r.get("quantity") or "").strip()
-            price = str(r.get("price") or "").strip()
-            unit_barcodes = str(r.get("unit_barcodes") or "").strip()
-            nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
-            nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
-            conn.execute(
-                """
-                UPDATE location_rows SET
-                    item_name = CASE WHEN ? <> '' THEN ? ELSE item_name END,
-                    location = CASE WHEN ? <> '' THEN ? ELSE location END,
-                    company = CASE WHEN ? <> '' THEN ? ELSE company END,
-                    original_number = CASE WHEN ? <> '' THEN ? ELSE original_number END,
-                    brand = CASE WHEN ? <> '' THEN ? ELSE brand END,
-                    notes = CASE WHEN ? <> '' THEN ? ELSE notes END,
-                    quantity = CASE WHEN ? <> '' THEN ? ELSE quantity END,
-                    price = CASE WHEN ? <> '' THEN ? ELSE price END,
-                    normalized_barcode = CASE WHEN ? <> '' THEN ? ELSE normalized_barcode END,
-                    normalized_text = CASE WHEN ? <> '' THEN ? ELSE normalized_text END,
-                    hesabate_product_id = CASE
-                        WHEN ? <> '' AND (hesabate_product_id IS NULL OR TRIM(hesabate_product_id) = '')
-                        THEN ?
-                        ELSE hesabate_product_id
-                    END
-                WHERE source_file <> ?
-                  AND (
-                    (? <> '' AND TRIM(COALESCE(hesabate_product_id, '')) = ?)
-                    OR (? <> '' AND TRIM(COALESCE(barcode, '')) = ?)
-                  )
-                """,
-                (
-                    item_name,
-                    item_name,
-                    location,
-                    location,
-                    company,
-                    company,
-                    original_number,
-                    original_number,
-                    brand,
-                    brand,
-                    notes,
-                    notes,
-                    quantity,
-                    quantity,
-                    price,
-                    price,
-                    nb,
-                    nb,
-                    nt,
-                    nt,
-                    pid,
-                    pid,
-                    source_key,
-                    pid,
-                    pid,
-                    barcode,
-                    barcode,
-                ),
-            )
+        # بعد جلب/تحديث صنف: احذف نسخ Excel القديمة لنفس الصنف حتى لا يعرض «بحث» بيانات قديمة
+        if allow_partial:
+            for r in mapped_rows:
+                pid = str(r.get("product_id") or "").strip()
+                barcode = str(r.get("barcode") or "").strip()
+                unit_barcodes = str(r.get("unit_barcodes") or "").strip()
+                keys: list[str] = []
+                for tok in [barcode] + re.split(r"[\s,/|;]+", unit_barcodes):
+                    for k in barcode_search_keys(tok):
+                        if k and k not in keys:
+                            keys.append(k)
+                if pid:
+                    conn.execute(
+                        """
+                        DELETE FROM location_rows
+                        WHERE source_file <> ?
+                          AND TRIM(COALESCE(hesabate_product_id, '')) = ?
+                        """,
+                        (source_key, pid),
+                    )
+                for k in keys:
+                    spaced = f"% {k} %"
+                    conn.execute(
+                        """
+                        DELETE FROM location_rows
+                        WHERE source_file <> ?
+                          AND (
+                            TRIM(COALESCE(barcode, '')) = ?
+                            OR normalized_barcode LIKE ?
+                          )
+                        """,
+                        (source_key, k, spaced),
+                    )
 
         # تنظيف صفوف حساباتي القديمة بلا product_id بعد نجاح كتالوج كافٍ (مرة ترحيل)
         if not allow_partial and len(mapped_rows) >= 100:
@@ -6404,8 +6404,8 @@ def live_lookup_locations_from_hesabate(
             t0 = time.perf_counter()
             try:
                 upsert_matched_location_rows(mapped)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("upsert_matched_location_rows failed: %s", exc)
             timing["save_ms"] = int((time.perf_counter() - t0) * 1000)
 
         prepared = _prepare_live_rows_from_mapped(mapped)
@@ -10065,10 +10065,20 @@ def home() -> HTMLResponse:
         if (gen !== locationSearchGen) return;
         const localMs = Math.round(performance.now() - tLocal0);
         const rawRows = Array.isArray(data && data.rows) ? data.rows : [];
+        // فضّل صف حساباتي_API على Excel عند التكرار
+        const ranked = rawRows.slice().sort((a, b) => {
+          const aApi = String(a.source_file || '') === 'حساباتي_API' ? 0 : 1;
+          const bApi = String(b.source_file || '') === 'حساباتي_API' ? 0 : 1;
+          if (aApi !== bApi) return aApi - bApi;
+          return Number(b.id || 0) - Number(a.id || 0);
+        });
         const seenKeys = new Set();
         const safeRows = [];
-        rawRows.forEach((r) => {
-          const k = String(r.barcode || r.original_number || r.item_name || '').trim().toLowerCase();
+        ranked.forEach((r) => {
+          const pid = String(r.hesabate_product_id || '').trim();
+          const k = pid
+            ? ('pid:' + pid)
+            : String(r.barcode || r.original_number || r.item_name || '').trim().toLowerCase();
           if (k && seenKeys.has(k)) return;
           if (k) seenKeys.add(k);
           safeRows.push(r);
