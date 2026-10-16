@@ -6197,8 +6197,9 @@ def live_lookup_locations_from_hesabate(
                 lookup_text_query="",
                 allow_full_on_single=False,
                 bypass_mem_cache=True,
-                # لا تجلب model في المسار الحرج — فشل/بطء model كان يُظهر «تعذّر التحقق»
-                force_model_refresh=False,
+                # عند refresh (جلب صنف): حدّث جدول model مرة واحدة حتى يتغيّر اسم الموقع
+                # فشل model لا يُسقط الجلب (soft-fail داخل fetch_location_catalog)
+                force_model_refresh=bool(refresh) and idx == 0,
             )
             request_count += int(fetched.get("request_count") or 0)
             api_timing = fetched.get("timing_ms") if isinstance(fetched.get("timing_ms"), dict) else {}
@@ -6295,8 +6296,10 @@ def live_lookup_locations_from_hesabate(
                         if not prev:
                             continue
                         pd = sql_row_to_dict(prev)
+                        # بعد تحديث model في refresh: لا تُرجع الموقع القديم إذا API رجّع فارغ
                         if not str(mrow.get("location") or "").strip():
-                            mrow["location"] = clean_shelf_location(pd.get("location"))
+                            if not (refresh and model_refreshed):
+                                mrow["location"] = clean_shelf_location(pd.get("location"))
                         if not str(mrow.get("company") or "").strip():
                             mrow["company"] = str(pd.get("company") or "")
                         if not str(mrow.get("brand") or "").strip():

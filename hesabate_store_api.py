@@ -983,6 +983,35 @@ def fetch_location_catalog(
             metrics=products_metrics,
         )
         timing.update(products_metrics)
+        # إن تغيّر model_id لصنف ولم يكن بالكاش — حدّث model حتى لا يبقى الموقع القديم
+        if not model_refreshed:
+            models_map = _id_name_map(model)
+            missing_model = False
+            for prod in _table_rows(products if isinstance(products, dict) else {}):
+                mid = _text(prod.get("model_id"))
+                if mid and mid not in ("0",) and mid not in models_map:
+                    missing_model = True
+                    break
+            if missing_model:
+                t0 = time.perf_counter()
+                try:
+                    model, scheme = store_api_download(
+                        host,
+                        token,
+                        "model",
+                        verify_ssl=verify_ssl,
+                        reauth=_reauth,
+                        record_request=_rec,
+                        preferred_scheme=scheme or preferred_scheme,
+                        timeout=_TIMEOUT_LOOKUP_TABLE_SEC,
+                    )
+                    model_refreshed = True
+                except StoreApiError as e:
+                    timing["model_error"] = str(e)[:160]
+                    model_refreshed = False
+                timing["model_ms"] = int(
+                    (timing.get("model_ms") or 0) + (time.perf_counter() - t0) * 1000
+                )
     else:
         t0 = time.perf_counter()
         products, scheme = store_api_download(
