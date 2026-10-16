@@ -5444,24 +5444,25 @@ def resolve_local_hesabate_product_id(
                     return pid
         except Exception:
             pass
-        # 3) صفوف البحث المحلية
+        # 3) صفوف البحث المحلية (كل المصادر — ليس حساباتي_API فقط)
         if keys:
             for k in keys[:8]:
                 row = conn.execute(
                     """
                     SELECT hesabate_product_id FROM location_rows
-                    WHERE source_file = ?
-                      AND hesabate_product_id IS NOT NULL
+                    WHERE hesabate_product_id IS NOT NULL
                       AND TRIM(hesabate_product_id) <> ''
                       AND (
                         barcode = ?
                         OR normalized_barcode LIKE ?
                         OR hesabate_product_id = ?
                       )
-                    ORDER BY id DESC
+                    ORDER BY
+                      CASE WHEN source_file = ? THEN 0 ELSE 1 END,
+                      id DESC
                     LIMIT 1
                     """,
-                    (LOCATION_API_SOURCE_FILE, k, f"% {k} %", k),
+                    (k, f"% {k} %", k, LOCATION_API_SOURCE_FILE),
                 ).fetchone()
                 if row:
                     pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
@@ -5472,18 +5473,19 @@ def resolve_local_hesabate_product_id(
             row = conn.execute(
                 """
                 SELECT hesabate_product_id FROM location_rows
-                WHERE source_file = ?
-                  AND hesabate_product_id IS NOT NULL
+                WHERE hesabate_product_id IS NOT NULL
                   AND TRIM(hesabate_product_id) <> ''
                   AND (
                     original_number = ?
                     OR item_name = ?
                     OR barcode = ?
                   )
-                ORDER BY id DESC
+                ORDER BY
+                  CASE WHEN source_file = ? THEN 0 ELSE 1 END,
+                  id DESC
                 LIMIT 1
                 """,
-                (LOCATION_API_SOURCE_FILE, qt, qt, qt),
+                (qt, qt, qt, LOCATION_API_SOURCE_FILE),
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
@@ -5494,8 +5496,7 @@ def resolve_local_hesabate_product_id(
             row = conn.execute(
                 """
                 SELECT hesabate_product_id FROM location_rows
-                WHERE source_file = ?
-                  AND hesabate_product_id IS NOT NULL
+                WHERE hesabate_product_id IS NOT NULL
                   AND TRIM(hesabate_product_id) <> ''
                   AND (
                     lower(COALESCE(notes,'')) LIKE ? ESCAPE '\\'
@@ -5503,10 +5504,12 @@ def resolve_local_hesabate_product_id(
                     OR lower(COALESCE(item_name,'')) LIKE ? ESCAPE '\\'
                     OR lower(COALESCE(normalized_text,'')) LIKE ? ESCAPE '\\'
                   )
-                ORDER BY id DESC
+                ORDER BY
+                  CASE WHEN source_file = ? THEN 0 ELSE 1 END,
+                  id DESC
                 LIMIT 1
                 """,
-                (LOCATION_API_SOURCE_FILE, esc, esc, esc, esc),
+                (esc, esc, esc, esc, LOCATION_API_SOURCE_FILE),
             ).fetchone()
             if row:
                 pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
@@ -5542,28 +5545,51 @@ def resolve_local_hesabate_product_ids(
         seen.add(pid)
         out.append(pid)
 
-    # فهرس الباركود
+    # 1) باركود / نص مباشر
     if keys:
         single = resolve_local_hesabate_product_id(barcode_keys=keys, text_query="")
         if single:
             _add(single)
-    # صفوف محلية / كاش بالنص أو الباركود
+    if qt and len(out) < lim:
+        single_t = resolve_local_hesabate_product_id(barcode_keys=None, text_query=qt)
+        if single_t:
+            _add(single_t)
+
+    # 2) صفوف البحث المحلية (قد يكون pro_id فارغاً في صف Excel)
     rows = _lookup_location_rows_for_live(
-        barcode_keys=keys or None, text_query="" if keys else qt, limit=lim
+        barcode_keys=keys or None, text_query="" if keys else qt, limit=max(lim, 10)
     )
+    if not rows and keys and qt:
+        rows = _lookup_location_rows_for_live(barcode_keys=None, text_query=qt, limit=max(lim, 10))
+    row_barcodes: list[str] = []
     for r in rows:
         _add(str(r.get("hesabate_product_id") or ""))
-    if len(out) < lim and (keys or qt):
+        bc = str(r.get("barcode") or "").strip()
+        if bc:
+            row_barcodes.extend(barcode_search_keys(bc)[:6])
+        on = str(r.get("original_number") or "").strip()
+        if on and on not in row_barcodes:
+            row_barcodes.append(on)
+
+    # 3) كاش المنتجات بالاستعلام + باركودات الصفوف المحلية (لربط Excel ↔ حساباتي)
+    cache_keys = list(dict.fromkeys((keys or []) + row_barcodes))[:24]
+    if len(out) < lim and (cache_keys or qt):
         try:
             cached = lookup_hesabate_product_cache(
-                barcode_keys=keys or None, text_query="" if keys else qt, limit=lim
+                barcode_keys=cache_keys or None,
+                text_query="" if cache_keys else qt,
+                limit=lim,
             )
+            if not cached and qt and cache_keys:
+                cached = lookup_hesabate_product_cache(barcode_keys=None, text_query=qt, limit=lim)
             for prod in cached or []:
                 _add(str(prod.get("id") or ""))
                 if len(out) >= lim:
                     break
         except Exception:
             pass
+
+    # 4) إن وُجد pro_id من الكاش وصف محلي بلا معرّف — اربطهما لاحقاً عبر الحفظ عند الجلب
     return out[:lim]
 
 
@@ -5805,19 +5831,49 @@ def live_lookup_locations_from_hesabate(
         )
 
     # ——— تحديث موجّه: pro_id فقط ———
+    # عند refresh ابحث أيضاً بالنص حتى لو وُجد باركود (أحياناً الباركود قديم والكاش بالاسم/الأصلي)
     pro_ids = resolve_local_hesabate_product_ids(
         barcode_keys=keys or None,
-        text_query="" if keys else qt,
+        text_query=qt,
         limit=5,
     )
     if not pro_ids:
+        # لا تُفرغ الواجهة: أعد النتيجة المحلية إن وُجدت (صنف موجود مسبقاً)
+        local_fallback = _lookup_location_rows_for_live(
+            barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+        )
+        if not local_fallback and keys and qt:
+            local_fallback = _lookup_location_rows_for_live(
+                barcode_keys=None, text_query=qt, limit=10
+            )
+        if local_fallback:
+            return _finish(
+                {
+                    "ok": True,
+                    "live": True,
+                    "fast_path": True,
+                    "verified": False,
+                    "products_fetch_mode": "local_only_no_pro_id",
+                    "error_kind": "",
+                    "not_found": False,
+                    "needs_manual_import": False,
+                    "total_rows": len(local_fallback),
+                    "rows": local_fallback,
+                    "resolved_pro_ids": [],
+                    "message": (
+                        f"نتيجة محلية · {len(local_fallback)} — لا يوجد pro_id للتحديث الموجّه. "
+                        "اضغط «تحديث الكل الآن» مرة لربط الأصناف بحساباتي."
+                    ),
+                    "request_count": 0,
+                }
+            )
         return _finish(
             {
                 "ok": True,
                 "live": True,
                 "products_fetch_mode": "targeted_search_unsupported",
                 "error_kind": "targeted_search_unsupported",
-                "not_found": False,
+                "not_found": True,
                 "barcode_filter_effective": False,
                 "need_full_warm": False,
                 "needs_manual_import": True,
@@ -5825,9 +5881,8 @@ def live_lookup_locations_from_hesabate(
                 "rows": [],
                 "resolved_pro_ids": [],
                 "message": (
-                    "حساباتي لا يدعم بحثاً موجّهاً بالباركود/الاسم/الرقم الأصلي. "
-                    "المدعوم فقط: pro_id+all=1 لصنف واحد. "
-                    "لاكتشاف صنف جديد غير مخزّن محلياً استخدم «استيراد الكل» يدوياً."
+                    "الصنف غير موجود في الفهرس المحلي بعد. "
+                    "اضغط «تحديث الكل الآن» لاستيراد الكتالوج، ثم أعد البحث/جلب الصنف."
                 ),
                 "request_count": 0,
             }
@@ -7067,14 +7122,13 @@ def home() -> HTMLResponse:
               `${live.message || 'محدّث'} | محلي ${localMs != null ? localMs + 'ms' : '—'} → تحديث ${uiMs}ms | ${timingLine}`
             );
             if (stEl) stEl.textContent = live.message || 'تم التحديث من حساباتي';
-          } else if (unsupported) {
+          } else if (unsupported || live.products_fetch_mode === 'local_only_no_pro_id') {
             // أبقِ النتائج المحلية ظاهرة — هذه ليست خطأ شبكة
-            setStats(
-              hadLocalRows
-                ? `نتيجة محلية (${localMs != null ? localMs + 'ms' : 'فوري'}) · لا تحديث موجّه (يلزم pro_id أو استيراد الكل)`
-                : (live.message || 'حساباتي لا يدعم بحثاً موجّهاً لهذا الاستعلام — استخدم استيراد الكل يدوياً.')
-            );
-            if (stEl) stEl.textContent = 'بحث موجّه غير متاح لهذا الاستعلام';
+            const soft = hadLocalRows
+              ? `نتيجة محلية (${localMs != null ? localMs + 'ms' : 'فوري'}) · حدّث الكل مرة لربط الصنف بحساباتي`
+              : (live.message || 'الصنف غير موجود محلياً — اضغط «تحديث الكل الآن» ثم أعد البحث.');
+            setStats(soft + (timingLine ? ` | ${timingLine}` : ''));
+            if (stEl) stEl.textContent = soft;
           } else if (live && live.not_found) {
             setStats(
               hadLocalRows
@@ -7190,8 +7244,10 @@ def home() -> HTMLResponse:
           const uiMs = Math.round(performance.now() - t0);
           const timingLine = formatLookupTiming(live, uiMs);
           if (!rows.length) {
-            const miss = live.error_kind === 'targeted_search_unsupported'
-              ? 'الصنف غير معروف محلياً بعد — اضغط «تحديث الكل الآن» مرة ثم أعد جلب الصنف.'
+            const miss = (live.error_kind === 'targeted_search_unsupported'
+              || live.products_fetch_mode === 'targeted_search_unsupported'
+              || live.products_fetch_mode === 'local_only_no_pro_id')
+              ? (live.message || 'الصنف غير مربوط بعد — اضغط «تحديث الكل الآن» ثم أعد جلب الصنف.')
               : (live.message || 'غير موجود.');
             setStats(miss + (timingLine ? ` | ${timingLine}` : ''));
             if (stEl) stEl.textContent = miss;
