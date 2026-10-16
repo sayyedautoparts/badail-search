@@ -6981,6 +6981,7 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
+        <p id="mainLastUpdate" class="sync-meta" style="margin:0 0 10px;">آخر تحديث: —</p>
         <input id="queryInput" placeholder="اسم الصنف أو البدائل" />
         <input id="numberQueryInput" placeholder="رقم / ملاحظات / رقم أصلي" />
         <button onclick="searchNow('main')">بحث</button>
@@ -7000,6 +7001,7 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="wiperSearchPanel" class="search-panel">
+        <p id="wiperLastUpdate" class="sync-meta" style="margin:0 0 10px;">آخر تحديث: —</p>
         <div class="wiper-box">
           <input type="file" id="wiperSheetFileInput" accept=".xlsx,.xlsm,.xls" />
           <button type="button" class="btn-secondary" onclick="uploadWiperSheetFile()">رفع ملف القشطان</button>
@@ -10566,21 +10568,21 @@ def home() -> HTMLResponse:
       await searchNow('location');
     }
 
+    function formatLastUploadLabel(ts) {
+      const t = String(ts || '').trim();
+      return t ? `آخر تحديث: ${t}` : 'آخر تحديث: —';
+    }
     async function loadStats() {
       try {
         const res = await fetch('/stats', { cache: 'no-store' });
         const data = await res.json();
-        const backendKey = String(data.db_backend || 'sqlite').toLowerCase();
-        const backend = backendKey === 'supabase'
-          ? 'Supabase/Postgres'
-          : backendKey === 'neon'
-            ? 'Neon/Postgres'
-            : backendKey === 'postgres'
-              ? 'Postgres'
-              : 'SQLite';
         const wn = Number(data.total_wiper_rows || 0);
         const locn = Number(data.total_location_rows || 0);
         setStats(`صفوف: ${data.total_rows} · قشطان: ${wn} · مواقع: ${locn} · أصناف: ${data.total_items || 0}`);
+        const mainEl = document.getElementById('mainLastUpdate');
+        const wiperEl = document.getElementById('wiperLastUpdate');
+        if (mainEl) mainEl.textContent = formatLastUploadLabel(data.last_products_upload_at);
+        if (wiperEl) wiperEl.textContent = formatLastUploadLabel(data.last_wiper_upload_at);
       } catch (_) {
         setStats(`صفوف محلية: ${localSnapshot.total_rows || (localSnapshot.rows || []).length}`);
       }
@@ -11767,6 +11769,22 @@ def hesabate_lookup_item(payload: HesabateLookupIn) -> dict:
     }
 
 
+def _format_upload_timestamp(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    s = str(value).strip().replace("T", " ")
+    if "+" in s:
+        s = s.split("+", 1)[0].strip()
+    if "." in s and " " in s:
+        s = s.split(".", 1)[0].strip()
+    return s[:19]
+
+
 @app.get("/stats")
 def stats() -> dict:
     conn = get_db()
@@ -11778,6 +11796,29 @@ def stats() -> dict:
         total_items = conn.execute(
             "SELECT COUNT(DISTINCT item_name) AS c FROM products WHERE COALESCE(TRIM(item_name), '') <> ''"
         ).fetchone()["c"]
+        # رئيسي = ملفات المنتجات (كل ما ليس قشطان/مواقع)
+        products_ts = conn.execute(
+            """
+            SELECT MAX(uploaded_at) AS ts
+            FROM uploaded_files
+            WHERE COALESCE(parser_version, '') NOT IN (?, ?)
+            """,
+            (WIPER_PARSER_VERSION, LOCATION_PARSER_VERSION),
+        ).fetchone()
+        wiper_ts = conn.execute(
+            """
+            SELECT MAX(uploaded_at) AS ts
+            FROM uploaded_files
+            WHERE COALESCE(parser_version, '') = ?
+            """,
+            (WIPER_PARSER_VERSION,),
+        ).fetchone()
+        last_products_upload_at = _format_upload_timestamp(
+            sql_row_to_dict(products_ts).get("ts") if products_ts is not None else None
+        )
+        last_wiper_upload_at = _format_upload_timestamp(
+            sql_row_to_dict(wiper_ts).get("ts") if wiper_ts is not None else None
+        )
     finally:
         conn.close()
     return {
@@ -11786,6 +11827,8 @@ def stats() -> dict:
         "total_location_rows": total_location_rows,
         "total_files": total_files,
         "total_items": total_items,
+        "last_products_upload_at": last_products_upload_at,
+        "last_wiper_upload_at": last_wiper_upload_at,
         "db_backend": DB_BACKEND,
     }
 
