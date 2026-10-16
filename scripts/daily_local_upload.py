@@ -1,0 +1,217 @@
+# -*- coding: utf-8 -*-
+"""
+رفع يومي محلي من G:\\ملفاتي إلى قاعدة بيانات الإنتاج (Neon):
+  1) مجلد قطع سيارات  → منتجات
+  2) مجلد قطع فسب      → منتجات
+  3) ملف الشغل\\قشطان.xlsx → قشطان
+
+يشغَّل على جهاز ويندوز الذي فيه قرص G: (لا يعمل على Vercel).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+EXCEL_EXTS = {".xlsx", ".xlsm", ".xls"}
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+def _ensure_db_env() -> None:
+    for candidate in (
+        ROOT / "scripts" / "daily_upload.local.env",
+        ROOT / ".env",
+        ROOT / ".env.local",
+    ):
+        _load_env_file(candidate)
+    db = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("NEON_DATABASE_URL")
+        or os.getenv("SUPABASE_DB_URL")
+        or os.getenv("SUPABASE_DATABASE_URL")
+        or ""
+    ).strip()
+    if not db.startswith("postgres"):
+        raise SystemExit(
+            "DATABASE_URL / NEON_DATABASE_URL غير مضبوط.\n"
+            "ضع الرابط في scripts/daily_upload.local.env مثل:\n"
+            "DATABASE_URL=postgresql://..."
+        )
+
+
+def _iter_excel(folder: Path) -> list[Path]:
+    files: list[Path] = []
+    if not folder.is_dir():
+        return files
+    for p in folder.rglob("*"):
+        if p.is_file() and p.suffix.lower() in EXCEL_EXTS and not p.name.startswith("~$"):
+            files.append(p)
+    files.sort(key=lambda x: str(x).lower())
+    return files
+
+
+def _source_key(folder_label: str, folder_root: Path, file_path: Path) -> str:
+    rel = file_path.relative_to(folder_root).as_posix()
+    return f"{folder_label}/{rel}"
+
+
+def _process_product(app, content: bytes, source_key: str) -> tuple[str, int, int]:
+    content_hash, file_size = app.file_fingerprint(content)
+    if app.is_same_uploaded_file(source_key, content_hash, file_size):
+        return "skipped", 0, 0
+    rows, items = app.process_excel_file(content, source_key, content_hash, file_size)
+    return "ok", int(rows), int(items)
+
+
+def _process_wiper(app, content: bytes, source_key: str) -> tuple[str, int]:
+    content_hash, file_size = app.file_fingerprint(content)
+    if app.is_same_wiper_upload(source_key, content_hash, file_size):
+        return "skipped", 0
+    n = app.process_wiper_excel_file(content, source_key, content_hash, file_size)
+    return "ok", int(n)
+
+
+def _upload_folder_as_products(
+    app,
+    folder: Path,
+    folder_label: str,
+    log,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    stats = {"files": 0, "ok": 0, "skipped": 0, "failed": 0, "rows": 0, "items": 0}
+    files = _iter_excel(folder)
+    log(f"[{folder_label}] ملفات Excel: {len(files)} — {folder}")
+    for i, fp in enumerate(files, 1):
+        stats["files"] += 1
+        source_key = _source_key(folder_label, folder, fp)
+        size_mb = fp.stat().st_size / (1024 * 1024)
+        log(f"  ({i}/{len(files)}) {source_key} ({size_mb:.1f} MB)")
+        if dry_run:
+            continue
+        try:
+            content = fp.read_bytes()
+            status, rows, items = _process_product(app, content, source_key)
+            if status == "skipped":
+                stats["skipped"] += 1
+                log("    → تخطي (بدون تغيير)")
+            else:
+                stats["ok"] += 1
+                stats["rows"] += rows
+                stats["items"] += items
+                log(f"    → تم: {rows} صف / {items} صنف")
+        except Exception as exc:
+            stats["failed"] += 1
+            log(f"    → فشل: {exc}")
+            log(traceback.format_exc(limit=4))
+    return stats
+
+
+def _upload_wiper_file(app, path: Path, source_key: str, log, *, dry_run: bool = False) -> dict:
+    stats = {"files": 1, "ok": 0, "skipped": 0, "failed": 0, "rows": 0}
+    if not path.is_file():
+        stats["failed"] = 1
+        log(f"[قشطان] الملف غير موجود: {path}")
+        return stats
+    size_mb = path.stat().st_size / (1024 * 1024)
+    log(f"[قشطان] {source_key} ({size_mb:.1f} MB) — {path}")
+    if dry_run:
+        return stats
+    try:
+        content = path.read_bytes()
+        status, rows = _process_wiper(app, content, source_key)
+        if status == "skipped":
+            stats["skipped"] = 1
+            log("    → تخطي (بدون تغيير)")
+        else:
+            stats["ok"] = 1
+            stats["rows"] = rows
+            log(f"    → تم: {rows} صف قشطان")
+    except Exception as exc:
+        stats["failed"] = 1
+        log(f"    → فشل: {exc}")
+        log(traceback.format_exc(limit=4))
+    return stats
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Daily local Excel upload to production DB")
+    parser.add_argument(
+        "--base",
+        default=r"G:\ملفاتي",
+        help="المجلد الأب (افتراضي G:\\ملفاتي)",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="عرض الملفات فقط دون رفع")
+    parser.add_argument(
+        "--log-dir",
+        default=str(ROOT / "scripts" / "logs"),
+        help="مجلد سجلات التشغيل",
+    )
+    args = parser.parse_args()
+
+    base = Path(args.base)
+    cars = base / "قطع سيارات"
+    fsb = base / "قطع فسب"
+    wiper = base / "الشغل" / "قشطان.xlsx"
+
+    log_dir = Path(args.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"daily_upload_{stamp}.log"
+
+    def log(msg: str) -> None:
+        line = f"{datetime.now().strftime('%H:%M:%S')} {msg}"
+        print(line, flush=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    t0 = time.perf_counter()
+    log("=== بدء الرفع اليومي ===")
+    log(f"base={base}")
+
+    if not args.dry_run:
+        _ensure_db_env()
+        import app as app_mod  # noqa: WPS433 — بعد ضبط env
+    else:
+        app_mod = None  # type: ignore
+
+    s1 = _upload_folder_as_products(app_mod, cars, "قطع سيارات", log, dry_run=args.dry_run)
+    s2 = _upload_folder_as_products(app_mod, fsb, "قطع فسب", log, dry_run=args.dry_run)
+    s3 = _upload_wiper_file(app_mod, wiper, "قشطان.xlsx", log, dry_run=args.dry_run)
+
+    elapsed = int(time.perf_counter() - t0)
+    failed = s1["failed"] + s2["failed"] + s3["failed"]
+    log(
+        "=== انتهى === "
+        f"سيارات ok={s1['ok']} skip={s1['skipped']} fail={s1['failed']} | "
+        f"فسب ok={s2['ok']} skip={s2['skipped']} fail={s2['failed']} | "
+        f"قشطان ok={s3['ok']} skip={s3['skipped']} fail={s3['failed']} | "
+        f"{elapsed}s"
+    )
+    log(f"السجل: {log_path}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

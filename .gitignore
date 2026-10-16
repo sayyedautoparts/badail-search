@@ -7,3 +7,5 @@ search_data.db
 .env.*
 !.env.example
 .env*.local
+scripts/daily_upload.local.env
+scripts/logs/
