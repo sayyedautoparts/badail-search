@@ -2195,9 +2195,20 @@ def clean_shelf_location(location: Any) -> str:
     return loc if is_meaningful_shelf_location(loc) else ""
 
 
+def _location_search_row_rank(d: dict[str, Any]) -> tuple[int, int]:
+    """أقل = أفضل: صفوف حساباتي_API ثم الأحدث id."""
+    api_rank = 0 if str(d.get("source_file") or "").strip() == LOCATION_API_SOURCE_FILE else 1
+    try:
+        rid = -int(d.get("id") or 0)
+    except (TypeError, ValueError):
+        rid = 0
+    return (api_rank, rid)
+
+
 def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    prepared: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    best_by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    anon_i = 0
     for row in rows:
         d = sql_row_to_dict(row)
         rid = d.get("id", "")
@@ -2207,12 +2218,16 @@ def _prepare_location_search_rows(rows: list[Any]) -> list[dict[str, Any]]:
             normalize_barcode_lookup_key(str(d.get("barcode") or ""))
             or f"{str(d.get('original_number') or '').strip().lower()}|{str(d.get('item_name') or '').strip().lower()}"
         )
-        if dedupe and dedupe in seen:
-            continue
-        if dedupe:
-            seen.add(dedupe)
-        prepared.append({str(k): _json_safe_value(v) for k, v in d.items()})
-    return prepared
+        if not dedupe:
+            anon_i += 1
+            dedupe = f"__anon_{anon_i}"
+        prev = best_by_key.get(dedupe)
+        if prev is None:
+            best_by_key[dedupe] = d
+            order.append(dedupe)
+        elif _location_search_row_rank(d) < _location_search_row_rank(prev):
+            best_by_key[dedupe] = d
+    return [{str(k): _json_safe_value(v) for k, v in best_by_key[key].items()} for key in order]
 
 
 def location_catalog_row_count() -> int:
@@ -2270,10 +2285,10 @@ def _search_locations_sql_only(
                OR normalized_barcode IN ({placeholders})
                OR barcode IN ({placeholders})
                OR ({token_sql})
-            ORDER BY id
+            ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
             LIMIT ? OFFSET ?
             """,
-            (*keys, *spaced_keys, *keys, *token_params, fetch, off),
+            (*keys, *spaced_keys, *keys, *token_params, LOCATION_API_SOURCE_FILE, fetch, off),
         ).fetchall()
         # تحقق نهائي: رفض أي تطابق فرعي بالخطأ
         key_set = set(keys)
@@ -2337,13 +2352,13 @@ def _search_locations_sql_only(
         for pats in token_pats:
             for pat in pats:
                 params.extend([pat, pat, pat, pat, pat, pat])
-        params.extend([fetch, off])
+        params.extend([LOCATION_API_SOURCE_FILE, fetch, off])
         rows = conn.execute(
             f"""
             SELECT {cols}
             FROM location_rows
             WHERE {where_sql}
-            ORDER BY id
+            ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
             LIMIT ? OFFSET ?
             """,
             params,
@@ -2394,10 +2409,10 @@ def _search_locations_barcode_python_fallback(
             normalized_barcode IS NULL
             OR TRIM(COALESCE(normalized_barcode, '')) = ''
           )
-        ORDER BY id
+        ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
         LIMIT ?
         """,
-        (cap,),
+        (LOCATION_API_SOURCE_FILE, cap),
     ).fetchall()
     matched: list[Any] = []
     for row in rows:
@@ -2435,10 +2450,10 @@ def _search_locations_barcode_like_fallback(
         WHERE COALESCE(TRIM(barcode), '') <> ''
           AND LENGTH(barcode) <= 128
           AND barcode LIKE ? ESCAPE '\\'
-        ORDER BY id
+        ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
         LIMIT ?
         """,
-        (pat, LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP),
+        (pat, LOCATION_API_SOURCE_FILE, LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP),
     ).fetchall()
     matched: list[Any] = []
     for row in rows:
@@ -4815,6 +4830,79 @@ def upsert_location_rows_delta_from_api(
             chunk = to_insert[i : i + 800]
             conn.executemany(insert_sql, chunk)
             inserted += len(chunk)
+
+        # انسخ آخر بيانات حساباتي إلى صفوف Excel/أخرى بنفس الباركود أو product_id
+        # حتى يعرض زر «بحث» المحلي دائماً الموقع/السعر المحدّث
+        for r in mapped_rows:
+            pid = str(r.get("product_id") or "").strip()
+            barcode = str(r.get("barcode") or "").strip()
+            if not pid and not barcode:
+                continue
+            item_name = str(r.get("item_name") or "")
+            location = clean_shelf_location(r.get("location"))
+            company = str(r.get("company") or "")
+            original_number = str(r.get("original_number") or "")
+            brand = str(r.get("brand") or "")
+            notes = str(r.get("notes") or "")
+            quantity = str(r.get("quantity") or "").strip()
+            price = str(r.get("price") or "").strip()
+            unit_barcodes = str(r.get("unit_barcodes") or "").strip()
+            nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
+            nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
+            conn.execute(
+                """
+                UPDATE location_rows SET
+                    item_name = CASE WHEN ? <> '' THEN ? ELSE item_name END,
+                    location = CASE WHEN ? <> '' THEN ? ELSE location END,
+                    company = CASE WHEN ? <> '' THEN ? ELSE company END,
+                    original_number = CASE WHEN ? <> '' THEN ? ELSE original_number END,
+                    brand = CASE WHEN ? <> '' THEN ? ELSE brand END,
+                    notes = CASE WHEN ? <> '' THEN ? ELSE notes END,
+                    quantity = CASE WHEN ? <> '' THEN ? ELSE quantity END,
+                    price = CASE WHEN ? <> '' THEN ? ELSE price END,
+                    normalized_barcode = CASE WHEN ? <> '' THEN ? ELSE normalized_barcode END,
+                    normalized_text = CASE WHEN ? <> '' THEN ? ELSE normalized_text END,
+                    hesabate_product_id = CASE
+                        WHEN ? <> '' AND (hesabate_product_id IS NULL OR TRIM(hesabate_product_id) = '')
+                        THEN ?
+                        ELSE hesabate_product_id
+                    END
+                WHERE source_file <> ?
+                  AND (
+                    (? <> '' AND TRIM(COALESCE(hesabate_product_id, '')) = ?)
+                    OR (? <> '' AND TRIM(COALESCE(barcode, '')) = ?)
+                  )
+                """,
+                (
+                    item_name,
+                    item_name,
+                    location,
+                    location,
+                    company,
+                    company,
+                    original_number,
+                    original_number,
+                    brand,
+                    brand,
+                    notes,
+                    notes,
+                    quantity,
+                    quantity,
+                    price,
+                    price,
+                    nb,
+                    nb,
+                    nt,
+                    nt,
+                    pid,
+                    pid,
+                    source_key,
+                    pid,
+                    pid,
+                    barcode,
+                    barcode,
+                ),
+            )
 
         # تنظيف صفوف حساباتي القديمة بلا product_id بعد نجاح كتالوج كافٍ (مرة ترحيل)
         if not allow_partial and len(mapped_rows) >= 100:
