@@ -6728,18 +6728,18 @@ def home() -> HTMLResponse:
       display: block;
       width: 100%;
       max-width: 100%;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: clip;
-      word-break: normal;
-      overflow-wrap: normal;
-      line-height: 1.25;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
       font-variant-numeric: tabular-nums;
     }
     #locationsTable .cell-empty {
       color: #94a3b8;
       font-weight: 600;
-      white-space: nowrap;
+      white-space: normal;
     }
     /* الصنف | الموقع | الشركة | الأصلي | الكمية | السعر */
     #locationsTable th:nth-child(1), #locationsTable td:nth-child(1) { width: 30%; }
@@ -6748,27 +6748,18 @@ def home() -> HTMLResponse:
     #locationsTable th:nth-child(4), #locationsTable td:nth-child(4) { width: 16%; }
     #locationsTable th:nth-child(5), #locationsTable td:nth-child(5) { width: 11%; }
     #locationsTable th:nth-child(6), #locationsTable td:nth-child(6) { width: 11%; }
-    /* اسم الصنف الطويل: لفّ النص بدل الاختفاء */
-    #locationsTable td:nth-child(1) {
+    /* لفّ النص لكل خلايا الجدول */
+    #locationsTable td {
       overflow: visible;
       vertical-align: top;
     }
-    #locationsTable td:nth-child(1) .cell {
+    #locationsTable td .cell {
       align-items: flex-start;
       overflow: visible;
       min-height: 44px;
       height: auto;
     }
-    #locationsTable td:nth-child(1) .cell-text {
-      font-weight: 700;
-      color: var(--ink);
-      white-space: normal;
-      overflow: visible;
-      text-overflow: unset;
-      word-break: break-word;
-      overflow-wrap: anywhere;
-      line-height: 1.35;
-    }
+    #locationsTable td:nth-child(1) .cell-text { font-weight: 700; color: var(--ink); }
     #locationsTable td:nth-child(2) .cell-text { font-weight: 800; color: #0b3d2e; }
     #locationsTable td:nth-child(3) .cell-text { font-weight: 600; color: #334155; }
     #locationsTable td:nth-child(4) .cell-text { font-weight: 700; color: #1e293b; }
@@ -6956,7 +6947,8 @@ def home() -> HTMLResponse:
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
         <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <div class="btn-row">
-          <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد فقط بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
+          <button type="button" onclick="searchNow('location')" title="بحث محلي في قاعدة البيانات فقط — بدون طلب حساباتي">بحث</button>
+          <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد من حساباتي بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
       </div>
@@ -7298,47 +7290,20 @@ def home() -> HTMLResponse:
       const table = document.getElementById('locationsTable');
       if (!table || table.style.display === 'none') return;
       const isMobile = window.matchMedia('(max-width: 767px)').matches;
-      const maxByCol = isMobile ? [13, 11, 11, 11, 12, 12] : [15, 15, 15, 15, 16, 16];
-      const minPx = isMobile ? 7 : 9;
-      const fitEl = (el, cell, maxPx, wrap) => {
-        if (!el || !cell) return;
-        if (wrap) {
-          el.style.whiteSpace = 'normal';
-          el.style.overflow = 'visible';
-          el.style.textOverflow = 'unset';
-          el.style.wordBreak = 'break-word';
-          el.style.overflowWrap = 'anywhere';
-          el.style.fontSize = maxPx + 'px';
-          return;
-        }
-        el.style.whiteSpace = 'nowrap';
-        el.style.overflow = 'hidden';
-        el.style.textOverflow = 'clip';
-        el.style.wordBreak = 'normal';
-        el.style.overflowWrap = 'normal';
-        let size = maxPx;
-        const len = (el.textContent || '').trim().length;
-        if (len > 14) size = Math.min(size, maxPx - 1);
-        if (len > 22) size = Math.min(size, maxPx - 2);
-        if (len > 32) size = Math.min(size, maxPx - 3);
-        if (len > 44) size = Math.min(size, maxPx - 4);
-        size = Math.max(minPx, size);
-        el.style.fontSize = size + 'px';
-        let guard = 0;
-        while (guard < 24 && size > minPx && el.scrollWidth > cell.clientWidth + 1) {
-          size -= 0.5;
-          el.style.fontSize = size + 'px';
-          guard += 1;
-        }
-      };
+      const maxByCol = isMobile ? [12, 11, 11, 11, 12, 12] : [14, 14, 14, 14, 15, 15];
       table.querySelectorAll('thead th, tbody td').forEach((td) => {
         const el = td.querySelector('.cell-text');
         const cell = td.querySelector('.cell');
         if (!el || !cell || el.classList.contains('cell-empty')) return;
         const col = td.cellIndex;
         const maxPx = maxByCol[col] != null ? maxByCol[col] : (isMobile ? 11 : 14);
-        // العمود الأول = اسم الصنف — لفّ النص
-        fitEl(el, cell, maxPx, col === 0 && td.tagName === 'TD');
+        // لفّ النص لكل الأعمدة
+        el.style.whiteSpace = 'normal';
+        el.style.overflow = 'visible';
+        el.style.textOverflow = 'unset';
+        el.style.wordBreak = 'break-word';
+        el.style.overflowWrap = 'anywhere';
+        el.style.fontSize = maxPx + 'px';
       });
     }
     async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
@@ -10018,34 +9983,14 @@ def home() -> HTMLResponse:
           if (k) seenKeys.add(k);
           safeRows.push(r);
         });
-        // تحقق حي من حساباتي بعد كل بحث (باركود مكتمل أو نص مربوط بـ pro_id)
-        // حتى يتحدّث الموقع/السعر فور التعديل في حساباتي
-        const willAutoBc = !!(lqBc && isCompleteBarcodeQuery(lqBc));
-        const localHasProId = safeRows.some(r => String(r.hesabate_product_id || '').trim());
-        const willAutoText = !lqBc && !!(lqText && String(lqText).trim().length >= 2) && localHasProId;
-        const willAuto = willAutoBc || willAutoText;
+        // زر بحث = قاعدة البيانات المحلية فقط — بدون أي طلب حساباتي
         if (safeRows.length) {
           renderLocationRowsNow(
             safeRows,
-            `محلي فوري · ${safeRows.length} · ${localMs}ms` + (willAuto ? ' · جاري التحقق من حساباتي...' : '')
+            `بحث محلي · ${safeRows.length} · ${localMs}ms · بدون API`
           );
-        } else if (willAutoBc) {
-          locWrap.style.display = 'none';
-          locTable.style.display = 'none';
-          setStats('بحث موجّه في حساباتي...');
         } else {
-          locWrap.style.display = 'none';
-          locTable.style.display = 'none';
-          setStats(lqBc ? 'لا يوجد صنف بهذا الباركود.' : 'لا توجد نتيجة.');
-        }
-        if (willAuto) {
-          autoRefreshLocationQuery(
-            willAutoBc ? lqBc : '',
-            willAutoText ? lqText : '',
-            gen,
-            safeRows.length > 0,
-            localMs
-          );
+          clearLocationTable(lqBc ? 'لا يوجد صنف بهذا الباركود في قاعدة البيانات.' : 'لا توجد نتيجة في قاعدة البيانات.');
         }
         return;
       }
@@ -10407,7 +10352,7 @@ def home() -> HTMLResponse:
           if (e.key === 'Enter') {
             e.preventDefault();
             clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') fetchOneItemFromHesabate();
+            if (activeSearchTab === 'location') searchNow('location');
           }
         });
       }
@@ -10423,7 +10368,7 @@ def home() -> HTMLResponse:
           if (e.key === 'Enter') {
             e.preventDefault();
             clearTimeout(searchDebounceTimer);
-            if (activeSearchTab === 'location') fetchOneItemFromHesabate();
+            if (activeSearchTab === 'location') searchNow('location');
           }
         });
         locBcEl.addEventListener('paste', () => {
@@ -10431,7 +10376,7 @@ def home() -> HTMLResponse:
             locBcEl.value = lightSanitizeBarcodeValue(locBcEl.value);
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-              if (activeSearchTab === 'location') fetchOneItemFromHesabate();
+              if (activeSearchTab === 'location') searchNow('location');
             }, 150);
           }, 0);
         });
