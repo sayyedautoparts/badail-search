@@ -4737,8 +4737,6 @@ def upsert_location_rows_delta_from_api(
             item_name = str(r.get("item_name") or "")
             barcode = str(r.get("barcode") or "").strip()
             location = clean_shelf_location(r.get("location"))
-            if not location and barcode:
-                location = lookup_shelf_location(preserved, barcode)
             company = str(r.get("company") or "")
             original_number = str(r.get("original_number") or "")
             brand = str(r.get("brand") or "")
@@ -4747,18 +4745,36 @@ def upsert_location_rows_delta_from_api(
             price = str(r.get("price") or "").strip()
             unit_barcodes = str(r.get("unit_barcodes") or "").strip()
             ex = existing.get(pid)
-            # لا تستبدل حقولاً صالحة بقيم فارغة من رد ناقص
-            if ex is not None:
-                if not location:
-                    location = clean_shelf_location(ex.get("location"))
-                if not company:
-                    company = str(ex.get("company") or "")
-                if not brand:
-                    brand = str(ex.get("brand") or "")
-                if not original_number:
-                    original_number = str(ex.get("original_number") or "")
-                if not notes:
-                    notes = str(ex.get("notes") or "")
+            # جلب صنف واحد: خذ قيم API كما هي — لا تُرجع موقعاً قديماً من shelf/Excel
+            if not allow_partial:
+                if not location and barcode:
+                    location = lookup_shelf_location(preserved, barcode)
+                if ex is not None:
+                    if not location:
+                        location = clean_shelf_location(ex.get("location"))
+                    if not company:
+                        company = str(ex.get("company") or "")
+                    if not brand:
+                        brand = str(ex.get("brand") or "")
+                    if not original_number:
+                        original_number = str(ex.get("original_number") or "")
+                    if not notes:
+                        notes = str(ex.get("notes") or "")
+            else:
+                # املأ فقط الحقول غير الموقع إن كانت فارغة (الاسم/الشركة…)
+                if ex is not None:
+                    if not company:
+                        company = str(ex.get("company") or "")
+                    if not brand:
+                        brand = str(ex.get("brand") or "")
+                    if not original_number:
+                        original_number = str(ex.get("original_number") or "")
+                    if not notes:
+                        notes = str(ex.get("notes") or "")
+                    if not item_name:
+                        item_name = str(ex.get("item_name") or "")
+                    if not barcode:
+                        barcode = str(ex.get("barcode") or "").strip()
             nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
             nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
             new_fp = _location_api_row_fingerprint(
@@ -4806,7 +4822,8 @@ def upsert_location_rows_delta_from_api(
                 str(ex.get("price") or "").strip(),
                 old_nb,
             )
-            if old_fp == new_fp:
+            # جلب موجّه: افرض UPDATE دائماً حتى لا تبقى قيمة قديمة بالبحث المحلي
+            if (not allow_partial) and old_fp == new_fp:
                 unchanged += 1
                 continue
             to_update.append(
@@ -4870,17 +4887,66 @@ def upsert_location_rows_delta_from_api(
             conn.executemany(insert_sql, chunk)
             inserted += len(chunk)
 
-        # بعد جلب/تحديث صنف: احذف نسخ Excel القديمة لنفس الصنف حتى لا يعرض «بحث» بيانات قديمة
+        # جلب موجّه: حدّث كل صفوف حساباتي_API بنفس product_id (حتى المكررة)
         if allow_partial:
+            for r in mapped_rows:
+                pid = str(r.get("product_id") or "").strip()
+                if not pid:
+                    continue
+                item_name = str(r.get("item_name") or "")
+                barcode = str(r.get("barcode") or "").strip()
+                location = clean_shelf_location(r.get("location"))
+                company = str(r.get("company") or "")
+                original_number = str(r.get("original_number") or "")
+                brand = str(r.get("brand") or "")
+                notes = str(r.get("notes") or "")
+                quantity = str(r.get("quantity") or "").strip()
+                price = str(r.get("price") or "").strip()
+                unit_barcodes = str(r.get("unit_barcodes") or "").strip()
+                nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
+                nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
+                conn.execute(
+                    """
+                    UPDATE location_rows SET
+                        item_name = ?, location = ?, company = ?, original_number = ?,
+                        barcode = ?, brand = ?, notes = ?, quantity = ?, price = ?,
+                        normalized_barcode = ?, normalized_text = ?, source_sheet = 'products'
+                    WHERE source_file = ?
+                      AND TRIM(COALESCE(hesabate_product_id, '')) = ?
+                    """,
+                    (
+                        item_name,
+                        location,
+                        company,
+                        original_number,
+                        barcode,
+                        brand,
+                        notes,
+                        quantity,
+                        price,
+                        nb,
+                        nt,
+                        source_key,
+                        pid,
+                    ),
+                )
+
+        # بعد جلب/تحديث صنف: احذف نسخ Excel القديمة + حدّث shelf_locations
+        if allow_partial:
+            shelf_map: dict[str, str] = {}
             for r in mapped_rows:
                 pid = str(r.get("product_id") or "").strip()
                 barcode = str(r.get("barcode") or "").strip()
                 unit_barcodes = str(r.get("unit_barcodes") or "").strip()
+                location = clean_shelf_location(r.get("location"))
                 keys: list[str] = []
                 for tok in [barcode] + re.split(r"[\s,/|;]+", unit_barcodes):
                     for k in barcode_search_keys(tok):
                         if k and k not in keys:
                             keys.append(k)
+                if location:
+                    for k in keys:
+                        shelf_map[k] = location
                 if pid:
                     conn.execute(
                         """
@@ -4903,6 +4969,11 @@ def upsert_location_rows_delta_from_api(
                         """,
                         (source_key, k, spaced),
                     )
+            if shelf_map:
+                try:
+                    upsert_shelf_locations(conn, shelf_map)
+                except Exception:
+                    pass
 
         # تنظيف صفوف حساباتي القديمة بلا product_id بعد نجاح كتالوج كافٍ (مرة ترحيل)
         if not allow_partial and len(mapped_rows) >= 100:
@@ -6383,10 +6454,11 @@ def live_lookup_locations_from_hesabate(
                         if not prev:
                             continue
                         pd = sql_row_to_dict(prev)
-                        # بعد تحديث model في refresh: لا تُرجع الموقع القديم إذا API رجّع فارغ
+                        # عند refresh (جلب صنف): لا تخلط قيماً قديمة مع رد حساباتي
+                        if refresh:
+                            continue
                         if not str(mrow.get("location") or "").strip():
-                            if not (refresh and model_refreshed):
-                                mrow["location"] = clean_shelf_location(pd.get("location"))
+                            mrow["location"] = clean_shelf_location(pd.get("location"))
                         if not str(mrow.get("company") or "").strip():
                             mrow["company"] = str(pd.get("company") or "")
                         if not str(mrow.get("brand") or "").strip():
@@ -6404,6 +6476,7 @@ def live_lookup_locations_from_hesabate(
             t0 = time.perf_counter()
             try:
                 upsert_matched_location_rows(mapped)
+                _bump_hesabate_search_data_version()
             except Exception as exc:
                 logger.exception("upsert_matched_location_rows failed: %s", exc)
             timing["save_ms"] = int((time.perf_counter() - t0) * 1000)
@@ -10033,13 +10106,14 @@ def home() -> HTMLResponse:
             if (lqCanon) params.set('q_barcode_canonical', lqCanon);
             if (barcodeDebug) params.set('barcode_debug', '1');
           }
+          params.set('_', String(Date.now()));
           const ctrl = new AbortController();
           const to = setTimeout(() => ctrl.abort(), 45000);
           const res = await fetch(`/search_locations?${params.toString()}`, {
             method: 'GET',
             cache: 'no-store',
             signal: ctrl.signal,
-            headers: { Accept: 'application/json' }
+            headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' }
           });
           clearTimeout(to);
           const parsed = await readJsonSafe(res);
