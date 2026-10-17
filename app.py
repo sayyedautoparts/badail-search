@@ -6942,6 +6942,19 @@ def home() -> HTMLResponse:
       font-size: 12px;
       min-height: 1.2em;
     }
+    .print-layout-settings {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid #c5d4e8;
+      background: #f5f8fc;
+    }
+    .print-layout-settings summary {
+      color: #1e3a5f;
+    }
+    .print-layout-settings input[type="range"] {
+      width: 100%;
+      margin-top: 4px;
+    }
     @media (max-width: 720px) {
       .print-dual-units { grid-template-columns: 1fr; direction: rtl; }
     }
@@ -7541,6 +7554,35 @@ def home() -> HTMLResponse:
           <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
+        <details id="printLayoutSettings" class="print-layout-settings" style="margin-top:12px;">
+          <summary style="cursor:pointer;font-weight:800;">إعدادات شكل اللزقة (أحجام الخط وموضع الباركود)</summary>
+          <div class="print-layout-grid" style="margin-top:10px;display:grid;gap:10px;">
+            <div>
+              <label class="field-label" for="printSetNamePx">حجم خط اسم الصنف: <strong id="printSetNamePxVal">48</strong>px</label>
+              <input id="printSetNamePx" type="range" min="18" max="72" step="1" value="48" oninput="onPrintLayoutSettingChange()" />
+            </div>
+            <div>
+              <label class="field-label" for="printSetOriginalPx">حجم خط الرقم الأصلي: <strong id="printSetOriginalPxVal">10</strong>px</label>
+              <input id="printSetOriginalPx" type="range" min="6" max="18" step="1" value="10" oninput="onPrintLayoutSettingChange()" />
+            </div>
+            <div>
+              <label class="field-label" for="printSetLocationPx">حجم خط الموقع: <strong id="printSetLocationPxVal">10</strong>px</label>
+              <input id="printSetLocationPx" type="range" min="6" max="18" step="1" value="10" oninput="onPrintLayoutSettingChange()" />
+            </div>
+            <div>
+              <label class="field-label" for="printSetBcShiftX">إزاحة الباركود يمين/يسار: <strong id="printSetBcShiftXVal">0</strong> مم</label>
+              <input id="printSetBcShiftX" type="range" min="-6" max="6" step="0.5" value="0" oninput="onPrintLayoutSettingChange()" />
+            </div>
+            <div>
+              <label class="field-label" for="printSetBcShiftY">إزاحة الباركود فوق/تحت: <strong id="printSetBcShiftYVal">0</strong> مم</label>
+              <input id="printSetBcShiftY" type="range" min="-5" max="5" step="0.5" value="0" oninput="onPrintLayoutSettingChange()" />
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي</button>
+            </div>
+            <p class="muted" style="margin:0;font-size:12px;">الإعدادات تُحفظ على هذا الجهاز وتُطبَّق عند الطباعة على الرسمة.</p>
+          </div>
+        </details>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
           الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×30 مم = لزيقان منفصلان.
         </p>
@@ -9037,11 +9079,108 @@ def home() -> HTMLResponse:
       if (!barcode || !/[A-Za-z0-9]/.test(barcode)) return { error: 'no-barcode', side: s };
       return { name, original, location, barcode };
     }
+    const PRINT_LAYOUT_DEFAULTS = {
+      namePx: 48,
+      originalPx: 10,
+      locationPx: 10,
+      bcShiftXmm: 0,
+      bcShiftYmm: 0
+    };
+    function getPrintLayoutSettings() {
+      const clamp = (n, lo, hi, fallback) => {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return fallback;
+        return Math.max(lo, Math.min(hi, v));
+      };
+      try {
+        const raw = localStorage.getItem('printLayoutSettings');
+        const o = raw ? JSON.parse(raw) : {};
+        return {
+          namePx: clamp(o.namePx, 18, 72, PRINT_LAYOUT_DEFAULTS.namePx),
+          originalPx: clamp(o.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
+          locationPx: clamp(o.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
+          bcShiftXmm: clamp(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
+          bcShiftYmm: clamp(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+        };
+      } catch (_) {
+        return Object.assign({}, PRINT_LAYOUT_DEFAULTS);
+      }
+    }
+    function savePrintLayoutSettings(s) {
+      try { localStorage.setItem('printLayoutSettings', JSON.stringify(s || getPrintLayoutSettings())); } catch (_) {}
+    }
+    function syncPrintLayoutSettingsUi(s) {
+      const st = s || getPrintLayoutSettings();
+      const set = (id, val, labelId) => {
+        const el = document.getElementById(id);
+        if (el) el.value = String(val);
+        const lab = document.getElementById(labelId);
+        if (lab) lab.textContent = String(val);
+      };
+      set('printSetNamePx', st.namePx, 'printSetNamePxVal');
+      set('printSetOriginalPx', st.originalPx, 'printSetOriginalPxVal');
+      set('printSetLocationPx', st.locationPx, 'printSetLocationPxVal');
+      set('printSetBcShiftX', st.bcShiftXmm, 'printSetBcShiftXVal');
+      set('printSetBcShiftY', st.bcShiftYmm, 'printSetBcShiftYVal');
+    }
+    function readPrintLayoutSettingsFromUi() {
+      const num = (id, fallback) => {
+        const v = Number((document.getElementById(id) || {}).value);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      return {
+        namePx: num('printSetNamePx', PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: num('printSetOriginalPx', PRINT_LAYOUT_DEFAULTS.originalPx),
+        locationPx: num('printSetLocationPx', PRINT_LAYOUT_DEFAULTS.locationPx),
+        bcShiftXmm: num('printSetBcShiftX', PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
+        bcShiftYmm: num('printSetBcShiftY', PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+      };
+    }
+    function onPrintLayoutSettingChange() {
+      const s = readPrintLayoutSettingsFromUi();
+      savePrintLayoutSettings(s);
+      syncPrintLayoutSettingsUi(s);
+    }
+    function resetPrintLayoutSettings() {
+      savePrintLayoutSettings(PRINT_LAYOUT_DEFAULTS);
+      syncPrintLayoutSettingsUi(PRINT_LAYOUT_DEFAULTS);
+    }
+    function applyPrintLayoutToLabel(label) {
+      if (!label) return;
+      const s = getPrintLayoutSettings();
+      const nameEl = label.querySelector('.pl-name');
+      const metaEl = label.querySelector('.pl-meta');
+      const origEl = label.querySelector('.pl-orig');
+      const locEl = label.querySelector('.pl-loc');
+      const wrap = label.querySelector('.pl-bc-wrap');
+      if (nameEl) {
+        nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
+        nameEl.style.fontWeight = '900';
+        nameEl.dataset.maxNamePx = String(s.namePx);
+      }
+      if (origEl) {
+        origEl.style.fontSize = s.originalPx + 'px';
+        origEl.style.fontWeight = '800';
+      }
+      if (locEl) {
+        locEl.style.fontSize = s.locationPx + 'px';
+        locEl.style.fontWeight = '800';
+      }
+      if (metaEl) {
+        const metaPx = Math.max(s.originalPx, s.locationPx);
+        metaEl.style.fontSize = metaPx + 'px';
+        metaEl.style.maxHeight = Math.max(2.4, metaPx * 0.32) + 'mm';
+        metaEl.style.marginBottom = '0.4mm';
+      }
+      if (wrap) {
+        wrap.style.transform = 'translate(' + s.bcShiftXmm + 'mm, ' + s.bcShiftYmm + 'mm)';
+      }
+    }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      // أكبر بـ ~30% عن السابق (48→62)
-      const maxPx = 62;
-      const minPx = 18;
+      const s = getPrintLayoutSettings();
+      const maxPx = Number(el.dataset.maxNamePx) || s.namePx || 48;
+      const minPx = Math.min(18, Math.max(10, Math.round(maxPx * 0.35)));
       el.style.display = 'block';
       el.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
       el.style.fontWeight = '900';
@@ -9056,7 +9195,6 @@ def home() -> HTMLResponse:
       let lo = minPx;
       let hi = maxPx;
       let best = minPx;
-      // بحث ثنائي: أكبر حجم يدخل كامل المساحة المتاحة
       while (hi - lo > 0.35) {
         const mid = (lo + hi) / 2;
         el.style.fontSize = mid + 'px';
@@ -9071,11 +9209,12 @@ def home() -> HTMLResponse:
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
-      // أكبر بدرجة من السابق (كان يبدأ من 9/8)
-      let size = 11;
+      const s = getPrintLayoutSettings();
+      let size = Math.max(s.originalPx, s.locationPx);
       el.style.fontSize = size + 'px';
       el.style.justifyContent = 'center';
-      while (size > 7.5 && el.scrollWidth > el.clientWidth + 0.5) {
+      const floor = Math.max(6, Math.min(size, 7));
+      while (size > floor && el.scrollWidth > el.clientWidth + 0.5) {
         size -= 0.35;
         el.style.fontSize = size + 'px';
       }
@@ -9149,14 +9288,19 @@ def home() -> HTMLResponse:
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
+        applyPrintLayoutToLabel(left);
         fitPrintNameDynamic(left.querySelector('.pl-name'));
         fitPrintMetaLeft(left.querySelector('.pl-meta'));
         fitPrintBarcodeText(left.querySelector('.pl-bc-text'), payloadLeft.barcode);
         fitPrintBarcodeDynamic(left.querySelector('.pl-bc'), payloadLeft.barcode, { height: 38 });
+        applyPrintLayoutToLabel(left);
+
+        applyPrintLayoutToLabel(right);
         fitPrintNameDynamic(right.querySelector('.pl-name'));
         fitPrintMetaLeft(right.querySelector('.pl-meta'));
         fitPrintBarcodeText(right.querySelector('.pl-bc-text'), payloadRight.barcode);
         fitPrintBarcodeDynamic(right.querySelector('.pl-bc'), payloadRight.barcode, { height: 38 });
+        applyPrintLayoutToLabel(right);
       }
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
@@ -12177,6 +12321,7 @@ def home() -> HTMLResponse:
       ensureLatestClientVersion();
       // تحديث مواقع حساباتي تلقائياً بدون انتظار فتح تبويب معيّن
       startHesabateAutoEnsure();
+      try { syncPrintLayoutSettingsUi(getPrintLayoutSettings()); } catch (_) {}
       setTimeout(() => {
         try {
           restoreServerFromLocalSnapshotIfEmpty();
