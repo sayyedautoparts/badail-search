@@ -6909,47 +6909,106 @@ def home() -> HTMLResponse:
     .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
     .print-side-unit .field-label { margin-top: 8px; }
     .print-side-unit .field-label:first-of-type { margin-top: 0; }
-    /* معاينة النص داخل صناديق اليسار/اليمين مخفية — الشكل يظهر في GUI أعلاه */
+    /* معاينة شكل الليبل كما سيُطبع (50×25 مم) داخل كل جهة */
     .print-side-preview {
-      display: none !important;
+      display: none;
       margin-top: 10px;
-      padding: 8px;
+      padding: 10px 8px;
       border-radius: 10px;
       border: 1px dashed #9ec9ae;
-      background: #fff;
+      background: #f3f6f4;
       text-align: center;
       overflow: hidden;
       max-width: 100%;
       box-sizing: border-box;
     }
-    .print-side-preview svg {
-      display: block;
-      max-width: 100%;
-      width: auto;
-      height: auto;
-      max-height: 56px;
-      margin: 0 auto;
-    }
-    .print-side-unit[data-side="right"] .print-side-preview { border-color: #9bb8d9; }
-    .print-side-preview .pv-row {
-      display: flex;
-      gap: 8px;
-      justify-content: space-between;
+    .print-side-unit[data-side="right"] .print-side-preview { border-color: #9bb8d9; background: #f3f6fb; }
+    .print-side-preview.empty-slot { opacity: .45; }
+    .print-label-mock-caption {
+      margin: 0 0 6px;
+      font-size: 11px;
       font-weight: 700;
-      font-size: 12px;
-      margin-bottom: 6px;
-      flex-wrap: wrap;
+      color: #5b667a;
     }
-    .print-side-preview .pv-name {
+    .print-label-mock-host {
+      width: 50mm;
+      height: 25mm;
+      max-width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
+      border: 1px solid #222;
+      background: #fff;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .print-label-mock-host .print-label {
+      width: 50mm;
+      max-width: 50mm;
+      height: 25mm;
+      max-height: 25mm;
+      box-sizing: border-box;
+      padding: 0.4mm 0.7mm 0.25mm;
+      margin: 0;
+      position: relative;
+      display: block;
+      overflow: hidden;
+      background: #fff;
+      color: #000;
+      font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+    }
+    .print-label-mock-host .pl-name,
+    .print-label-mock-host .pl-orig,
+    .print-label-mock-host .pl-loc,
+    .print-label-mock-host .pl-bc-wrap {
+      position: absolute;
+      box-sizing: border-box;
+      overflow: hidden;
+      margin: 0;
+    }
+    .print-label-mock-host .pl-name {
+      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
       font-weight: 900;
-      font-size: 13px;
-      margin: 0 0 4px;
-      color: var(--ink);
+      line-height: 1.02;
+      text-align: center;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
-    .print-side-preview.empty-slot {
-      opacity: .45;
-      background: #f7faf8;
+    .print-label-mock-host .pl-orig,
+    .print-label-mock-host .pl-loc {
+      font-weight: 800;
+      white-space: nowrap;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
+    .print-label-mock-host .pl-bc-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.1mm;
+      padding: 0 0.3mm;
+    }
+    .print-label-mock-host .pl-bc-wrap img.pl-bc,
+    .print-label-mock-host .pl-bc-wrap svg {
+      display: block;
+      margin: 0 auto;
+      max-width: 100%;
+      image-rendering: pixelated;
+    }
+    .print-label-mock-host .pl-bc-text {
+      font-family: Consolas, "Courier New", monospace;
+      font-weight: 700;
+      white-space: pre;
+      line-height: 1;
+      text-align: center;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .print-side-preview .pv-compat { display: none !important; }
     .print-side-status {
       margin-top: 6px;
       font-size: 12px;
@@ -7741,15 +7800,16 @@ def home() -> HTMLResponse:
               <label class="field-label" for="printOriginalSelectLeft">الرقم الأصلي — يسار</label>
               <select id="printOriginalSelectLeft"></select>
             </div>
-            <!-- معاينة مخفية للتوافق مع منطق الطباعة -->
-            <div id="printPreviewLeft" class="print-side-preview" style="display:none !important;" aria-hidden="true">
-              <div class="pv-row">
-                <span id="printPvOriginalLeft">الأصلي: —</span>
-                <span id="printPvLocationLeft">الموقع: —</span>
+            <div id="printPreviewLeft" class="print-side-preview" style="display:none;">
+              <p class="print-label-mock-caption">شكل الليبل — يسار (كما سيُطبع)</p>
+              <div id="printLabelMockLeft" class="print-label-mock-host"></div>
+              <div class="pv-compat" aria-hidden="true">
+                <span id="printPvOriginalLeft"></span>
+                <span id="printPvLocationLeft"></span>
+                <p class="pv-name" id="printPvNameLeft"></p>
+                <svg id="printPvBarcodeLeft"></svg>
+                <div id="printPvBarcodeTextLeft"></div>
               </div>
-              <p class="pv-name" id="printPvNameLeft">—</p>
-              <svg id="printPvBarcodeLeft"></svg>
-              <div id="printPvBarcodeTextLeft"></div>
             </div>
           </div>
           <div class="print-side-unit" data-side="right">
@@ -7765,14 +7825,16 @@ def home() -> HTMLResponse:
               <label class="field-label" for="printOriginalSelectRight">الرقم الأصلي — يمين</label>
               <select id="printOriginalSelectRight"></select>
             </div>
-            <div id="printPreviewRight" class="print-side-preview" style="display:none !important;" aria-hidden="true">
-              <div class="pv-row">
-                <span id="printPvOriginalRight">الأصلي: —</span>
-                <span id="printPvLocationRight">الموقع: —</span>
+            <div id="printPreviewRight" class="print-side-preview" style="display:none;">
+              <p class="print-label-mock-caption">شكل الليبل — يمين (كما سيُطبع)</p>
+              <div id="printLabelMockRight" class="print-label-mock-host"></div>
+              <div class="pv-compat" aria-hidden="true">
+                <span id="printPvOriginalRight"></span>
+                <span id="printPvLocationRight"></span>
+                <p class="pv-name" id="printPvNameRight"></p>
+                <svg id="printPvBarcodeRight"></svg>
+                <div id="printPvBarcodeTextRight"></div>
               </div>
-              <p class="pv-name" id="printPvNameRight">—</p>
-              <svg id="printPvBarcodeRight"></svg>
-              <div id="printPvBarcodeTextRight"></div>
             </div>
           </div>
         </div>
@@ -9121,8 +9183,41 @@ def home() -> HTMLResponse:
       st.rows = [];
       const card = document.getElementById('printPreview' + printSideCap(s));
       if (card) card.style.display = 'none';
+      const mock = document.getElementById('printLabelMock' + printSideCap(s));
+      if (mock) mock.innerHTML = '';
       const wrap = document.getElementById('printOriginalWrap' + printSideCap(s));
       if (wrap) wrap.style.display = 'none';
+    }
+    function renderPrintSideLabelMock(side) {
+      const s = printSideKey(side);
+      const cap = printSideCap(s);
+      const card = document.getElementById('printPreview' + cap);
+      const host = document.getElementById('printLabelMock' + cap);
+      if (!card || !host) return;
+      const payload = (typeof buildPrintPayloadForSide === 'function')
+        ? buildPrintPayloadForSide(s)
+        : null;
+      const ok = !!(payload && !payload.error && payload.barcode && /[A-Za-z0-9]/.test(String(payload.barcode)));
+      if (!ok) {
+        card.style.display = 'none';
+        host.innerHTML = '';
+        return;
+      }
+      card.style.display = 'block';
+      host.innerHTML = '';
+      const label = buildPrintLabelEl(payload, s);
+      host.appendChild(label);
+      const paint = () => {
+        applyPrintLayoutToLabel(label);
+        fitPrintNameDynamic(label.querySelector('.pl-name'));
+        fitPrintMetaLeft(label.querySelector('.pl-orig'));
+        fitPrintMetaLeft(label.querySelector('.pl-loc'));
+        fitPrintBarcodeText(label.querySelector('.pl-bc-text'), payload.barcode);
+        const bcEl = label.querySelector('.pl-bc');
+        if (bcEl) fitPrintBarcodeDynamic(bcEl, payload.barcode, { height: 38 });
+        applyPrintLayoutToLabel(label);
+      };
+      ensureJsBarcodeLib().then(paint).catch(paint);
     }
     function updatePrintBarcodePreview(side, forceNameFromRow) {
       const s = printSideKey(side);
@@ -9134,6 +9229,8 @@ def home() -> HTMLResponse:
       const row = pickPrintRowForOriginal(st.rows, chosen) || st.item;
       if (!row) {
         if (card) card.style.display = 'none';
+        const mock = document.getElementById('printLabelMock' + cap);
+        if (mock) mock.innerHTML = '';
         return;
       }
       st.item = row;
@@ -9149,20 +9246,20 @@ def home() -> HTMLResponse:
       }
       if (!original) original = '—';
       const location = String(row.location || '').trim() || '—';
-      // طباعة: الباركود كما هو في الصف — بدون trim/split مسافات (مسار البحث منفصل)
       const barcode = pickPrintBarcodeExactFromRow(row);
       const origEl = document.getElementById('printPvOriginal' + cap);
       const locEl = document.getElementById('printPvLocation' + cap);
       const textEl = document.getElementById('printPvBarcodeText' + cap);
+      const namePv = document.getElementById('printPvName' + cap);
       if (origEl) origEl.textContent = 'الأصلي: ' + original;
       if (locEl) locEl.textContent = 'الموقع: ' + location;
+      if (namePv) namePv.textContent = getPrintName(s) || name || '—';
       if (textEl) {
         fitPrintBarcodeText(textEl, barcode);
         if (!barcode) textEl.textContent = '—';
       }
-      if (card) card.style.display = 'none';
       updatePrintDualPreviewSlots();
-      // لا ترسم معاينة شاشة — الشكل يظهر في محرر GUI أعلى الصفحة
+      renderPrintSideLabelMock(s);
       try {
         const des = document.getElementById('printLayoutDesigner');
         if (des && des.open) refreshPrintDesignerBoard();
@@ -9664,6 +9761,10 @@ def home() -> HTMLResponse:
       const s = savePrintLayoutSettings(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
       syncPrintLayoutSettingsUi(s);
       refreshPrintDesignerBoard();
+      try {
+        renderPrintSideLabelMock('left');
+        renderPrintSideLabelMock('right');
+      } catch (_) {}
     }
     function fitTextIntoBox(el, maxPx, minPx) {
       if (!el) return minPx;
@@ -9798,6 +9899,10 @@ def home() -> HTMLResponse:
         document.body.style.userSelect = '';
       } catch (_) {}
       refreshPrintDesignerBoard();
+      try {
+        renderPrintSideLabelMock('left');
+        renderPrintSideLabelMock('right');
+      } catch (_) {}
     }
     function startDesignerZoneInteract(zone, mode, ev) {
       ev.preventDefault();
