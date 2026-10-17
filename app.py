@@ -8119,7 +8119,11 @@ def home() -> HTMLResponse:
         } catch (_) {
           restorePrintFormState().catch(() => {});
         }
-        try { refreshPrintDesignerBoard(); } catch (_) {}
+        // لا تفتح محرر GUI تلقائياً — فقط حدّثه إن كان مفتوحاً يدوياً
+        try {
+          const des = document.getElementById('printLayoutDesigner');
+          if (des && des.open) refreshPrintDesignerBoard();
+        } catch (_) {}
         return;
       }
       // احفظ حقول الطباعة قبل مغادرة التبويب
@@ -13258,7 +13262,16 @@ def home() -> HTMLResponse:
       startHesabateAutoEnsure();
       try {
         syncPrintLayoutSettingsUi(getPrintLayoutSettings());
-        refreshPrintDesignerBoard();
+        // المحرر مغلق افتراضياً — يُبنى المحتوى عند الفتح اليدوي
+        const desInit = document.getElementById('printLayoutDesigner');
+        if (desInit) {
+          desInit.open = false;
+          desInit.addEventListener('toggle', () => {
+            if (desInit.open) {
+              try { refreshPrintDesignerBoard(); } catch (_) {}
+            }
+          });
+        }
       } catch (_) {}
       try {
         window.addEventListener('pointermove', (ev) => {
