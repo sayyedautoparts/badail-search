@@ -8479,7 +8479,12 @@ def home() -> HTMLResponse:
       if (nameInp && (forceNameFromRow || !nameInp.value.trim() || nameInp.dataset.fromFetch === '1')) {
         setPrintName(s, name);
       }
-      const original = chosen || String(row.original_number || '').trim() || '—';
+      let original = chosen || '';
+      if (!isPrintOriginalMenuToken(original)) {
+        const okTok = splitOriginalTokens(row.original_number).find(isPrintOriginalMenuToken);
+        original = okTok || '';
+      }
+      if (!original) original = '—';
       const location = String(row.location || '').trim() || '—';
       // طباعة: الباركود كما هو في الصف — بدون trim/split مسافات (مسار البحث منفصل)
       const barcode = pickPrintBarcodeExactFromRow(row);
