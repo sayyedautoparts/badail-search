@@ -7050,10 +7050,10 @@ def home() -> HTMLResponse:
         justify-content: center;
         align-items: center;
         gap: 2.5mm;
-        font-size: 8px;
+        font-size: 10px;
         font-weight: 800;
         margin: 0 auto 1mm;
-        max-height: 2.5mm;
+        max-height: 3.4mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7071,13 +7071,13 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-bc-wrap {
         flex: 0 0 auto;
-        overflow: visible;
+        overflow: hidden;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0.2mm;
-        padding: 0;
+        gap: 0.15mm;
+        padding: 0 0.3mm;
         margin: 0;
         width: 100%;
         max-width: 100%;
@@ -7085,11 +7085,6 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-bc-wrap svg {
         display: block;
-        /* لا max-width:100% — أي تصغير إضافي يرفعّت الأعمدة ويفسد القارئ */
-        width: auto !important;
-        height: auto !important;
-        max-width: none !important;
-        max-height: none !important;
         margin: 0 auto;
         overflow: visible;
         shape-rendering: crispEdges;
@@ -7097,15 +7092,16 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 9.5px;
+        font-size: 9px;
         font-weight: 800;
         letter-spacing: .02em;
         margin: 0;
-        padding: 0 0.3mm;
+        padding: 0 0.2mm;
         line-height: 1;
         overflow: hidden !important;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        text-overflow: clip;
+        /* pre يحافظ على فراغات الباركود الطويل في النص تحت الأعمدة */
+        white-space: pre !important;
         direction: ltr;
         box-sizing: border-box;
         text-align: center;
@@ -7164,11 +7160,13 @@ def home() -> HTMLResponse:
       direction: ltr;
       justify-content: center;
       gap: 2.5mm;
-      max-height: 2.5mm;
+      max-height: 3.4mm;
       margin: 0 auto 1mm;
       overflow: hidden;
       white-space: nowrap;
       width: 100%;
+      font-size: 10px;
+      font-weight: 800;
     }
     .print-label-sheet.print-measure .pl-bc-wrap {
       flex: 0 0 auto;
@@ -7179,16 +7177,19 @@ def home() -> HTMLResponse:
       width: 100%;
       max-width: 100%;
       margin: 0;
-      padding: 0;
-      overflow: visible;
+      padding: 0 0.3mm;
+      overflow: hidden;
       box-sizing: border-box;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg {
-      width: auto;
-      height: auto;
-      max-width: none;
       margin: 0 auto;
       shape-rendering: crispEdges;
+    }
+    .print-label-sheet.print-measure .pl-bc-text {
+      white-space: pre;
+      text-align: center;
+      max-width: 100%;
+      overflow: hidden;
     }
     /* جدول المواقع خارج لوحته — لا يظهر في طباعة/رئيسي/قياسات/قشطان */
     body.tab-print #locationsTableWrap,
@@ -8403,23 +8404,23 @@ def home() -> HTMLResponse:
       return out;
     }
     function pickPrintBarcodeExactFromRow(row) {
-      // خذ حقل barcode كما هو؛ لا split على المسافات (هذا لبحث القراءة فقط)
-      const bc = row && row.barcode != null ? String(row.barcode) : '';
+      // خذ حقل barcode كما هو مع كل الفراغات؛ لا split (مسار البحث منفصل)
+      const bc = printBarcodeExactValue(row && row.barcode != null ? row.barcode : '');
       if (/[A-Za-z0-9]/.test(bc)) return bc;
-      const ub = row && row.unit_barcodes != null ? String(row.unit_barcodes) : '';
+      const ub = printBarcodeExactValue(row && row.unit_barcodes != null ? row.unit_barcodes : '');
       if (/[A-Za-z0-9]/.test(ub)) return ub;
       return '';
     }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      // استخدم القيمة كما وصلت للطباعة — بدون مسار قراءة/تطبيع البحث
+      // CODE128 بالقيمة الحرفية — الفراغات جزء من الترميز وليست للتجميل
       const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) {
         svgEl.innerHTML = '';
         return false;
       }
       try {
-        JsBarcode(svgEl, value, Object.assign({
+        const conf = Object.assign({
           format: 'CODE128',
           displayValue: false,
           margin: 0,
@@ -8427,17 +8428,14 @@ def home() -> HTMLResponse:
           height: 56,
           background: '#ffffff',
           lineColor: '#000000'
-        }, opts || {}));
+        }, opts || {});
+        conf.format = 'CODE128';
+        JsBarcode(svgEl, value, conf);
         return true;
       } catch (_) {
         svgEl.innerHTML = '';
         return false;
       }
-    }
-    function estimateCode128DataModules(code) {
-      const n = Math.max(1, String(code || '').length);
-      // CODE128 تقريباً: 11 وحدة/رمز + start/stop/checksum
-      return n * 11 + 35;
     }
     function applyPrintBarcodeSvgSizeMm(svgEl, widthMm, heightMm) {
       if (!svgEl) return;
@@ -8454,19 +8452,21 @@ def home() -> HTMLResponse:
       svgEl.style.transform = '';
       svgEl.classList.remove('print-bc-fit');
       if (!bw || !bh || !(widthMm > 0) || !(heightMm > 0)) return;
+      // meet = تصغير/تكبير موحّد النسب فقط (الفراغات داخل CODE128 تبقى صحيحة)
       svgEl.setAttribute('viewBox', `0 0 ${bw} ${bh}`);
       svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
       svgEl.setAttribute('width', widthMm.toFixed(3) + 'mm');
       svgEl.setAttribute('height', heightMm.toFixed(3) + 'mm');
       svgEl.style.width = widthMm.toFixed(3) + 'mm';
       svgEl.style.height = heightMm.toFixed(3) + 'mm';
-      svgEl.style.maxWidth = 'none';
-      svgEl.style.maxHeight = 'none';
+      svgEl.style.maxWidth = '100%';
+      svgEl.style.maxHeight = '14mm';
       svgEl.style.margin = '0 auto';
       svgEl.style.shapeRendering = 'crispEdges';
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
+      // القيمة كما هي من المصدر — بما فيها كل الفراغات — بصيغة CODE128 فقط
       const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) return false;
       svgEl.style.transform = '';
@@ -8480,8 +8480,9 @@ def home() -> HTMLResponse:
           width: 1.8,
           margin: 10,
           marginTop: 0,
-          marginBottom: 0
-        }, opts || {}));
+          marginBottom: 0,
+          displayValue: false
+        }, opts || {}, { format: 'CODE128' }));
         if (okPrev) {
           svgEl.style.width = 'auto';
           svgEl.style.height = 'auto';
@@ -8490,62 +8491,81 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— طباعة لزقة Rongta 203dpi: مقروئية أولاً ——
-      // الحجم النهائي بالمليمتر الحقيقي للطابعة (مش اعتماد 96dpi الشاشة)
-      const usableMm = 56.5;
-      const dataModules = estimateCode128DataModules(value);
-      let quietMods = 10;
-      let totalMods = dataModules + quietMods * 2;
-      // هدف: عمود ≈ 0.30مم (≥ نقطتين حراريتين) مع quiet zone
-      let moduleMm = usableMm / totalMods;
-      if (moduleMm < 0.28) {
-        quietMods = 7;
-        totalMods = dataModules + quietMods * 2;
-        moduleMm = usableMm / totalMods;
-      }
-      if (moduleMm < 0.26) {
-        quietMods = 5;
-        totalMods = dataModules + quietMods * 2;
-        moduleMm = usableMm / totalMods;
-      }
-      // سقف للقصير؛ للطويل خذ ما يدخل اللزقة بالكامل
-      moduleMm = Math.min(0.34, moduleMm);
-      // لا تنزل تحت 0.24مم إلا إذا الباركود أطول من سعة اللزقة
-      if (moduleMm < 0.24) moduleMm = Math.max(0.22, moduleMm);
-      const widthMm = Math.min(usableMm, totalMods * moduleMm);
-      const heightMm = 13.5;
-
-      // رسم داخلي بدقة ثابتة ثم إسقاط على المليمتر الحقيقي
+      // لزقة 59مم: صغّر الباركود الطويل ليدخل الورقة، مع quiet zone، ونسب أعمدة صحيحة للماسح
+      const usableMm = 55;
+      const maxHeightMm = 12.5;
+      const maxModuleMm = 0.33;
+      // quiet zone ≈ 10 وحدات؛ للطويل جداً ننزل لـ 7 ثم 5
+      const tryQuiets = [10, 7, 5];
+      let ok = false;
+      let lastBw = 0;
+      let lastBh = 0;
       const modulePx = 2;
-      const quietPx = quietMods * modulePx;
-      const barHeightPx = 52;
-      const ok = renderPrintBarcodeSvg(svgEl, value, {
-        format: 'CODE128',
-        width: modulePx,
-        height: barHeightPx,
-        margin: 0,
-        marginLeft: quietPx,
-        marginRight: quietPx,
-        marginTop: 0,
-        marginBottom: 0,
-        background: '#ffffff',
-        lineColor: '#000000',
-        displayValue: false
-      });
-      if (!ok) return false;
-      applyPrintBarcodeSvgSizeMm(svgEl, widthMm, heightMm);
-      return true;
+      const barHeightPx = 48;
+
+      for (let qi = 0; qi < tryQuiets.length; qi++) {
+        const quietPx = tryQuiets[qi] * modulePx;
+        ok = renderPrintBarcodeSvg(svgEl, value, {
+          format: 'CODE128',
+          width: modulePx,
+          height: barHeightPx,
+          margin: 0,
+          marginLeft: quietPx,
+          marginRight: quietPx,
+          marginTop: 0,
+          marginBottom: 0,
+          background: '#ffffff',
+          lineColor: '#000000',
+          displayValue: false
+        });
+        if (!ok) return false;
+        try {
+          const box = svgEl.getBBox();
+          lastBw = box.width;
+          lastBh = box.height;
+        } catch (_) {
+          lastBw = Number(svgEl.getAttribute('width')) || 0;
+          lastBh = Number(svgEl.getAttribute('height')) || 0;
+        }
+        if (!lastBw || !lastBh) continue;
+        // وحدات فعلية من الرسم (يشمل الفراغات المرمّزة داخل CODE128)
+        const units = lastBw / modulePx;
+        const moduleMm = usableMm / units;
+        // إذا العمود سميك كفاية مع هذا الـ quiet zone نتوقف
+        if (moduleMm >= 0.25 || qi === tryQuiets.length - 1) {
+          let widthMm = Math.min(usableMm, units * Math.min(maxModuleMm, Math.max(moduleMm, 0.22)));
+          // املأ عرض اللزقة للطويل لأكبر سماكة ممكنة دون تجاوز
+          if (units * 0.25 >= usableMm * 0.92) widthMm = usableMm;
+          let heightMm = widthMm * (lastBh / lastBw);
+          if (heightMm > maxHeightMm) {
+            heightMm = maxHeightMm;
+            widthMm = heightMm * (lastBw / lastBh);
+            if (widthMm > usableMm) {
+              widthMm = usableMm;
+              heightMm = widthMm * (lastBh / lastBw);
+            }
+          }
+          applyPrintBarcodeSvgSizeMm(svgEl, widthMm, heightMm);
+          return true;
+        }
+      }
+      if (ok && lastBw && lastBh) {
+        applyPrintBarcodeSvgSizeMm(svgEl, usableMm, Math.min(maxHeightMm, usableMm * (lastBh / lastBw)));
+      }
+      return ok;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // النص تحت الباركود = نفس القيمة المطبوعة حرفاً بحرف (مع كل الفراغات)
+      // نفس قيمة CODE128 حرفاً بحرف مع كل الفراغات
       const display = printBarcodeExactValue(code);
       el.textContent = display;
+      el.style.whiteSpace = 'pre';
       const n = display.length;
-      let px = 9.5;
-      if (n > 16) px = 8.5;
-      if (n > 22) px = 7.5;
-      if (n > 28) px = 6.8;
+      let px = 9;
+      if (n > 16) px = 8;
+      if (n > 22) px = 7;
+      if (n > 28) px = 6.2;
+      if (n > 34) px = 5.5;
       el.style.fontSize = px + 'px';
     }
     function getPrintQty() {
@@ -8960,11 +8980,12 @@ def home() -> HTMLResponse:
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
-      let size = 9;
+      // أكبر بدرجة من السابق (كان يبدأ من 9/8)
+      let size = 11;
       el.style.fontSize = size + 'px';
       el.style.justifyContent = 'center';
-      while (size > 6 && el.scrollWidth > el.clientWidth + 0.5) {
-        size -= 0.4;
+      while (size > 7.5 && el.scrollWidth > el.clientWidth + 0.5) {
+        size -= 0.35;
         el.style.fontSize = size + 'px';
       }
     }
