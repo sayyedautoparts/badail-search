@@ -1,19 +1,25 @@
-# Automatic Hesabate catalog sync — يعمل والتطبيق مغلق.
-# GitHub قد يتخطى بعض المواعيد؛ نطلق كل 30 دقيقة والسيرفر يفرض كل 90 دقيقة.
-# صمت السيرفر: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem).
-# Required GitHub secrets: APP_URL, CRON_SECRET (optional but recommended).
+# مزامنة كتالوج حساباتي تلقائياً — تعمل والتطبيق مغلق.
+# GitHub غالباً يتأخر عن cron؛ لذلك نطلق كل 10 دقائق نهاراً والسيرفر يفرض الفاصل.
+# صمت السيرفر: 21:00–06:00 بتوقيت فلسطين.
+# Required secret: APP_URL  |  Optional: CRON_SECRET
 name: Hesabate catalog sync
 
 on:
   schedule:
-    - cron: "5,35 * * * *"
-      timezone: Asia/Jerusalem
+    # UTC 03:00–17:50 ≈ نهار فلسطين 06:00–20:50 (UTC+3) — كل 10 دقائق
+    - cron: "0,10,20,30,40,50 3-17 * * *"
+    # دفعة بعد انتهاء الصمت مباشرة
+    - cron: "2 3 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: hesabate-catalog-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Trigger Hesabate sync
         env:
@@ -26,14 +32,14 @@ jobs:
             exit 1
           fi
           URL="${APP_URL%/}/hesabate/cron_sync"
-          HDR=(-H "Accept: application/json")
+          HDR=(-H "Accept: application/json" -H "Cache-Control: no-cache")
           if [ -n "${CRON_SECRET:-}" ]; then
             HDR+=(-H "Authorization: Bearer ${CRON_SECRET}")
           fi
           echo "GET sync -> $URL"
           HTTP_CODE=$(curl -sS --max-time 290 -o /tmp/sync.json -w "%{http_code}" -X GET "$URL" "${HDR[@]}")
           echo "HTTP $HTTP_CODE"
-          head -c 2500 /tmp/sync.json || true
+          head -c 3000 /tmp/sync.json || true
           echo
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             echo "::error::cron_sync failed with HTTP $HTTP_CODE"
@@ -43,4 +49,8 @@ jobs:
             echo "::error::cron_sync returned ok=false"
             exit 1
           fi
-          echo "Sync trigger OK"
+          if grep -q '"skipped"[[:space:]]*:[[:space:]]*true' /tmp/sync.json; then
+            echo "Skipped (quiet hours or still fresh) — OK"
+          else
+            echo "Sync ran OK"
+          fi

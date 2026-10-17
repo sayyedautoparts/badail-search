@@ -136,12 +136,13 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
-    # افتراضي ساعة ونصف — مع نافذة صمت ليلاً بتوقيت فلسطين (انظر hesabate_auto_sync_allowed_now)
+    # افتراضي ساعة — GitHub يتأخر أحياناً؛ مع طلب من الواجهة يكتمل التحديث وحده
+    # (نافذة صمت ليلاً: انظر hesabate_auto_sync_allowed_now)
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "5400")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "3600")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 5400
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 3600
 # صمت المزامنة التلقائية: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem)
 HESABATE_AUTO_SYNC_TZ = os.getenv("HESABATE_AUTO_SYNC_TZ") or "Asia/Jerusalem"
 HESABATE_AUTO_SYNC_QUIET_START_HOUR = 21  # 9 مساءً
@@ -7903,12 +7904,15 @@ def home() -> HTMLResponse:
     }
 
     let hesabateEnsureTimer = null;
+    let hesabateGlobalEnsureTimer = null;
     let hesabateEnsureInflight = false;
     let hesabateLookupInflight = null;
     let locationSearchGen = 0;
     let locationLiveRefreshBusy = false;
     const locationLiveRefreshByKey = new Map();
-    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد «تحديث تلقائي» فقط
+    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد الحالة في تبويب المواقع
+    // طلب مزامنة من الواجهة كل 4 دقائق — السيرفر يفرض الفاصل (ولا يكرّر بلا داعٍ)
+    const HESABATE_CLIENT_ENSURE_MS = 4 * 60 * 1000;
     function isCompleteBarcodeQuery(bc) {
       const compact = String(bc || '').replace(/[\\s\\-]/g, '');
       return compact.length >= 8 && /[0-9A-Za-z]/.test(compact);
@@ -7926,10 +7930,25 @@ def home() -> HTMLResponse:
     }
     function startHesabateLocationPoller() {
       stopHesabateLocationPoller();
-      // التحديث الفعلي كل ساعة ونصف يعمل من السيرفر (GitHub) والتطبيق مغلق.
-      // هنا نحدّث العداد فقط؛ إن تغيّر search_version نُعيد البحث لعرض بيانات حساباتي الجديدة.
+      // عدّاد الحالة + إعادة البحث إن تغيّر search_version
       refreshHesabateStatus();
       hesabateEnsureTimer = setInterval(() => refreshHesabateStatus(), HESABATE_CLIENT_POLL_MS);
+    }
+    function stopHesabateAutoEnsure() {
+      if (hesabateGlobalEnsureTimer) {
+        clearInterval(hesabateGlobalEnsureTimer);
+        hesabateGlobalEnsureTimer = null;
+      }
+    }
+    function startHesabateAutoEnsure() {
+      // مزامنة تلقائية طالما الصفحة مفتوحة — تكمل GitHub لما التطبيق مغلق
+      stopHesabateAutoEnsure();
+      const tick = () => {
+        ensureHesabateLocationSyncQuiet(false).catch(() => {});
+      };
+      // أول طلب بعد ثوانٍ من الإقلاع (لا يجمّد الواجهة)
+      setTimeout(tick, 8000);
+      hesabateGlobalEnsureTimer = setInterval(tick, HESABATE_CLIENT_ENSURE_MS);
     }
     async function ensureHesabateLocationSyncQuiet(force) {
       if (hesabateEnsureInflight) return null;
@@ -12082,6 +12101,8 @@ def home() -> HTMLResponse:
       loadStats();
       searchNow();
       ensureLatestClientVersion();
+      // تحديث مواقع حساباتي تلقائياً بدون انتظار فتح تبويب معيّن
+      startHesabateAutoEnsure();
       setTimeout(() => {
         try {
           restoreServerFromLocalSnapshotIfEmpty();
