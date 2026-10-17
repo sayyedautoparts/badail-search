@@ -7014,13 +7014,19 @@ def home() -> HTMLResponse:
         align-items: stretch;
         justify-content: flex-start;
       }
-      .print-label-row .print-label:first-child {
-        /* لزق اليسار — تصغير 1مم من جهة آخر/وسط الورقة */
+      .print-label-row .print-label:first-child,
+      .print-label.print-label-left {
+        /* لزق اليسار (حافة الورقة) — هامش خارجي أكبر حتى لا يُقصّ quiet zone */
         margin-right: 1mm;
+        padding-left: 1.6mm;
+        padding-right: 0.5mm;
       }
-      .print-label-row .print-label:last-child {
-        /* لزق اليمين — تصغير 1مم من جهة أول/وسط الورقة */
+      .print-label-row .print-label:last-child,
+      .print-label.print-label-right {
+        /* لزق اليمين */
         margin-left: 1mm;
+        padding-right: 1.6mm;
+        padding-left: 0.5mm;
       }
       .print-label.print-label-empty {
         visibility: hidden;
@@ -7145,11 +7151,17 @@ def home() -> HTMLResponse:
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
     }
-    .print-label-sheet.print-measure .print-label-row .print-label:first-child {
+    .print-label-sheet.print-measure .print-label-row .print-label:first-child,
+    .print-label-sheet.print-measure .print-label.print-label-left {
       margin-right: 1mm;
+      padding-left: 1.6mm;
+      padding-right: 0.5mm;
     }
-    .print-label-sheet.print-measure .print-label-row .print-label:last-child {
+    .print-label-sheet.print-measure .print-label-row .print-label:last-child,
+    .print-label-sheet.print-measure .print-label.print-label-right {
       margin-left: 1mm;
+      padding-right: 1.6mm;
+      padding-left: 0.5mm;
     }
     .print-label-sheet.print-measure .pl-name {
       flex: 1 1 auto;
@@ -8534,7 +8546,9 @@ def home() -> HTMLResponse:
       // ارتفاع أقل ~20%، وأعمدة أثقل/أوضح داخل اللزقة للمسح السريع
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      const usableMm = 56;
+      // أضيق شوي — يحمي quiet zone خاصة على لزقة اليسار (حافة الورقة)
+      const isLeftLabel = !!(targetEl.closest && targetEl.closest('.print-label-left'));
+      const usableMm = isLeftLabel ? 52 : 53.5;
       const heightMm = 11.6; // كان ~14.5 → أصغر 20%
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(72, Math.round(heightMm * dotsPerMm));
@@ -9070,9 +9084,12 @@ def home() -> HTMLResponse:
         el.style.fontSize = size + 'px';
       }
     }
-    function buildPrintLabelEl(data) {
+    function buildPrintLabelEl(data, side) {
+      const sideKey = printSideKey(side || 'left');
       const label = document.createElement('div');
-      label.className = 'print-label' + (data && data.empty ? ' print-label-empty' : '');
+      label.className = 'print-label print-label-' + sideKey
+        + (data && data.empty ? ' print-label-empty' : '');
+      label.setAttribute('data-print-side', sideKey);
       label.innerHTML =
         `<div class="pl-name"></div>` +
         `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
@@ -9084,8 +9101,7 @@ def home() -> HTMLResponse:
         const bcText = label.querySelector('.pl-bc-text');
         bcText.textContent = data.barcode || '';
         fitPrintBarcodeText(bcText, data.barcode);
-        // عرض ديناميكي حسب طول الباركود — يدخل الورقة ويبقى مقروءاً
-        fitPrintBarcodeDynamic(label.querySelector('.pl-bc'), data.barcode, { height: 38 });
+        // لا ترسم الباركود هنا — يُرسم بعد الإدخال في الصف حتى تُعرف جهة اليسار/اليمين
       }
       return label;
     }
@@ -9132,19 +9148,19 @@ def home() -> HTMLResponse:
       for (let page = 0; page < pages; page++) {
         const rowEl = document.createElement('div');
         rowEl.className = 'print-label-row';
-        const left = buildPrintLabelEl(payloadLeft);
-        const right = buildPrintLabelEl(payloadRight);
+        const left = buildPrintLabelEl(payloadLeft, 'left');
+        const right = buildPrintLabelEl(payloadRight, 'right');
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
         fitPrintNameDynamic(left.querySelector('.pl-name'));
         fitPrintMetaLeft(left.querySelector('.pl-meta'));
-        fitPrintBarcodeDynamic(left.querySelector('.pl-bc'), payloadLeft.barcode, { height: 38 });
         fitPrintBarcodeText(left.querySelector('.pl-bc-text'), payloadLeft.barcode);
+        fitPrintBarcodeDynamic(left.querySelector('.pl-bc'), payloadLeft.barcode, { height: 38 });
         fitPrintNameDynamic(right.querySelector('.pl-name'));
         fitPrintMetaLeft(right.querySelector('.pl-meta'));
-        fitPrintBarcodeDynamic(right.querySelector('.pl-bc'), payloadRight.barcode, { height: 38 });
         fitPrintBarcodeText(right.querySelector('.pl-bc-text'), payloadRight.barcode);
+        fitPrintBarcodeDynamic(right.querySelector('.pl-bc'), payloadRight.barcode, { height: 38 });
       }
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
