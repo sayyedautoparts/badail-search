@@ -58,6 +58,10 @@ try {
 
 Write-Host "تم إنشاء/تحديث المهمة: $TaskName"
 Write-Host "الوقت: كل يوم 9:00 صباحاً"
+Write-Host "الجهاز الحالي: $env:COMPUTERNAME / مستخدم: $env:USERNAME"
+Write-Host "تأكد أن G:\ملفاتي موجود وأن BADAIL_UPLOAD_HOSTS في daily_upload.local.env يطابق هذا الجهاز (مثل Asim,sayyed)."
 Write-Host "التشغيل اليدوي للتجربة:"
 Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$Runner`""
 Write-Host "أو من المجدول: Start-ScheduledTask -TaskName '$TaskName'"
+Write-Host "للتثبيت الكامل على جهاز Asim:"
+Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\setup_upload_on_this_pc.ps1`""

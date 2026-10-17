@@ -6,11 +6,14 @@
   3) ملف الشغل\\قشطان.xlsx → قشطان
 
 يشغَّل على جهاز ويندوز الذي فيه قرص G: (لا يعمل على Vercel).
+الجهاز المقصود عادةً: Asim (BADAIL_UPLOAD_HOSTS).
 """
 from __future__ import annotations
 
 import argparse
 import os
+import platform
+import socket
 import sys
 import time
 import traceback
@@ -22,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls"}
+DEFAULT_BASE = r"G:\ملفاتي"
 
 
 def _load_env_file(path: Path) -> None:
@@ -58,6 +62,51 @@ def _ensure_db_env() -> None:
             "ضع الرابط في scripts/daily_upload.local.env مثل:\n"
             "DATABASE_URL=postgresql://..."
         )
+
+
+def _machine_identity() -> dict[str, str]:
+    host = (socket.gethostname() or "").strip()
+    comp = (os.getenv("COMPUTERNAME") or platform.node() or host or "").strip()
+    user = (os.getenv("USERNAME") or os.getenv("USER") or "").strip()
+    return {"hostname": host, "computername": comp, "username": user}
+
+
+def _host_allowed(log) -> bool:
+    """
+    إن وُجد BADAIL_UPLOAD_HOSTS: يسمح فقط إذا طابق أحد التوكنات
+    اسم الجهاز أو المستخدم (جزئياً، بدون حساسية لحالة الأحرف).
+    مثال: Asim,sayyed
+    """
+    raw = (os.getenv("BADAIL_UPLOAD_HOSTS") or "").strip()
+    if not raw:
+        return True
+    tokens = [t.strip().lower() for t in raw.replace(";", ",").split(",") if t.strip()]
+    if not tokens:
+        return True
+    ident = _machine_identity()
+    hay = " | ".join(ident.values()).lower()
+    log(f"هوية الجهاز: hostname={ident['hostname']} user={ident['username']}")
+    for tok in tokens:
+        if tok and tok in hay:
+            log(f"مسموح بالرفع على هذا الجهاز (طابق: {tok})")
+            return True
+    log(
+        "تخطي الرفع: هذا الجهاز غير مسموح في BADAIL_UPLOAD_HOSTS="
+        + raw
+        + f" | الحالي={hay}"
+    )
+    return False
+
+
+def _resolve_base(cli_base: str | None) -> Path:
+    env_base = (os.getenv("BADAIL_EXCEL_BASE") or "").strip()
+    if cli_base and cli_base != DEFAULT_BASE:
+        return Path(cli_base)
+    if env_base:
+        return Path(env_base)
+    if cli_base:
+        return Path(cli_base)
+    return Path(DEFAULT_BASE)
 
 
 def _iter_excel(folder: Path) -> list[Path]:
@@ -159,8 +208,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Daily local Excel upload to production DB")
     parser.add_argument(
         "--base",
-        default=r"G:\ملفاتي",
-        help="المجلد الأب (افتراضي G:\\ملفاتي)",
+        default=DEFAULT_BASE,
+        help="المجلد الأب (افتراضي G:\\ملفاتي أو BADAIL_EXCEL_BASE)",
     )
     parser.add_argument("--dry-run", action="store_true", help="عرض الملفات فقط دون رفع")
     parser.add_argument(
@@ -168,9 +217,22 @@ def main() -> int:
         default=str(ROOT / "scripts" / "logs"),
         help="مجلد سجلات التشغيل",
     )
+    parser.add_argument(
+        "--force-host",
+        action="store_true",
+        help="تجاهل قيد BADAIL_UPLOAD_HOSTS لهذا التشغيل",
+    )
     args = parser.parse_args()
 
-    base = Path(args.base)
+    # حمّل env مبكراً لقراءة BADAIL_* حتى في dry-run
+    for candidate in (
+        ROOT / "scripts" / "daily_upload.local.env",
+        ROOT / ".env",
+        ROOT / ".env.local",
+    ):
+        _load_env_file(candidate)
+
+    base = _resolve_base(args.base)
     cars = base / "قطع سيارات"
     fsb = base / "قطع فسب"
     wiper = base / "الشغل" / "قشطان.xlsx"
@@ -187,8 +249,18 @@ def main() -> int:
             fh.write(line + "\n")
 
     t0 = time.perf_counter()
+    ident = _machine_identity()
     log("=== بدء الرفع اليومي ===")
     log(f"base={base}")
+    log(f"computer={ident['computername']} user={ident['username']}")
+
+    if not args.force_host and not _host_allowed(log):
+        log(f"السجل: {log_path}")
+        return 0
+
+    if not base.is_dir():
+        log(f"المجلد الأساس غير موجود: {base}")
+        return 1
 
     if not args.dry_run:
         _ensure_db_env()
