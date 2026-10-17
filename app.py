@@ -8742,6 +8742,50 @@ def home() -> HTMLResponse:
       if (/^\d{1,7}$/.test(t)) return { barcode: '', q: t };
       return { barcode: t, q: '' };
     }
+    function printBarcodeKeySet(raw) {
+      const keys = new Set();
+      const t = lightSanitizeBarcodeValue(raw);
+      if (!t) return keys;
+      const alnum = String(t).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      if (!alnum) return keys;
+      keys.add(alnum);
+      const canon = normalizeBarcodeLookupKeyClient(t);
+      if (canon) keys.add(String(canon).toUpperCase());
+      if (/^\d+$/.test(alnum)) {
+        const stripped = alnum.replace(/^0+/, '') || '0';
+        keys.add(stripped);
+      }
+      return keys;
+    }
+    function locationRowMatchesPrintBarcode(row, rawBc) {
+      // مطابقة باركود دقيقة فقط — لا اسم/ملاحظات/رقم أصلي
+      const keySet = printBarcodeKeySet(rawBc);
+      if (!keySet.size || !row) return false;
+      const blobs = [row.barcode, row.unit_barcodes, row.normalized_barcode];
+      for (let bi = 0; bi < blobs.length; bi++) {
+        const cell = String(blobs[bi] == null ? '' : blobs[bi]).trim();
+        if (!cell) continue;
+        const parts = cell.split(/[\s,;|]+/).map((s) => s.trim()).filter(Boolean);
+        const toks = parts.length ? parts : [cell];
+        for (let i = 0; i < toks.length; i++) {
+          const alnum = String(toks[i]).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+          if (!alnum) continue;
+          if (keySet.has(alnum)) return true;
+          if (/^\d+$/.test(alnum)) {
+            const stripped = alnum.replace(/^0+/, '') || '0';
+            if (keySet.has(stripped)) return true;
+          }
+          const canon = normalizeBarcodeLookupKeyClient(toks[i]);
+          if (canon && keySet.has(String(canon).toUpperCase())) return true;
+        }
+      }
+      return false;
+    }
+    function filterRowsExactPrintBarcode(rows, rawBc) {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!rawBc) return list;
+      return list.filter((r) => locationRowMatchesPrintBarcode(r, rawBc));
+    }
     function splitOriginalTokens(raw) {
       return String(raw || '')
         .split(/[\s,/|;]+/)
@@ -9353,21 +9397,15 @@ def home() -> HTMLResponse:
       const { barcode, q } = splitPrintQuery(t);
       let rows = [];
       if (barcode) {
+        // بحث باركود فقط — ممنوع السقوط على بحث نصي (كان يجلب أصناف عشوائية)
         const canon = normalizeBarcodeLookupKeyClient(barcode);
         const p = { q_barcode: barcode, limit: '40' };
         if (canon) p.q_barcode_canonical = canon;
         rows = await searchLocationsLocal(p);
-        if (!rows.length && (q || t)) {
-          rows = await searchLocationsLocal({ q: q || t, limit: '40' });
-        }
-      } else {
-        rows = await searchLocationsLocal({ q: q || t, limit: '40' });
-        if (!rows.length) {
-          const canon = normalizeBarcodeLookupKeyClient(t);
-          const p = { q_barcode: t, limit: '40' };
-          if (canon) p.q_barcode_canonical = canon;
-          rows = await searchLocationsLocal(p);
-        }
+        rows = filterRowsExactPrintBarcode(rows, barcode);
+      } else if (q) {
+        // رقم صنف قصير فقط
+        rows = await searchLocationsLocal({ q: q, limit: '40' });
       }
       return rankLocationRowsForPrint(rows);
     }
@@ -9430,14 +9468,17 @@ def home() -> HTMLResponse:
       if (btn) btn.disabled = true;
       try {
         const { barcode, q } = splitPrintQuery(raw);
+        const isBarcodeQuery = !!barcode;
         const t0 = performance.now();
-        // 1) عرض محلي فوري إن وُجد
+        // 1) عرض محلي فوري إن وُجد بمطابقة باركود دقيقة فقط
         setPrintFetchStatus('بحث في قاعدة المواقع...', s);
         let localRows = await lookupLocalLocationsForPrint(raw);
         if (localRows.length) {
           applyPrintLookupRows(s, localRows, `محلي · جاري تحديث الموقع/البيانات من حساباتي...`, false);
+        } else {
+          clearPrintSidePreview(s);
         }
-        // 2) دائماً تحديث موجّه من حساباتي (حتى لو موجود محلياً) حتى يظهر الموقع الجديد
+        // 2) تحديث موجّه من حساباتي
         setPrintFetchStatus(
           localRows.length
             ? 'تحديث هذا الصنف من حساباتي (موقع/اسم/باركود)...'
@@ -9446,6 +9487,7 @@ def home() -> HTMLResponse:
         );
         let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
         let cacheRows = Array.isArray(live && live.rows) ? live.rows : [];
+        if (isBarcodeQuery) cacheRows = filterRowsExactPrintBarcode(cacheRows, barcode);
         if (!localRows.length && cacheRows.length) {
           localRows = rankLocationRowsForPrint(cacheRows);
           applyPrintLookupRows(s, localRows, `كاش · جاري التحديث من حساباتي...`, false);
@@ -9453,6 +9495,7 @@ def home() -> HTMLResponse:
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), localRows.length || cacheRows.length ? 45000 : 280000);
         try {
+          // discover_new فقط إن لم نجد مطابقة باركود دقيقة محلياً
           live = await lookupHesabateItemOnce(
             barcode, q, false, ctrl.signal, true, !(localRows.length || cacheRows.length)
           );
@@ -9474,11 +9517,16 @@ def home() -> HTMLResponse:
             clearTimeout(to2);
           }
         }
-        const apiRows = Array.isArray(live && live.rows) ? live.rows : [];
+        let apiRows = Array.isArray(live && live.rows) ? live.rows : [];
+        if (isBarcodeQuery) apiRows = filterRowsExactPrintBarcode(apiRows, barcode);
         const uiMs = Math.round(performance.now() - t0);
         const timingLine = formatLookupTiming(live, uiMs);
+        const missingMsg = 'هذا الباركود/الصنف مش موجود بحساباتي — ما رح ينحط صنف بديل.';
         if (!live || live.ok === false) {
-          if (localRows.length) {
+          if (isBarcodeQuery) {
+            clearPrintSidePreview(s);
+            applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
+          } else if (localRows.length) {
             applyPrintLookupRows(
               s,
               localRows,
@@ -9492,28 +9540,22 @@ def home() -> HTMLResponse:
         }
         applyHesabateUsageFromResponse(live, live.message || '');
         applyHesabateSearchVersion(live);
-        if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
-          if (localRows.length) {
-            applyPrintLookupRows(
-              s,
-              localRows,
-              'حساباتي: الصنف غير موجود — عُرضت البيانات المحلية',
-              false
-            );
-          } else {
-            applyPrintLookupRows(s, [], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
-          }
+        if (isMissingFromHesabate(live) || (!apiRows.length && (live.not_found || isBarcodeQuery))) {
+          // باركود غير موجود: لا تعرض صنفاً محلياً خاطئاً
+          clearPrintSidePreview(s);
+          applyPrintLookupRows(s, [], missingMsg + (timingLine ? ` | ${timingLine}` : ''));
           return;
         }
         if (!apiRows.length) {
-          if (localRows.length) {
+          if (!isBarcodeQuery && localRows.length) {
             applyPrintLookupRows(s, localRows, `محلي فقط · ${timingLine || 'بدون تحديث من حساباتي'}`, false);
           } else {
-            applyPrintLookupRows(s, [], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
+            clearPrintSidePreview(s);
+            applyPrintLookupRows(s, [], (live.message || missingMsg) + (timingLine ? ` | ${timingLine}` : ''));
           }
           return;
         }
-        // بيانات حساباتي المحدّثة (الموقع الجديد) هي المعروضة للطباعة + تُزامَن مع تبويب المواقع
+        // بيانات حساباتي المحدّثة المطابقة للباركود فقط
         applyPrintLookupRows(
           s,
           rankLocationRowsForPrint(apiRows),
