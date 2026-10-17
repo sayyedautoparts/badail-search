@@ -4367,6 +4367,15 @@ def bump_hesabate_auto_sync_count() -> int:
     return n
 
 
+def touch_hesabate_cron_ping(*, reason: str = "") -> str:
+    """يسجّل أن المجدول وصل للسيرفر (حتى لو تخطّى لحداثة البيانات)."""
+    at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    app_kv_set("hesabate_cron_last_ping_at", at)
+    if reason:
+        app_kv_set("hesabate_cron_last_ping_reason", str(reason)[:80])
+    return at
+
+
 def hesabate_auto_sync_stats() -> dict[str, Any]:
     try:
         count = int(app_kv_get("hesabate_auto_sync_count", "0") or "0")
@@ -4375,6 +4384,8 @@ def hesabate_auto_sync_stats() -> dict[str, Any]:
     return {
         "auto_sync_count": max(0, count),
         "auto_sync_last_at": app_kv_get("hesabate_auto_sync_last_at", ""),
+        "cron_last_ping_at": app_kv_get("hesabate_cron_last_ping_at", ""),
+        "cron_last_ping_reason": app_kv_get("hesabate_cron_last_ping_reason", ""),
     }
 
 
@@ -7858,12 +7869,14 @@ def home() -> HTMLResponse:
       const lastErr = meta.last_error || '';
       const autoN = Number(usage.auto_sync_count || 0);
       const autoLast = usage.auto_sync_last_at || '';
+      const cronPing = usage.cron_last_ping_at || meta.cron_last_ping_at || '';
       if (ctr) {
         ctr.innerHTML = `<strong>طلبات API:</strong> ${count.toLocaleString('en-US')} / ${limit.toLocaleString('en-US')} (متبقي ${remaining.toLocaleString('en-US')})`;
       }
       if (autoCtr) {
         autoCtr.innerHTML = `<strong>تحديث تلقائي:</strong> ${autoN.toLocaleString('en-US')} مرة`
-          + (autoLast ? ` · آخر مرة ${autoLast}` : '');
+          + (autoLast ? ` · آخر مرة ${autoLast}` : '')
+          + (cronPing ? ` · نبضة مجدول ${cronPing}` : '');
       }
       let line = usage.configured
         ? (message || 'المزامنة تعمل')
@@ -7958,7 +7971,8 @@ def home() -> HTMLResponse:
           : '';
         renderHesabateUsage(data.usage || {}, msg, {
           last_sync_at: data.last_sync_at,
-          last_error: data.last_error
+          last_error: data.last_error,
+          cron_last_ping_at: (data.usage && data.usage.cron_last_ping_at) || data.cron_last_ping_at || ''
         });
       } catch (_) {
         renderHesabateUsage(null, 'تعذّر الاتصال بحالة API.');
@@ -7973,8 +7987,8 @@ def home() -> HTMLResponse:
     let locationLiveRefreshBusy = false;
     const locationLiveRefreshByKey = new Map();
     const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد الحالة في تبويب المواقع فقط (بدون مزامنة)
-    // نفس فاصل السيرفر (~ساعة ونص): لا نسأل قبل ما يحين موعد التحديث
-    let HESABATE_CLIENT_ENSURE_MS = 90 * 60 * 1000;
+    // فحص خفيف كل 15د؛ السيرفر يمنع طلب API إن كانت البيانات حديثة
+    let HESABATE_CLIENT_ENSURE_MS = 15 * 60 * 1000;
     function isCompleteBarcodeQuery(bc) {
       const compact = String(bc || '').replace(/[\\s\\-]/g, '');
       return compact.length >= 8 && /[0-9A-Za-z]/.test(compact);
@@ -8003,21 +8017,19 @@ def home() -> HTMLResponse:
       }
     }
     function startHesabateAutoEnsure() {
-      // مزامنة تلقائية بنفس فاصل السيرفر (~ساعة ونص) — مش كل كم دقيقة
+      // فحص دوري خفيف؛ المزامنة الفعلية فقط إذا فات الفاصل على السيرفر
       stopHesabateAutoEnsure();
       const tick = () => {
         ensureHesabateLocationSyncQuiet(false).catch(() => {});
       };
-      // اقرأ الفاصل من السيرفر إن وُجد، ثم اسأل بعد ذلك الفاصل (ومرّة عند الإقلاع إن كانت قديمة)
       (async () => {
         try {
           const res = await fetch('/hesabate/status', { cache: 'no-store' });
           const data = await readJsonSafe(res);
           const sec = Number((data && data.usage && data.usage.sync_min_interval_sec) || data.sync_min_interval_sec || 0);
-          if (sec >= 60) HESABATE_CLIENT_ENSURE_MS = Math.max(60, sec) * 1000;
           const age = Number(data && data.age_sec);
-          // إن فات الموعد — زامِن مرّة بعد الإقلاع؛ غير هيك انتظر الفاصل كامل
-          if (!(Number.isFinite(age) && age < sec)) {
+          // إن فات الموعد — زامِن بعد الإقلاع؛ وإلا افحص كل 15د فقط
+          if (sec >= 60 && Number.isFinite(age) && age >= sec) {
             setTimeout(tick, 8000);
           }
         } catch (_) {
@@ -13339,6 +13351,8 @@ def hesabate_status() -> dict:
         "age_sec": age_sec,
         "auto_sync_count": usage.get("auto_sync_count", 0),
         "auto_sync_last_at": usage.get("auto_sync_last_at", ""),
+        "cron_last_ping_at": usage.get("cron_last_ping_at", ""),
+        "cron_last_ping_reason": usage.get("cron_last_ping_reason", ""),
         "catalog_mode": "full_download_compare",
         "api_note": (
             "Store API: Auth + download (products/company/trades/model). "
@@ -13413,6 +13427,7 @@ def hesabate_cron_sync(request: Request) -> dict:
     allowed, schedule_meta = hesabate_auto_sync_allowed_now()
     interval_min = max(1, int(HESABATE_SYNC_MIN_INTERVAL_SEC // 60))
     if not allowed:
+        touch_hesabate_cron_ping(reason="quiet_hours_palestine")
         return {
             "ok": True,
             "skipped": True,
@@ -13425,11 +13440,13 @@ def hesabate_cron_sync(request: Request) -> dict:
             ),
             "schedule": schedule_meta,
             "search_version": _hesabate_search_data_version(),
+            **hesabate_auto_sync_stats(),
             "usage": hesabate_usage_summary(),
         }
-    # GitHub قد يستدعي كل 30د — نفرض ساعة ونصف بين مزامنة فعلية
+    # المجدول قد يطرق كل ~30د — نفرض الفاصل الأدنى بين مزامنة فعلية
     age_sec = _hesabate_last_sync_age_sec()
     if age_sec < HESABATE_SYNC_MIN_INTERVAL_SEC:
+        touch_hesabate_cron_ping(reason="fresh")
         return {
             "ok": True,
             "skipped": True,
@@ -13456,7 +13473,9 @@ def hesabate_cron_sync(request: Request) -> dict:
     if result.get("ok") and reason not in ("inflight", "not_configured", "fresh"):
         result["auto_sync_count"] = bump_hesabate_auto_sync_count()
         result["auto_sync_last_at"] = app_kv_get("hesabate_auto_sync_last_at", "")
+        touch_hesabate_cron_ping(reason=reason or "synced")
     else:
+        touch_hesabate_cron_ping(reason=reason or "skipped")
         result.update(hesabate_auto_sync_stats())
     result["usage"] = hesabate_usage_summary()
     return result
