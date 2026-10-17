@@ -7084,7 +7084,7 @@ def home() -> HTMLResponse:
         align-items: center;
         justify-content: flex-end;
         gap: 0.15mm;
-        padding: 0 0.2mm;
+        padding: 0 0.4mm;
         margin: 0;
         width: 100%;
         max-width: 100%;
@@ -8546,13 +8546,14 @@ def home() -> HTMLResponse:
       // ارتفاع أقل ~20%، وأعمدة أثقل/أوضح داخل اللزقة للمسح السريع
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      // أضيق شوي — يحمي quiet zone خاصة على لزقة اليسار (حافة الورقة)
-      const isLeftLabel = !!(targetEl.closest && targetEl.closest('.print-label-left'));
-      const usableMm = isLeftLabel ? 52 : 53.5;
-      const heightMm = 11.6; // كان ~14.5 → أصغر 20%
+      // —— طباعة لزقة Rongta 203dpi ——
+      // نفس سماكة الأعمدة لليسار واليمين (ما نصغّر اليسار لوحده فيخف الخط)
+      const DPI = 203;
+      const dotsPerMm = DPI / 25.4;
+      const usableMm = 53.5;
+      const heightMm = 11.6;
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(72, Math.round(heightMm * dotsPerMm));
-      // quiet أصغر شوي عشان الأعمدة تطلع أخمل وتدخل اللزقة
       const quietTries = [7, 5, 4];
 
       let best = null;
@@ -8590,14 +8591,13 @@ def home() -> HTMLResponse:
         }
         const units = probe.width || 0;
         if (!units) continue;
-        // أعمدة خميلة: فضّل 4–5 نقاط (~0.5–0.62مم)
+        // أعمدة خميلة واضحة: فضّل 4–5 نقاط
         let moduleDots = Math.floor(usableDots / units);
         if (moduleDots < 4) {
           if (i < quietTries.length - 1) continue;
           moduleDots = 4;
         }
         if (moduleDots > 5) moduleDots = 5;
-        // إن ما دخل اللزقة بـ 4 نقاط — انزل تدريجياً لـ 3 ثم 2
         if (units * moduleDots > usableDots + 2) {
           const fit = Math.floor(usableDots / units);
           moduleDots = Math.max(3, fit);
@@ -8634,8 +8634,8 @@ def home() -> HTMLResponse:
 
       const printWmm = canvas.width / dotsPerMm;
       const printHmm = canvas.height / dotsPerMm;
-      // لا تصغّر تحت سماكة العمود الحرارية — إن زاد قليلاً يبقى أقرب للمسح من الضغط
-      const widthMm = printWmm > usableMm + 0.15 ? usableMm : printWmm;
+      // اطبع بالحجم الطبيعي للنقاط — بدون تصغير إضافي يخفّف الخط (يسار=يمين)
+      const widthMm = printWmm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = value;
@@ -8646,6 +8646,7 @@ def home() -> HTMLResponse:
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.imageRendering = 'pixelated';
+      img.style.flexShrink = '0';
       targetEl.replaceWith(img);
       return true;
     }
