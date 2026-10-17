@@ -1,14 +1,16 @@
 # Automatic Hesabate catalog sync.
-# GitHub schedule can drift/skip slots — use two hourly offsets for reliability.
+# GitHub schedule can drift/skip slots — dual offsets + timezone help reliability.
 # Server skips 21:00–06:00 Palestine time (Asia/Jerusalem).
 # Required GitHub secrets: APP_URL, CRON_SECRET (optional but recommended).
 name: Hesabate catalog sync
 
 on:
   schedule:
-    # كل ساعة عند الدقيقة 7 و 37 (توقيت UTC) — السيرفر يمنع التكرار الثقيل ليلاً
-    - cron: "7 * * * *"
-    - cron: "37 * * * *"
+    # كل ساعة عند الدقيقة 11 و 41 بتوقيت فلسطين (نهاراً + ليلاً؛ السيرفر يمنع ليلاً)
+    - cron: "11 * * * *"
+      timezone: Asia/Jerusalem
+    - cron: "41 * * * *"
+      timezone: Asia/Jerusalem
   workflow_dispatch:
 
 jobs:

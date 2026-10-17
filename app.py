@@ -7768,8 +7768,11 @@ def home() -> HTMLResponse:
     let hesabateLookupInflight = null;
     let locationSearchGen = 0;
     let locationLiveRefreshBusy = false;
+    let lastClientEnsureAt = 0;
     const locationLiveRefreshByKey = new Map();
-    const HESABATE_CLIENT_POLL_MS = 100000; // ~100ث — أقل من مهلة السيرفر؛ قفل DB يمنع تكرار التنزيل بين الأجهزة
+    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث حالة العداد
+    // مزامنة كتالوج هادئة كل ~ساعة ونصف طالما تبويب المواقع مفتوح (السيرفر يمنع التكرار بـ min_interval)
+    const HESABATE_CLIENT_ENSURE_MS = 90 * 60 * 1000;
     function isCompleteBarcodeQuery(bc) {
       const compact = String(bc || '').replace(/[\\s\\-]/g, '');
       return compact.length >= 8 && /[0-9A-Za-z]/.test(compact);
@@ -7787,9 +7790,18 @@ def home() -> HTMLResponse:
     }
     function startHesabateLocationPoller() {
       stopHesabateLocationPoller();
-      // حالة الاستخدام فقط — لا تنزيل كتالوج تلقائي (الاستيراد يدوي عبر الزر)
       refreshHesabateStatus();
-      hesabateEnsureTimer = setInterval(() => refreshHesabateStatus(), HESABATE_CLIENT_POLL_MS);
+      // عند فتح تبويب المواقع: حاول مزامنة فوراً (السيرفر يتخطى إن كانت حديثة)
+      lastClientEnsureAt = Date.now();
+      ensureHesabateLocationSyncQuiet(false);
+      hesabateEnsureTimer = setInterval(() => {
+        refreshHesabateStatus();
+        const now = Date.now();
+        if (now - lastClientEnsureAt >= HESABATE_CLIENT_ENSURE_MS) {
+          lastClientEnsureAt = now;
+          ensureHesabateLocationSyncQuiet(false);
+        }
+      }, HESABATE_CLIENT_POLL_MS);
     }
     async function ensureHesabateLocationSyncQuiet(force) {
       if (hesabateEnsureInflight) return null;
@@ -12747,7 +12759,17 @@ def hesabate_warm_product_cache(force: int = Query(default=0, ge=0, le=1)) -> di
 @app.post("/hesabate/ensure")
 def hesabate_ensure() -> dict:
     """مزامنة تلقائية إن لزم (تحترم الحد الأدنى + القفل المشترك بين الأجهزة)."""
-    return ensure_hesabate_locations_synced(force=False)
+    result = ensure_hesabate_locations_synced(force=False)
+    reason = str(result.get("reason") or "")
+    # سجّل كـ«تحديث تلقائي» عند تشغيل فعلي (ليس fresh/inflight)
+    if result.get("ok") and reason not in ("inflight", "not_configured", "fresh"):
+        result["auto_sync_count"] = bump_hesabate_auto_sync_count()
+        result["auto_sync_last_at"] = app_kv_get("hesabate_auto_sync_last_at", "")
+    else:
+        result.update(hesabate_auto_sync_stats())
+    if "usage" not in result or not result.get("usage"):
+        result["usage"] = hesabate_usage_summary()
+    return result
 
 
 @app.post("/hesabate/sync")
