@@ -8515,8 +8515,8 @@ def home() -> HTMLResponse:
         if (!svgEl) return false;
         const okPrev = renderPrintBarcodeSvg(svgEl, value, Object.assign({
           format: 'CODE128B',
-          height: (opts && opts.height) || 40,
-          width: 2,
+          height: (opts && opts.height) || 44,
+          width: 2.4,
           margin: 12,
           marginTop: 0,
           marginBottom: 0,
@@ -8531,14 +8531,15 @@ def home() -> HTMLResponse:
       }
 
       // —— طباعة لزقة Rongta 203dpi: صورة نقطية حادة للماسح ——
-      // كل عمود ≥ 2 نقطة حرارية (~0.25مم) مع فراغات CODE128B كما هي
+      // أعمدة أثقل (≥ 3 نقاط ≈ 0.37مم) عشان الماسح يقرا أسرع
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      const usableMm = 56;
-      const heightMm = 14;
+      const usableMm = 57;
+      const heightMm = 14.5;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(80, Math.round(heightMm * dotsPerMm));
-      const quietTries = [10, 8, 6];
+      const heightDots = Math.max(90, Math.round(heightMm * dotsPerMm));
+      // ضيّق الـ quiet شوي لإفساح سماكة الأعمدة
+      const quietTries = [8, 6, 5];
 
       let best = null;
       for (let i = 0; i < quietTries.length; i++) {
@@ -8575,15 +8576,20 @@ def home() -> HTMLResponse:
         }
         const units = probe.width || 0;
         if (!units) continue;
-        // أكبر عدد نقاط/عمود يدخل اللزقة، والحد الأدنى 2 للمسح الحراري
+        // فضّل 3–4 نقاط/عمود (أثقل وأسرع للماسح)
         let moduleDots = Math.floor(usableDots / units);
-        if (moduleDots < 2) {
+        if (moduleDots < 3) {
           if (i < quietTries.length - 1) continue;
-          moduleDots = 2; // أولوية المقروئية حتى لو لامس الحافة
+          moduleDots = 3; // لا تنزل تحت 3 إلا للضرورة القصوى لاحقاً
         }
-        if (moduleDots > 3) moduleDots = 3;
+        if (moduleDots > 4) moduleDots = 4;
+        // إن ما زال ما يدخل بـ 3 نقاط، جرّب 2 كحد أخير
+        if (units * moduleDots > usableDots + 2 && moduleDots > 2) {
+          const fit = Math.floor(usableDots / units);
+          moduleDots = Math.max(2, fit);
+        }
         best = { quietMods, moduleDots, units };
-        if (moduleDots >= 2 && units * moduleDots <= usableDots) break;
+        if (moduleDots >= 3 && units * moduleDots <= usableDots) break;
       }
       if (!best) return false;
 
