@@ -7031,16 +7031,20 @@ def home() -> HTMLResponse:
       .print-label.print-label-empty {
         visibility: hidden;
       }
-      /* كل المساحة فوق الموقع/الأصلي = اسم الصنف (dynamic + wrap) */
+      /* كل المساحة فوق الأصلي/الموقع = اسم الصنف */
       .print-label .pl-name {
         flex: 1 1 auto;
         min-height: 0;
         width: 100%;
         max-width: 100%;
-        font-size: 28px;
+        /* خط أوضح للطباعة الحرارية (عربي + إنجليزي) */
+        font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+        font-size: 32px;
         font-weight: 900;
         margin: 0;
-        line-height: 1.05;
+        padding: 0;
+        line-height: 1.02;
+        letter-spacing: -0.01em;
         overflow: hidden !important;
         white-space: normal !important;
         word-break: break-word;
@@ -7048,7 +7052,7 @@ def home() -> HTMLResponse:
         text-align: center;
         align-content: center;
       }
-      /* الموقع + الأصلي مباشرة فوق الباركود بـ 1 مم */
+      /* الأصلي + الموقع مباشرة فوق الباركود */
       .print-label .pl-meta {
         flex: 0 0 auto;
         display: flex;
@@ -7056,11 +7060,12 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: center;
         align-items: center;
-        gap: 2.5mm;
-        font-size: 10px;
+        gap: 2mm;
+        font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+        font-size: 9px;
         font-weight: 800;
-        margin: 0 auto 1mm;
-        max-height: 3.4mm;
+        margin: 0 auto 0.4mm;
+        max-height: 2.8mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7106,15 +7111,16 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 8px;
-        font-weight: 900;
-        letter-spacing: .02em;
+        /* خط monospace أوضح تحت الباركود */
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 7px;
+        font-weight: 700;
+        letter-spacing: .03em;
         margin: 0;
         padding: 0 0.2mm;
         line-height: 1;
         overflow: hidden !important;
         text-overflow: clip;
-        /* pre يحافظ على فراغات الباركود الطويل في النص تحت الأعمدة */
         white-space: pre !important;
         direction: ltr;
         box-sizing: border-box;
@@ -7167,8 +7173,9 @@ def home() -> HTMLResponse:
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
+      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
       font-weight: 900;
-      line-height: 1.05;
+      line-height: 1.02;
       width: 100%;
       white-space: normal;
       word-break: break-word;
@@ -7179,13 +7186,13 @@ def home() -> HTMLResponse:
       display: flex;
       direction: ltr;
       justify-content: center;
-      gap: 2.5mm;
-      max-height: 3.4mm;
-      margin: 0 auto 1mm;
+      gap: 2mm;
+      max-height: 2.8mm;
+      margin: 0 auto 0.4mm;
       overflow: hidden;
       white-space: nowrap;
       width: 100%;
-      font-size: 10px;
+      font-size: 9px;
       font-weight: 800;
     }
     .print-label-sheet.print-measure .pl-bc-wrap {
@@ -8543,12 +8550,12 @@ def home() -> HTMLResponse:
       // —— باركود أصغر (ارتفاع+عرض) + أعمدة bold · اسم الصنف يأخذ المساحة ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      // أصغر عرضاً من عرض اللزقة الكامل
-      const usableMm = 46;
-      const heightMm = 7.5;
+      // أصغر ارتفاعاً وعرضاً ليفسح كل المساحة فوق الأصلي للاسم
+      const usableMm = 44;
+      const heightMm = 6.8;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(48, Math.round(heightMm * dotsPerMm));
-      // أعمدة أثقل (bold) مع بقاء الحجم الكلي أصغر
+      const heightDots = Math.max(42, Math.round(heightMm * dotsPerMm));
+      // أعمدة bold واضحة
       const TARGET_MODULE_DOTS = 4;
       const MIN_MODULE_DOTS = 3;
       const quietTries = [8, 6, 5];
@@ -9032,34 +9039,35 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 36;
-      const minPx = 12;
-      // يملأ المساحة فوق الموقع/الأصلي: wrap + تكبير/تصغير حسب ارتفاع الورقة المتاح
+      // املأ كل المساحة فوق رقم الأصلي بأقصى خط واضح
+      const maxPx = 48;
+      const minPx = 14;
       el.style.display = 'block';
+      el.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
+      el.style.fontWeight = '900';
       el.style.whiteSpace = 'normal';
       el.style.wordBreak = 'break-word';
       el.style.overflowWrap = 'anywhere';
       el.style.overflow = 'hidden';
       el.style.textAlign = 'center';
+      el.style.lineHeight = '1.02';
       el.style.webkitLineClamp = 'unset';
       el.style.lineClamp = 'unset';
-      let size = maxPx;
-      el.style.fontSize = size + 'px';
-      // صغّر حتى يدخل داخل المساحة المتاحة
-      while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
-        size -= 0.3;
-        el.style.fontSize = size + 'px';
-      }
-      // إن بقي فراغ — كبّر تدريجياً (أسماء قصيرة)
-      while (size < maxPx) {
-        const next = Math.min(maxPx, size + 0.3);
-        el.style.fontSize = next + 'px';
-        if (el.scrollHeight > el.clientHeight + 0.5) {
-          el.style.fontSize = size + 'px';
-          break;
+      let lo = minPx;
+      let hi = maxPx;
+      let best = minPx;
+      // بحث ثنائي: أكبر حجم يدخل كامل المساحة المتاحة
+      while (hi - lo > 0.35) {
+        const mid = (lo + hi) / 2;
+        el.style.fontSize = mid + 'px';
+        if (el.clientHeight > 2 && el.scrollHeight <= el.clientHeight + 0.5) {
+          best = mid;
+          lo = mid;
+        } else {
+          hi = mid;
         }
-        size = next;
       }
+      el.style.fontSize = best + 'px';
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
