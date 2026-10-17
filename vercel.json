@@ -8,7 +8,7 @@
   "crons": [
     {
       "path": "/hesabate/cron_sync",
-      "schedule": "25 8 * * *"
+      "schedule": "20 6 * * *"
     }
   ]
 }

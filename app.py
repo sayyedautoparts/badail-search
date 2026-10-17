@@ -136,12 +136,12 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
-    # افتراضي ساعتان — مع نافذة صمت ليلاً بتوقيت فلسطين (انظر hesabate_auto_sync_allowed_now)
+    # افتراضي ساعة ونصف — مع نافذة صمت ليلاً بتوقيت فلسطين (انظر hesabate_auto_sync_allowed_now)
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "7200")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "5400")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 7200
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 5400
 # صمت المزامنة التلقائية: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem)
 HESABATE_AUTO_SYNC_TZ = os.getenv("HESABATE_AUTO_SYNC_TZ") or "Asia/Jerusalem"
 HESABATE_AUTO_SYNC_QUIET_START_HOUR = 21  # 9 مساءً
@@ -5269,10 +5269,11 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         barcode_parser_stale = (
             str(app_kv_get("hesabate_barcode_parser_ver", "") or "") != HESABATE_BARCODE_PARSER_VERSION
         )
-        # حتى مع force: إن تطابق هاش الكتالوج نكتفي بالتحقق (توفير كتابة DB)
-        # عند اختلاف الهاش تُحفظ البيانات الجديدة ويُحذف الغائب من حساباتي_API
+        # بدون force: إن تطابق هاش الكتالوج نكتفي بالتحقق (توفير كتابة DB).
+        # مع force (كرون/زر): دائماً إعادة كتابة حساباتي_API لتبقى المصدر الرئيسي المعروض.
         products_unchanged = bool(
-            (not barcode_parser_stale)
+            (not force)
+            and (not barcode_parser_stale)
             and products_hash
             and products_hash == prev_hash
             and not catalog_bloated
@@ -7501,7 +7502,7 @@ def home() -> HTMLResponse:
           <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
           <p id="hesabateAutoSyncCounter" class="sync-meta"><strong>تحديث تلقائي:</strong> —</p>
           <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
-            مزامنة تلقائية كل ساعتين (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · الزر اليدوي يعمل دائماً
+            مزامنة تلقائية كل ساعة ونصف والتطبيق مغلق (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · بيانات حساباتي هي المعروضة · الزر اليدوي يعمل دائماً
           </p>
           <div class="btn-row" style="margin-top:10px;">
             <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
@@ -7773,11 +7774,8 @@ def home() -> HTMLResponse:
     let hesabateLookupInflight = null;
     let locationSearchGen = 0;
     let locationLiveRefreshBusy = false;
-    let lastClientEnsureAt = 0;
     const locationLiveRefreshByKey = new Map();
-    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث حالة العداد
-    // مزامنة كتالوج هادئة كل ~ساعة ونصف طالما تبويب المواقع مفتوح (السيرفر يمنع التكرار بـ min_interval)
-    const HESABATE_CLIENT_ENSURE_MS = 90 * 60 * 1000;
+    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد «تحديث تلقائي» فقط
     function isCompleteBarcodeQuery(bc) {
       const compact = String(bc || '').replace(/[\\s\\-]/g, '');
       return compact.length >= 8 && /[0-9A-Za-z]/.test(compact);
@@ -7795,18 +7793,10 @@ def home() -> HTMLResponse:
     }
     function startHesabateLocationPoller() {
       stopHesabateLocationPoller();
+      // التحديث الفعلي كل ساعة ونصف يعمل من السيرفر (GitHub) والتطبيق مغلق.
+      // هنا نحدّث العداد فقط؛ إن تغيّر search_version نُعيد البحث لعرض بيانات حساباتي الجديدة.
       refreshHesabateStatus();
-      // عند فتح تبويب المواقع: حاول مزامنة فوراً (السيرفر يتخطى إن كانت حديثة)
-      lastClientEnsureAt = Date.now();
-      ensureHesabateLocationSyncQuiet(false);
-      hesabateEnsureTimer = setInterval(() => {
-        refreshHesabateStatus();
-        const now = Date.now();
-        if (now - lastClientEnsureAt >= HESABATE_CLIENT_ENSURE_MS) {
-          lastClientEnsureAt = now;
-          ensureHesabateLocationSyncQuiet(false);
-        }
-      }, HESABATE_CLIENT_POLL_MS);
+      hesabateEnsureTimer = setInterval(() => refreshHesabateStatus(), HESABATE_CLIENT_POLL_MS);
     }
     async function ensureHesabateLocationSyncQuiet(force) {
       if (hesabateEnsureInflight) return null;
@@ -12786,7 +12776,7 @@ def hesabate_sync_force() -> dict:
 @app.api_route("/hesabate/cron_sync", methods=["GET", "POST"])
 def hesabate_cron_sync(request: Request) -> dict:
     """
-    مزامنة مجدولة كل ~ساعتين (GitHub Actions / Vercel) — تعمل والتطبيق مغلق.
+    مزامنة مجدولة كل ~ساعة ونصف (GitHub Actions) — تعمل والتطبيق مغلق.
     صمت تلقائي 21:00–06:00 بتوقيت فلسطين. الزر اليدوي لا يتأثر.
     احمِها بـ CRON_SECRET أو HESABATE_CRON_SECRET إن وُجد.
     """
@@ -12799,13 +12789,14 @@ def hesabate_cron_sync(request: Request) -> dict:
         if not ok_bearer and not ok_vercel:
             raise HTTPException(status_code=401, detail="Unauthorized cron")
     allowed, schedule_meta = hesabate_auto_sync_allowed_now()
+    interval_min = max(1, int(HESABATE_SYNC_MIN_INTERVAL_SEC // 60))
     if not allowed:
         return {
             "ok": True,
             "skipped": True,
             "reason": "quiet_hours_palestine",
             "scheduled": True,
-            "interval_hint_min": 120,
+            "interval_hint_min": interval_min,
             "message": (
                 "توقفت المزامنة التلقائية ليلاً (9 مساءً – 6 صباحاً بتوقيت فلسطين). "
                 f"الوقت المحلي: {schedule_meta.get('local_time')}"
@@ -12814,13 +12805,33 @@ def hesabate_cron_sync(request: Request) -> dict:
             "search_version": _hesabate_search_data_version(),
             "usage": hesabate_usage_summary(),
         }
+    # GitHub قد يستدعي كل 30د — نفرض ساعة ونصف بين مزامنة فعلية
+    age_sec = _hesabate_last_sync_age_sec()
+    if age_sec < HESABATE_SYNC_MIN_INTERVAL_SEC:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fresh",
+            "scheduled": True,
+            "interval_hint_min": interval_min,
+            "age_sec": int(age_sec),
+            "message": (
+                f"التحديث التلقائي كل {interval_min} دقيقة — "
+                f"آخر مزامنة قبل {int(age_sec)} ث (لم يحن الموعد)."
+            ),
+            "schedule": schedule_meta,
+            "search_version": _hesabate_search_data_version(),
+            "last_sync_at": app_kv_get("hesabate_last_sync_at", ""),
+            **hesabate_auto_sync_stats(),
+            "usage": hesabate_usage_summary(),
+        }
+    # force=True: تنزيل + إعادة كتابة حساباتي_API كمصدر رئيسي للعرض
     result = ensure_hesabate_locations_synced(force=True)
     result["scheduled"] = True
-    result["interval_hint_min"] = 60
+    result["interval_hint_min"] = interval_min
     result["schedule"] = schedule_meta
-    # سجّل التشغيل التلقائي عند النجاح (يشمل unchanged) — ليس صمت ليلي / قفل متزامن
     reason = str(result.get("reason") or "")
-    if result.get("ok") and reason not in ("inflight", "not_configured"):
+    if result.get("ok") and reason not in ("inflight", "not_configured", "fresh"):
         result["auto_sync_count"] = bump_hesabate_auto_sync_count()
         result["auto_sync_last_at"] = app_kv_get("hesabate_auto_sync_last_at", "")
     else:

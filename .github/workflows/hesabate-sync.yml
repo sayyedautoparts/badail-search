@@ -1,15 +1,12 @@
-# Automatic Hesabate catalog sync.
-# GitHub schedule can drift/skip slots — dual offsets + timezone help reliability.
-# Server skips 21:00–06:00 Palestine time (Asia/Jerusalem).
+# Automatic Hesabate catalog sync — يعمل والتطبيق مغلق.
+# GitHub قد يتخطى بعض المواعيد؛ نطلق كل 30 دقيقة والسيرفر يفرض كل 90 دقيقة.
+# صمت السيرفر: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem).
 # Required GitHub secrets: APP_URL, CRON_SECRET (optional but recommended).
 name: Hesabate catalog sync
 
 on:
   schedule:
-    # كل ساعة عند الدقيقة 11 و 41 بتوقيت فلسطين (نهاراً + ليلاً؛ السيرفر يمنع ليلاً)
-    - cron: "11 * * * *"
-      timezone: Asia/Jerusalem
-    - cron: "41 * * * *"
+    - cron: "5,35 * * * *"
       timezone: Asia/Jerusalem
   workflow_dispatch:
 
@@ -42,7 +39,6 @@ jobs:
             echo "::error::cron_sync failed with HTTP $HTTP_CODE"
             exit 1
           fi
-          # فشل منطقي من السيرفر
           if grep -q '"ok"[[:space:]]*:[[:space:]]*false' /tmp/sync.json; then
             echo "::error::cron_sync returned ok=false"
             exit 1
