@@ -1,5 +1,5 @@
-#Requires -Version 5.1
-# إنشاء مهمة ويندوز: كل يوم 9:00 صباحاً — رفع قطع سيارات ثم قطع فسب ثم قشطان
+﻿#Requires -Version 5.1
+# Create Windows scheduled task: daily 09:00 Excel upload
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -11,16 +11,9 @@ if (-not (Test-Path -LiteralPath $Runner)) {
   throw "Missing runner: $Runner"
 }
 if (-not (Test-Path -LiteralPath $EnvFile)) {
-  Write-Host @"
-أنشئ أولاً الملف:
-  $EnvFile
-
-محتواه (سطر واحد):
-  DATABASE_URL=postgresql://USER:PASS@HOST/DB?sslmode=require
-
-يمكن نسخه من Vercel → Project → Settings → Environment Variables
-(NEON_DATABASE_URL أو DATABASE_URL)
-"@
+  Write-Host "Missing env file:"
+  Write-Host "  $EnvFile"
+  Write-Host "Add NEON_DATABASE_URL=postgresql://..."
   exit 1
 }
 
@@ -38,7 +31,6 @@ $settings = New-ScheduledTaskSettingsSet `
   -WakeToRun `
   -ExecutionTimeLimit (New-TimeSpan -Hours 6)
 
-# بدون Highest حتى لا يحتاج Administrator
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
 try {
@@ -50,18 +42,13 @@ try {
     -Principal $principal `
     -Force | Out-Null
 } catch {
-  # بديل عبر schtasks إن فشل Register-ScheduledTask
   $tr = "09:00"
   schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /ST $tr /F /RL LIMITED | Out-Null
   if ($LASTEXITCODE -ne 0) { throw }
 }
 
-Write-Host "تم إنشاء/تحديث المهمة: $TaskName"
-Write-Host "الوقت: كل يوم 9:00 صباحاً"
-Write-Host "الجهاز الحالي: $env:COMPUTERNAME / مستخدم: $env:USERNAME"
-Write-Host "تأكد أن G:\ملفاتي موجود وأن BADAIL_UPLOAD_HOSTS في daily_upload.local.env يطابق هذا الجهاز (مثل Asim,sayyed)."
-Write-Host "التشغيل اليدوي للتجربة:"
-Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$Runner`""
-Write-Host "أو من المجدول: Start-ScheduledTask -TaskName '$TaskName'"
-Write-Host "للتثبيت الكامل على جهاز Asim:"
-Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\setup_upload_on_this_pc.ps1`""
+Write-Host "Scheduled task ready: $TaskName"
+Write-Host "Time: every day 09:00"
+Write-Host ("PC: {0} / User: {1}" -f $env:COMPUTERNAME, $env:USERNAME)
+Write-Host ("Manual: powershell -NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $Runner)
+Write-Host ("Or: Start-ScheduledTask -TaskName '{0}'" -f $TaskName)

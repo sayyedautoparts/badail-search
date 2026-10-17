@@ -9,3 +9,5 @@ search_data.db
 .env*.local
 scripts/daily_upload.local.env
 scripts/logs/
+scripts/_cache_*.zip
+_postman_coll.json

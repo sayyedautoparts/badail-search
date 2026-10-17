@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 رفع يومي محلي من G:\\ملفاتي إلى قاعدة بيانات الإنتاج (Neon):
-  1) مجلد قطع سيارات  → منتجات
-  2) مجلد قطع فسب      → منتجات
-  3) ملف الشغل\\قشطان.xlsx → قشطان
+  1) مجلد قطع سيارات              → منتجات
+  2) مجلد قطع فسب                  → منتجات
+  3) مجلد الشغل\\الطلبيات (+ ملف) → منتجات
+  4) ملف الشغل\\قشطان.xlsx         → قشطان
 
 يشغَّل على جهاز ويندوز الذي فيه قرص G: (لا يعمل على Vercel).
-الجهاز المقصود عادةً: Asim (BADAIL_UPLOAD_HOSTS).
 """
 from __future__ import annotations
 
@@ -177,6 +177,41 @@ def _upload_folder_as_products(
     return stats
 
 
+def _upload_single_product_file(
+    app,
+    path: Path,
+    source_key: str,
+    log,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    stats = {"files": 1, "ok": 0, "skipped": 0, "failed": 0, "rows": 0, "items": 0}
+    if not path.is_file():
+        stats["failed"] = 1
+        log(f"[ملف] غير موجود: {path}")
+        return stats
+    size_mb = path.stat().st_size / (1024 * 1024)
+    log(f"[ملف] {source_key} ({size_mb:.1f} MB) — {path}")
+    if dry_run:
+        return stats
+    try:
+        content = path.read_bytes()
+        status, rows, items = _process_product(app, content, source_key)
+        if status == "skipped":
+            stats["skipped"] = 1
+            log("    → تخطي (بدون تغيير)")
+        else:
+            stats["ok"] = 1
+            stats["rows"] = rows
+            stats["items"] = items
+            log(f"    → تم: {rows} صف / {items} صنف")
+    except Exception as exc:
+        stats["failed"] = 1
+        log(f"    → فشل: {exc}")
+        log(traceback.format_exc(limit=4))
+    return stats
+
+
 def _upload_wiper_file(app, path: Path, source_key: str, log, *, dry_run: bool = False) -> dict:
     stats = {"files": 1, "ok": 0, "skipped": 0, "failed": 0, "rows": 0}
     if not path.is_file():
@@ -235,6 +270,8 @@ def main() -> int:
     base = _resolve_base(args.base)
     cars = base / "قطع سيارات"
     fsb = base / "قطع فسب"
+    orders_dir = base / "الشغل" / "الطلبيات"
+    orders_file = base / "الشغل" / "الطلبيات.xlsx"
     wiper = base / "الشغل" / "قشطان.xlsx"
 
     log_dir = Path(args.log_dir)
@@ -270,14 +307,33 @@ def main() -> int:
 
     s1 = _upload_folder_as_products(app_mod, cars, "قطع سيارات", log, dry_run=args.dry_run)
     s2 = _upload_folder_as_products(app_mod, fsb, "قطع فسب", log, dry_run=args.dry_run)
+    s_ord_dir = _upload_folder_as_products(
+        app_mod, orders_dir, "الطلبيات", log, dry_run=args.dry_run
+    )
+    s_ord_file = (
+        _upload_single_product_file(
+            app_mod, orders_file, "الطلبيات/الطلبيات.xlsx", log, dry_run=args.dry_run
+        )
+        if orders_file.is_file()
+        else {"files": 0, "ok": 0, "skipped": 0, "failed": 0, "rows": 0, "items": 0}
+    )
     s3 = _upload_wiper_file(app_mod, wiper, "قشطان.xlsx", log, dry_run=args.dry_run)
 
     elapsed = int(time.perf_counter() - t0)
-    failed = s1["failed"] + s2["failed"] + s3["failed"]
+    failed = (
+        s1["failed"]
+        + s2["failed"]
+        + s_ord_dir["failed"]
+        + s_ord_file["failed"]
+        + s3["failed"]
+    )
     log(
         "=== انتهى === "
         f"سيارات ok={s1['ok']} skip={s1['skipped']} fail={s1['failed']} | "
         f"فسب ok={s2['ok']} skip={s2['skipped']} fail={s2['failed']} | "
+        f"طلبيات ok={s_ord_dir['ok'] + s_ord_file['ok']} "
+        f"skip={s_ord_dir['skipped'] + s_ord_file['skipped']} "
+        f"fail={s_ord_dir['failed'] + s_ord_file['failed']} | "
         f"قشطان ok={s3['ok']} skip={s3['skipped']} fail={s3['failed']} | "
         f"{elapsed}s"
     )
