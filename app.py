@@ -7709,18 +7709,16 @@ def home() -> HTMLResponse:
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
-        // نفس بيانات الطباعة/المواقع — أعد عرض نتائج المواقع من القاعدة المشتركة
-        if (hasSharedLocationQuery()) {
-          searchNow('location').catch(() => {});
-        }
       } else {
         stopHesabateLocationPoller();
       }
       if (activeSearchTab === 'print') {
         ensureJsBarcodeLib().catch(() => {});
-        refreshLoadedPrintSidesFromSharedDb().catch(() => {});
-        document.getElementById('names').innerHTML = '';
-        document.getElementById('resultsTable').style.display = 'none';
+        // لا تعِد الجلب الثقيل عند كل فتح تبويب — يمنع تعليق الواجهة
+        const namesEl = document.getElementById('names');
+        const resultsTable = document.getElementById('resultsTable');
+        if (namesEl) namesEl.innerHTML = '';
+        if (resultsTable) resultsTable.style.display = 'none';
         const wiperWrap = document.getElementById('wipersTableWrap');
         const wipersTable = document.getElementById('wipersTable');
         const locWrap = document.getElementById('locationsTableWrap');
@@ -7732,7 +7730,9 @@ def home() -> HTMLResponse:
         setStats('');
         return;
       }
-      searchNow('auto');
+      try {
+        searchNow('auto');
+      } catch (_) {}
     }
 
     let lastHesabateSearchVersion = null;
@@ -7769,41 +7769,68 @@ def home() -> HTMLResponse:
       if (st) st.textContent = line;
     }
     let sharedLocPrintSyncBusy = false;
+    let sharedLocPrintSyncTimer = null;
     function hasSharedLocationQuery() {
-      const t = ((document.getElementById('locationTextQueryInput') || {}).value || '').trim();
-      const b = lightSanitizeBarcodeValue(
-        (document.getElementById('locationBarcodeQueryInput') || {}).value || ''
-      );
-      return !!(t || b);
-    }
-    async function refreshLoadedPrintSidesFromSharedDb() {
-      for (const side of ['left', 'right']) {
-        const raw = ((document.getElementById('printQuery' + printSideCap(side)) || {}).value || '').trim();
-        if (!raw) continue;
-        const st = printSides[side];
-        if (!st || (!(st.rows && st.rows.length) && !st.item)) continue;
-        try {
-          const rows = await lookupLocalLocationsForPrint(raw);
-          if (rows.length) {
-            applyPrintLookupRows(side, rows, 'متزامن مع بيانات المواقع', true);
-          }
-        } catch (_) {}
+      try {
+        const t = ((document.getElementById('locationTextQueryInput') || {}).value || '').trim();
+        const bRaw = (document.getElementById('locationBarcodeQueryInput') || {}).value || '';
+        const b = (typeof lightSanitizeBarcodeValue === 'function')
+          ? lightSanitizeBarcodeValue(bRaw)
+          : String(bRaw).trim();
+        return !!(t || b);
+      } catch (_) {
+        return false;
       }
     }
+    async function refreshLoadedPrintSidesFromSharedDb() {
+      try {
+        for (const side of ['left', 'right']) {
+          const raw = ((document.getElementById('printQuery' + printSideCap(side)) || {}).value || '').trim();
+          if (!raw) continue;
+          const st = printSides[side];
+          if (!st || (!(st.rows && st.rows.length) && !st.item)) continue;
+          try {
+            const rows = await lookupLocalLocationsForPrint(raw);
+            if (rows.length) {
+              applyPrintLookupRows(side, rows, 'متزامن مع بيانات المواقع', true);
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
     async function syncSharedLocationAndPrintData(source) {
-      // المواقع وطباعة الباركود يشتركان بنفس location_rows — أي تحديث يحدّث الواجهتين
+      // المواقع وطباعة الباركود يشتركان بنفس location_rows — بدون حلقات ثقيلة تعلّق الواجهة
       if (sharedLocPrintSyncBusy) return;
       sharedLocPrintSyncBusy = true;
       try {
-        if (source !== 'location-search' && hasSharedLocationQuery() && !locationLiveRefreshBusy) {
+        if (
+          source !== 'location-search'
+          && source !== 'version'
+          && source !== 'location-fetch'
+          && source !== 'location-auto'
+          && hasSharedLocationQuery()
+          && !locationLiveRefreshBusy
+          && activeSearchTab === 'location'
+        ) {
           try { await searchNow('location'); } catch (_) {}
         }
-        if (source !== 'print-local') {
+        if (source !== 'print-local' && activeSearchTab === 'print') {
+          await refreshLoadedPrintSidesFromSharedDb();
+        } else if (source === 'location-fetch' || source === 'location-auto' || source === 'full-import') {
+          // حدّث معاينة الطباعة فقط إن كانت محمّلة مسبقاً (خفيف)
           await refreshLoadedPrintSidesFromSharedDb();
         }
+      } catch (_) {
+        /* لا تُسقط أخطاء المزامنة المشتركة واجهة التطبيق */
       } finally {
         sharedLocPrintSyncBusy = false;
       }
+    }
+    function scheduleSharedLocationAndPrintSync(source) {
+      clearTimeout(sharedLocPrintSyncTimer);
+      sharedLocPrintSyncTimer = setTimeout(() => {
+        syncSharedLocationAndPrintData(source || 'debounced');
+      }, 200);
     }
     function applyHesabateSearchVersion(data) {
       const ver = data && data.search_version != null ? Number(data.search_version) : null;
@@ -7811,7 +7838,8 @@ def home() -> HTMLResponse:
       const changed = lastHesabateSearchVersion != null && ver !== lastHesabateSearchVersion;
       lastHesabateSearchVersion = ver;
       if (changed) {
-        syncSharedLocationAndPrintData('version');
+        // لا تُشغّل بحث ثقيل من مجرّد تغيّر الإصدار — يكفي مزامنة خفيفة مؤجّلة
+        scheduleSharedLocationAndPrintSync('version');
       }
     }
 
@@ -8072,7 +8100,7 @@ def home() -> HTMLResponse:
               `${live.message || 'محدّث'} | محلي ${localMs != null ? localMs + 'ms' : '—'} → تحديث ${uiMs}ms | ${timingLine}`
             );
             if (stEl) stEl.textContent = live.message || 'تم التحديث من حساباتي';
-            syncSharedLocationAndPrintData('location-auto');
+            scheduleSharedLocationAndPrintSync('location-auto');
           } else if (unsupported || live.products_fetch_mode === 'local_only_no_pro_id') {
             // أبقِ النتائج المحلية ظاهرة — هذه ليست خطأ شبكة
             const soft = hadLocalRows
@@ -8235,7 +8263,7 @@ def home() -> HTMLResponse:
             `${live.message || (imported ? `تم جلب صنف جديد · ${rows.length}` : `تم جلب ${rows.length} صنف`)} | ${timingLine}`
           );
           if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف.`;
-          await syncSharedLocationAndPrintData('location-fetch');
+          scheduleSharedLocationAndPrintSync('location-fetch');
         } catch (err) {
           let hint = 'تعذر جلب الصنف.';
           if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة أو استخدم «تحديث الكل الآن».';
@@ -8748,7 +8776,7 @@ def home() -> HTMLResponse:
           `${live.message || `تم تحديث الصنف · ${apiRows.length}`} | ${timingLine}`,
           true
         );
-        await syncSharedLocationAndPrintData('print-fetch');
+        scheduleSharedLocationAndPrintSync('print-fetch');
       } catch (err) {
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
@@ -8955,7 +8983,7 @@ def home() -> HTMLResponse:
             : 'تم التحديث من حساباتي.');
         if (stEl) stEl.textContent = msg;
         setStats( msg);
-        await syncSharedLocationAndPrintData('full-import');
+        scheduleSharedLocationAndPrintSync('full-import');
       } finally {
         /* no-op */
       }
@@ -11909,17 +11937,27 @@ def home() -> HTMLResponse:
         handleDrop(e);
       });
     }
-    updateSelectionInfo();
-    setUploadProgress(0, '');
-    registerServiceWorker();
-    initAutoSearch();
-    loadStats();
-    searchNow();
-    ensureLatestClientVersion();
-    setTimeout(() => {
-      restoreServerFromLocalSnapshotIfEmpty();
-      autoSyncGoogleDriveIfServerEmpty();
-    }, 12000);
+    try {
+      updateSelectionInfo();
+      setUploadProgress(0, '');
+      registerServiceWorker();
+      initAutoSearch();
+      loadStats();
+      searchNow();
+      ensureLatestClientVersion();
+      setTimeout(() => {
+        try {
+          restoreServerFromLocalSnapshotIfEmpty();
+          autoSyncGoogleDriveIfServerEmpty();
+        } catch (_) {}
+      }, 12000);
+    } catch (bootErr) {
+      try {
+        console.error('boot-failed', bootErr);
+        const st = document.getElementById('hesabateSyncStatus') || document.getElementById('stats');
+        if (st) st.textContent = 'تعذّر تشغيل الواجهة بالكامل — حدّث الصفحة (Ctrl+F5).';
+      } catch (_) {}
+    }
   </script>
 </body>
 </html>
