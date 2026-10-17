@@ -7755,7 +7755,7 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="printSearchPanel" class="search-panel">
-        <details id="printLayoutDesigner" class="print-designer-wrap" open style="margin-top:0;margin-bottom:12px;">
+        <details id="printLayoutDesigner" class="print-designer-wrap" style="margin-top:0;margin-bottom:12px;">
           <summary>شكل الليبل · تصميم GUI اللزقتين — اسحب لنقل العناصر أو كبّر/صغّر من الزاوية</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
