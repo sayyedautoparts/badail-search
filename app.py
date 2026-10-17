@@ -8381,7 +8381,7 @@ def home() -> HTMLResponse:
       const wrap = document.getElementById('printOriginalWrap' + printSideCap(s));
       if (wrap) wrap.style.display = 'none';
     }
-    function updatePrintBarcodePreview(side) {
+    function updatePrintBarcodePreview(side, forceNameFromRow) {
       const s = printSideKey(side);
       const cap = printSideCap(s);
       const st = printSides[s];
@@ -8396,7 +8396,7 @@ def home() -> HTMLResponse:
       st.item = row;
       const nameInp = document.getElementById('printName' + cap);
       const name = String(row.item_name || '').trim() || '';
-      if (nameInp && (!nameInp.value.trim() || nameInp.dataset.fromFetch === '1')) {
+      if (nameInp && (forceNameFromRow || !nameInp.value.trim() || nameInp.dataset.fromFetch === '1')) {
         setPrintName(s, name);
       }
       const original = chosen || String(row.original_number || '').trim() || '—';
@@ -8418,7 +8418,7 @@ def home() -> HTMLResponse:
         });
       }).catch(() => {});
     }
-    function applyPrintLookupRows(side, rows, message) {
+    function applyPrintLookupRows(side, rows, message, forceNameFromRow) {
       const s = printSideKey(side);
       const cap = printSideCap(s);
       const st = printSides[s];
@@ -8426,6 +8426,7 @@ def home() -> HTMLResponse:
       const originals = collectPrintOriginalOptions(st.rows);
       const wrap = document.getElementById('printOriginalWrap' + cap);
       const sel = document.getElementById('printOriginalSelect' + cap);
+      const prevChosen = sel && sel.value ? sel.value : '';
       if (sel) {
         sel.innerHTML = '';
         originals.forEach((o) => {
@@ -8434,7 +8435,10 @@ def home() -> HTMLResponse:
           opt.textContent = o;
           sel.appendChild(opt);
         });
-        sel.onchange = () => updatePrintBarcodePreview(s);
+        if (prevChosen && originals.some((o) => o === prevChosen)) {
+          sel.value = prevChosen;
+        }
+        sel.onchange = () => updatePrintBarcodePreview(s, false);
       }
       // اختيار الرقم الأصلي يظهر دائماً بكل لزقة (يسار/يمين) بعد الجلب
       if (wrap) wrap.style.display = st.rows.length ? 'block' : 'none';
@@ -8451,9 +8455,9 @@ def home() -> HTMLResponse:
         opt.textContent = '— بدون أصلي —';
         sel.appendChild(opt);
       }
-      st.item = pickPrintRowForOriginal(st.rows, originals[0] || '');
+      st.item = pickPrintRowForOriginal(st.rows, (sel && sel.value) || originals[0] || '');
       setPrintFetchStatus(message || `تم تجهيز الصنف · ${st.rows.length}`, s);
-      updatePrintBarcodePreview(s);
+      updatePrintBarcodePreview(s, !!forceNameFromRow);
       return true;
     }
     function rankLocationRowsForPrint(rawRows) {
@@ -8566,22 +8570,32 @@ def home() -> HTMLResponse:
       const btn = document.getElementById('printFetchBtn' + printSideCap(s));
       if (btn) btn.disabled = true;
       try {
-        setPrintFetchStatus('بحث في قاعدة المواقع...', s);
-        const localRows = await lookupLocalLocationsForPrint(raw);
-        if (localRows.length) {
-          applyPrintLookupRows(s, localRows, `من قاعدة المواقع · ${localRows.length}`);
-          return;
-        }
         const { barcode, q } = splitPrintQuery(raw);
-        setPrintFetchStatus('غير موجود محلياً — جاري الجلب من حساباتي...', s);
         const t0 = performance.now();
+        // 1) عرض محلي فوري إن وُجد
+        setPrintFetchStatus('بحث في قاعدة المواقع...', s);
+        let localRows = await lookupLocalLocationsForPrint(raw);
+        if (localRows.length) {
+          applyPrintLookupRows(s, localRows, `محلي · جاري تحديث الموقع/البيانات من حساباتي...`, false);
+        }
+        // 2) دائماً تحديث موجّه من حساباتي (حتى لو موجود محلياً) حتى يظهر الموقع الجديد
+        setPrintFetchStatus(
+          localRows.length
+            ? 'تحديث هذا الصنف من حساباتي (موقع/اسم/باركود)...'
+            : 'غير موجود محلياً — جاري الجلب من حساباتي...',
+          s
+        );
         let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
         let cacheRows = Array.isArray(live && live.rows) ? live.rows : [];
+        if (!localRows.length && cacheRows.length) {
+          localRows = rankLocationRowsForPrint(cacheRows);
+          applyPrintLookupRows(s, localRows, `كاش · جاري التحديث من حساباتي...`, false);
+        }
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), cacheRows.length ? 45000 : 280000);
+        const to = setTimeout(() => ctrl.abort(), localRows.length || cacheRows.length ? 45000 : 280000);
         try {
           live = await lookupHesabateItemOnce(
-            barcode, q, false, ctrl.signal, true, !cacheRows.length
+            barcode, q, false, ctrl.signal, true, !(localRows.length || cacheRows.length)
           );
         } finally {
           clearTimeout(to);
@@ -8589,7 +8603,7 @@ def home() -> HTMLResponse:
         if (
           live && live.ok !== false
           && !(Array.isArray(live.rows) && live.rows.length)
-          && cacheRows.length
+          && (localRows.length || cacheRows.length)
           && (live.products_fetch_mode === 'local_only_no_pro_id'
             || live.products_fetch_mode === 'targeted_search_unsupported')
         ) {
@@ -8605,29 +8619,58 @@ def home() -> HTMLResponse:
         const uiMs = Math.round(performance.now() - t0);
         const timingLine = formatLookupTiming(live, uiMs);
         if (!live || live.ok === false) {
-          applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
+          if (localRows.length) {
+            applyPrintLookupRows(
+              s,
+              localRows,
+              `بقيت النتيجة المحلية · تعذّر التحديث: ${(live && live.message) || 'خطأ'}`,
+              false
+            );
+          } else {
+            applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
+          }
           return;
         }
         if (live.usage) renderHesabateUsage(live.usage, live.message || '');
         applyHesabateSearchVersion(live);
         if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
-          applyPrintLookupRows(s, [], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
+          if (localRows.length) {
+            applyPrintLookupRows(
+              s,
+              localRows,
+              'حساباتي: الصنف غير موجود — عُرضت البيانات المحلية',
+              false
+            );
+          } else {
+            applyPrintLookupRows(s, [], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
+          }
           return;
         }
         if (!apiRows.length) {
-          applyPrintLookupRows(s, [], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
+          if (localRows.length) {
+            applyPrintLookupRows(s, localRows, `محلي فقط · ${timingLine || 'بدون تحديث من حساباتي'}`, false);
+          } else {
+            applyPrintLookupRows(s, [], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
+          }
           return;
         }
+        // بيانات حساباتي المحدّثة (الموقع الجديد) هي المعروضة للطباعة
         applyPrintLookupRows(
           s,
-          apiRows,
-          `${live.message || `تم جلب ${apiRows.length} صنف`} | ${timingLine}`
+          rankLocationRowsForPrint(apiRows),
+          `${live.message || `تم تحديث الصنف · ${apiRows.length}`} | ${timingLine}`,
+          true
         );
       } catch (err) {
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
         else if (err && err.message) hint = String(err.message);
-        applyPrintLookupRows(s, [], hint);
+        const st = printSides[printSideKey(side)];
+        if (st && st.rows && st.rows.length) {
+          setPrintFetchStatus(`بقيت النتيجة السابقة · ${hint}`, s);
+        } else {
+          applyPrintLookupRows(s, [], hint);
+        }
       } finally {
         if (btn) btn.disabled = false;
       }
