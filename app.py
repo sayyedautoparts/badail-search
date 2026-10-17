@@ -6987,7 +6987,7 @@ def home() -> HTMLResponse:
         height: 30mm;
         max-height: 30mm;
         box-sizing: border-box;
-        padding: 0.5mm 0.8mm 0.35mm;
+        padding: 0.4mm 0.8mm 0.3mm;
         margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
@@ -7005,11 +7005,11 @@ def home() -> HTMLResponse:
         flex: 0 0 auto;
         width: 100%;
         max-width: 100%;
-        max-height: 11mm;
-        font-size: 17px;
+        max-height: 14.5mm;
+        font-size: 21px;
         font-weight: 900;
-        margin: 0;
-        line-height: 1.08;
+        margin: 2mm 0 0;
+        line-height: 1.06;
         overflow: hidden !important;
         white-space: normal !important;
         word-break: break-word;
@@ -7026,8 +7026,8 @@ def home() -> HTMLResponse:
         gap: 2.5mm;
         font-size: 8px;
         font-weight: 800;
-        margin: 0.35mm auto 0;
-        max-height: 2.8mm;
+        margin: 0.3mm auto 0;
+        max-height: 2.6mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7052,23 +7052,23 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0.2mm;
-        padding-top: 1.2mm;
-        padding-bottom: 0.15mm;
+        gap: 0.15mm;
+        padding-top: 0.6mm;
+        padding-bottom: 0.1mm;
         width: 100%;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
         max-width: 98% !important;
         width: 98% !important;
-        max-height: 14.5mm !important;
-        height: 14.5mm !important;
+        max-height: 10.5mm !important;
+        height: 10.5mm !important;
         overflow: hidden;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 10px;
+        font-size: 9.5px;
         font-weight: 800;
         letter-spacing: .02em;
         margin: 0;
@@ -7103,17 +7103,18 @@ def home() -> HTMLResponse:
       height: 30mm;
       max-height: 30mm;
       box-sizing: border-box;
-      padding: 0.5mm 0.8mm 0.35mm;
+      padding: 0.4mm 0.8mm 0.3mm;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
     }
     .print-label-sheet.print-measure .pl-name {
-      max-height: 11mm;
+      max-height: 14.5mm;
+      margin-top: 2mm;
       overflow: hidden;
       font-weight: 900;
-      line-height: 1.08;
+      line-height: 1.06;
       width: 100%;
       white-space: normal;
       word-break: break-word;
@@ -7124,7 +7125,7 @@ def home() -> HTMLResponse:
       direction: ltr;
       justify-content: center;
       gap: 2.5mm;
-      max-height: 2.8mm;
+      max-height: 2.6mm;
       overflow: hidden;
       white-space: nowrap;
       width: 100%;
@@ -7137,7 +7138,11 @@ def home() -> HTMLResponse:
       align-items: center;
       justify-content: flex-end;
       width: 100%;
-      padding-top: 1.2mm;
+      padding-top: 0.6mm;
+    }
+    .print-label-sheet.print-measure .pl-bc-wrap svg {
+      max-height: 10.5mm;
+      height: 10.5mm;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -8584,8 +8589,8 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 18;
-      const minPx = 8;
+      const maxPx = 22;
+      const minPx = 9;
       // دائماً wrap text (سطرين) مع تكبير أقصى بدون خروج من اللزقة
       el.style.display = '-webkit-box';
       el.style.webkitBoxOrient = 'vertical';
@@ -8630,7 +8635,7 @@ def home() -> HTMLResponse:
         const moduleW = Math.max(1.15, Math.min(2.7, 58 / (codeLen * 9.5)));
         renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
           format: 'CODE128',
-          height: 54,
+          height: 38,
           width: moduleW,
           margin: 0,
           marginTop: 0,
