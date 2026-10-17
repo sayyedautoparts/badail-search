@@ -7037,7 +7037,7 @@ def home() -> HTMLResponse:
         min-height: 0;
         width: 100%;
         max-width: 100%;
-        font-size: 20px;
+        font-size: 24px;
         font-weight: 900;
         margin: 0;
         line-height: 1.05;
@@ -8545,9 +8545,10 @@ def home() -> HTMLResponse:
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const usableMm = 54;
-      const heightMm = 11.6;
+      // باركود أقصر ليفسح مجال لاسم الصنف الأكبر
+      const heightMm = 9.2;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(70, Math.round(heightMm * dotsPerMm));
+      const heightDots = Math.max(56, Math.round(heightMm * dotsPerMm));
       // نمط قياسي: عمود ≈ 0.33مم (3 نقاط) · quiet zone ≈ 10 وحدات
       const TARGET_MODULE_DOTS = 3;
       const MIN_MODULE_DOTS = 2;
@@ -9033,8 +9034,8 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 24;
-      const minPx = 8;
+      const maxPx = 30;
+      const minPx = 10;
       // يملأ المساحة فوق الموقع/الأصلي: wrap + تكبير/تصغير حسب ارتفاع الورقة المتاح
       el.style.display = 'block';
       el.style.whiteSpace = 'normal';
