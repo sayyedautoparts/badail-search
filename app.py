@@ -4658,13 +4658,15 @@ def upsert_location_rows_delta_from_api(
     mapped_rows: list[dict[str, str]],
     *,
     allow_partial: bool = False,
+    force_rewrite: bool = False,
+    purge_missing: bool = False,
 ) -> dict[str, int]:
     """
     مزامنة ذكية لصفوف حساباتي فقط (source_file=حساباتي_API) عبر hesabate_product_id:
     - إدخال الجديد
-    - تحديث المتغيّر فقط
-    - ترك غير المتغيّر
-    لا يحذف Excel/البدائل/مصادر أخرى، ولا يستنتج حذفاً من رد ناقص.
+    - تحديث المتغيّر (أو كل الصفوف إن force_rewrite)
+    - حذف أصناف حساباتي الغائبة من الكتالوج الجديد إن purge_missing
+    لا يحذف Excel/البدائل/مصادر أخرى.
     allow_partial=True: تحديث موجّه لصنف/أصناف قليلة (تجاوز حماية الكتالوج الناقص).
     """
     if not mapped_rows:
@@ -4675,6 +4677,7 @@ def upsert_location_rows_delta_from_api(
     inserted = 0
     updated = 0
     unchanged = 0
+    deleted = 0
     try:
         ensure_location_rows_import_schema(conn)
         ensure_shelf_locations_schema(conn)
@@ -4822,8 +4825,8 @@ def upsert_location_rows_delta_from_api(
                 str(ex.get("price") or "").strip(),
                 old_nb,
             )
-            # جلب موجّه: افرض UPDATE دائماً حتى لا تبقى قيمة قديمة بالبحث المحلي
-            if (not allow_partial) and old_fp == new_fp:
+            # جلب موجّه أو إعادة كتابة كاملة: افرض UPDATE حتى لا تبقى قيمة قديمة
+            if (not allow_partial) and (not force_rewrite) and old_fp == new_fp:
                 unchanged += 1
                 continue
             to_update.append(
@@ -4986,11 +4989,37 @@ def upsert_location_rows_delta_from_api(
                 (source_key,),
             )
 
+        # كتالوج كامل: احذف أصناف حساباتي التي لم تعد في الرد الجديد (البيانات الجديدة هي المصدر)
+        if purge_missing and (not allow_partial) and len(mapped_rows) >= max(500, int(prev_api_count * 0.35) if prev_api_count else 500):
+            incoming_pids = {
+                str(r.get("product_id") or "").strip()
+                for r in mapped_rows
+                if str(r.get("product_id") or "").strip()
+            }
+            if incoming_pids:
+                existing_pids = set(existing.keys())
+                stale = [pid for pid in existing_pids if pid not in incoming_pids]
+                for i in range(0, len(stale), 400):
+                    chunk = stale[i : i + 400]
+                    placeholders = ",".join(["?"] * len(chunk))
+                    cur = conn.execute(
+                        f"""
+                        DELETE FROM location_rows
+                        WHERE source_file = ?
+                          AND TRIM(COALESCE(hesabate_product_id, '')) IN ({placeholders})
+                        """,
+                        (source_key, *chunk),
+                    )
+                    try:
+                        deleted += int(cur.rowcount or 0)
+                    except Exception:
+                        deleted += len(chunk)
+
         total_api = inserted + updated + unchanged
         if total_api <= 0:
             total_api = len(mapped_rows)
         content_hash = hashlib.sha256(
-            f"api-delta:{inserted}:{updated}:{unchanged}:{datetime.now().isoformat()}".encode("utf-8")
+            f"api-delta:{inserted}:{updated}:{unchanged}:{deleted}:{datetime.now().isoformat()}".encode("utf-8")
         ).hexdigest()
         if conn.postgres:
             conn.execute(
@@ -5025,6 +5054,7 @@ def upsert_location_rows_delta_from_api(
             "inserted": inserted,
             "updated": updated,
             "unchanged": unchanged,
+            "deleted": deleted,
             "total": inserted + updated + unchanged,
         }
     except Exception:
@@ -5038,9 +5068,15 @@ def upsert_location_rows_delta_from_api(
 
 
 def replace_location_rows_from_api(mapped_rows: list[dict[str, str]]) -> int:
-    """توافق خلفي: مزامنة دلتا بالـ product_id — لا DELETE لكل الجدول."""
-    stats = upsert_location_rows_delta_from_api(mapped_rows)
-    return int(stats.get("inserted") or 0) + int(stats.get("updated") or 0) + int(stats.get("unchanged") or 0)
+    """توافق خلفي: مزامنة دلتا بالـ product_id مع حذف الغائب."""
+    stats = upsert_location_rows_delta_from_api(
+        mapped_rows, force_rewrite=True, purge_missing=True
+    )
+    return (
+        int(stats.get("inserted") or 0)
+        + int(stats.get("updated") or 0)
+        + int(stats.get("unchanged") or 0)
+    )
 
 
 def _try_acquire_hesabate_db_lock() -> tuple[Any | None, bool]:
@@ -5233,10 +5269,10 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         barcode_parser_stale = (
             str(app_kv_get("hesabate_barcode_parser_ver", "") or "") != HESABATE_BARCODE_PARSER_VERSION
         )
-        # حتى لو الكتالوج لم يتغير: أعد فهرسة الباركودات المتعددة بعد تحديث منطق التفكيك
+        # حتى مع force: إن تطابق هاش الكتالوج نكتفي بالتحقق (توفير كتابة DB)
+        # عند اختلاف الهاش تُحفظ البيانات الجديدة ويُحذف الغائب من حساباتي_API
         products_unchanged = bool(
-            (not force)
-            and (not barcode_parser_stale)
+            (not barcode_parser_stale)
             and products_hash
             and products_hash == prev_hash
             and not catalog_bloated
@@ -5378,7 +5414,12 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         map_ms = int((time.perf_counter() - t_map0) * 1000)
 
         t_save0 = time.perf_counter()
-        stats = upsert_location_rows_delta_from_api(mapped)
+        # احفظ القيم الجديدة من حساباتي واحذف أصناف حساباتي الغائبة عن الكتالوج
+        stats = upsert_location_rows_delta_from_api(
+            mapped,
+            force_rewrite=bool(force or barcode_parser_stale),
+            purge_missing=True,
+        )
         save_ms = int((time.perf_counter() - t_save0) * 1000)
 
         # احفظ مؤشر الكتالوج فقط بعد نجاح الحفظ
@@ -5389,13 +5430,17 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
         app_kv_set("hesabate_last_rows", str(stats.get("total") or len(mapped)))
         app_kv_set("hesabate_last_error", "")
         with_loc = sum(1 for r in mapped if clean_shelf_location(r.get("location")))
-        changed = int(stats.get("inserted") or 0) + int(stats.get("updated") or 0)
+        changed = (
+            int(stats.get("inserted") or 0)
+            + int(stats.get("updated") or 0)
+            + int(stats.get("deleted") or 0)
+        )
         if changed or force or barcode_parser_stale:
             search_ver = _bump_hesabate_search_data_version()
         total_ms = int((time.perf_counter() - t_all) * 1000)
         logger.info(
             "hesabate_sync ok api_ms=%s map_ms=%s save_ms=%s cache_ms=%s total_ms=%s "
-            "inserted=%s updated=%s unchanged=%s cache_delta=%s products=%s requests=%s",
+            "inserted=%s updated=%s unchanged=%s deleted=%s cache_delta=%s products=%s requests=%s",
             api_ms,
             map_ms,
             save_ms,
@@ -5404,6 +5449,7 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             stats.get("inserted"),
             stats.get("updated"),
             stats.get("unchanged"),
+            stats.get("deleted"),
             cache_delta,
             prod_n,
             request_count,
@@ -5427,11 +5473,11 @@ def sync_locations_from_hesabate(*, force: bool = False, return_mapped: bool = F
             },
             "search_version": search_ver,
             "last_sync_at": sync_at,
-            "catalog_mode": "full_download_compare",
+            "catalog_mode": "full_download_replace",
             "message": (
-                f"مزامنة دلتا: +{stats.get('inserted', 0)} جديد، "
-                f"{stats.get('updated', 0)} معدّل، {stats.get('unchanged', 0)} دون تغيير "
-                f"(من {prod_n} صنف — تنزيل كتالوج كامل ثم مقارنة؛ API بلا فرق زمني)."
+                f"تم حفظ بيانات حساباتي الجديدة: +{stats.get('inserted', 0)}، "
+                f"تحديث {stats.get('updated', 0)}، حذف قديم {stats.get('deleted', 0)}، "
+                f"دون تغيير {stats.get('unchanged', 0)} (من {prod_n} صنف)."
             ),
             "usage": hesabate_usage_summary(),
             "location_note": "موقع الرف = حقل الموديل (model) من حساباتي.",
@@ -12570,10 +12616,11 @@ def hesabate_cron_sync(request: Request) -> dict:
         }
     result = ensure_hesabate_locations_synced(force=True)
     result["scheduled"] = True
-    result["interval_hint_min"] = 120
+    result["interval_hint_min"] = 60
     result["schedule"] = schedule_meta
-    # عدّ فقط عند نجاح مزامنة فعلية (ليس صمت ليلي / قفل / فشل)
-    if result.get("ok") and not result.get("skipped"):
+    # سجّل التشغيل التلقائي عند النجاح (يشمل unchanged) — ليس صمت ليلي / قفل متزامن
+    reason = str(result.get("reason") or "")
+    if result.get("ok") and reason not in ("inflight", "not_configured"):
         result["auto_sync_count"] = bump_hesabate_auto_sync_count()
         result["auto_sync_last_at"] = app_kv_get("hesabate_auto_sync_last_at", "")
     else:
