@@ -6988,7 +6988,7 @@ def home() -> HTMLResponse:
         height: 30mm;
         max-height: 30mm;
         box-sizing: border-box;
-        padding: 0.4mm 0.8mm 0.3mm;
+        padding: 0.35mm 0.8mm 0.25mm;
         margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
@@ -7002,21 +7002,24 @@ def home() -> HTMLResponse:
       .print-label.print-label-empty {
         visibility: hidden;
       }
+      /* كل المساحة فوق الموقع/الأصلي = اسم الصنف (dynamic + wrap) */
       .print-label .pl-name {
-        flex: 0 0 auto;
+        flex: 1 1 auto;
+        min-height: 0;
         width: 100%;
         max-width: 100%;
-        max-height: 14.5mm;
-        font-size: 21px;
+        font-size: 20px;
         font-weight: 900;
-        margin: 2mm 0 0;
-        line-height: 1.06;
+        margin: 0;
+        line-height: 1.05;
         overflow: hidden !important;
         white-space: normal !important;
         word-break: break-word;
         overflow-wrap: anywhere;
         text-align: center;
+        align-content: center;
       }
+      /* الموقع + الأصلي مباشرة فوق الباركود بـ 1 مم */
       .print-label .pl-meta {
         flex: 0 0 auto;
         display: flex;
@@ -7027,8 +7030,8 @@ def home() -> HTMLResponse:
         gap: 2.5mm;
         font-size: 8px;
         font-weight: 800;
-        margin: 0.3mm auto 0;
-        max-height: 2.6mm;
+        margin: 0 auto 1mm;
+        max-height: 2.5mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7045,17 +7048,15 @@ def home() -> HTMLResponse:
         direction: ltr;
       }
       .print-label .pl-bc-wrap {
-        flex: 1 1 auto;
-        min-height: 0;
-        margin-top: auto;
+        flex: 0 0 auto;
         overflow: hidden !important;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
         gap: 0.15mm;
-        padding-top: 0.6mm;
-        padding-bottom: 0.1mm;
+        padding: 0;
+        margin: 0;
         width: 100%;
       }
       .print-label .pl-bc-wrap svg {
@@ -7104,42 +7105,44 @@ def home() -> HTMLResponse:
       height: 30mm;
       max-height: 30mm;
       box-sizing: border-box;
-      padding: 0.4mm 0.8mm 0.3mm;
+      padding: 0.35mm 0.8mm 0.25mm;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
     }
     .print-label-sheet.print-measure .pl-name {
-      max-height: 14.5mm;
-      margin-top: 2mm;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: hidden;
       font-weight: 900;
-      line-height: 1.06;
+      line-height: 1.05;
       width: 100%;
       white-space: normal;
       word-break: break-word;
       overflow-wrap: anywhere;
     }
     .print-label-sheet.print-measure .pl-meta {
+      flex: 0 0 auto;
       display: flex;
       direction: ltr;
       justify-content: center;
       gap: 2.5mm;
-      max-height: 2.6mm;
+      max-height: 2.5mm;
+      margin: 0 auto 1mm;
       overflow: hidden;
       white-space: nowrap;
       width: 100%;
     }
     .print-label-sheet.print-measure .pl-bc-wrap {
-      flex: 1 1 auto;
-      margin-top: auto;
+      flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: flex-end;
       width: 100%;
-      padding-top: 0.6mm;
+      margin: 0;
+      padding: 0;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg {
       max-height: 10.5mm;
@@ -8579,23 +8582,33 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 22;
-      const minPx = 9;
-      // دائماً wrap text (سطرين) مع تكبير أقصى بدون خروج من اللزقة
-      el.style.display = '-webkit-box';
-      el.style.webkitBoxOrient = 'vertical';
-      el.style.webkitLineClamp = '2';
-      el.style.lineClamp = '2';
+      const maxPx = 24;
+      const minPx = 8;
+      // يملأ المساحة فوق الموقع/الأصلي: wrap + تكبير/تصغير حسب ارتفاع الورقة المتاح
+      el.style.display = 'block';
       el.style.whiteSpace = 'normal';
       el.style.wordBreak = 'break-word';
       el.style.overflowWrap = 'anywhere';
       el.style.overflow = 'hidden';
       el.style.textAlign = 'center';
+      el.style.webkitLineClamp = 'unset';
+      el.style.lineClamp = 'unset';
       let size = maxPx;
       el.style.fontSize = size + 'px';
+      // صغّر حتى يدخل داخل المساحة المتاحة
       while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
-        size -= 0.35;
+        size -= 0.3;
         el.style.fontSize = size + 'px';
+      }
+      // إن بقي فراغ — كبّر تدريجياً (أسماء قصيرة)
+      while (size < maxPx) {
+        const next = Math.min(maxPx, size + 0.3);
+        el.style.fontSize = next + 'px';
+        if (el.scrollHeight > el.clientHeight + 0.5) {
+          el.style.fontSize = size + 'px';
+          break;
+        }
+        size = next;
       }
     }
     function fitPrintMetaLeft(el) {
