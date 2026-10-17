@@ -7061,11 +7061,13 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-bc-wrap svg {
         display: block;
-        max-width: 98% !important;
-        width: 98% !important;
+        /* لا تمديد قسري — يحافظ على نسب الأعمدة لمقروئية الماسح */
+        max-width: 100% !important;
+        width: auto !important;
         max-height: 10.5mm !important;
         height: 10.5mm !important;
-        overflow: hidden;
+        overflow: visible;
+        transform-origin: center bottom;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
@@ -7145,8 +7147,11 @@ def home() -> HTMLResponse:
       padding: 0;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg {
+      max-width: 100%;
+      width: auto;
       max-height: 10.5mm;
       height: 10.5mm;
+      transform-origin: center bottom;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -8258,6 +8263,70 @@ def home() -> HTMLResponse:
         return false;
       }
     }
+    function estimatePrintBarcodeModuleWidth(code) {
+      // Code128 تقريباً ~11 وحدة/حرف + ~35 للبداية/النهاية/التحقق
+      const n = Math.max(1, String(code || '').length);
+      const estModules = n * 11 + 35;
+      const targetPx = 208; // ≈ عرض اللزقة الداخلي (~55mm)
+      // حد أدنى مقروء للماسح؛ حد أعلى للباركود القصير
+      return Math.max(0.72, Math.min(2.35, targetPx / estModules));
+    }
+    function fitPrintBarcodeDynamic(svgEl, code, opts) {
+      if (!svgEl) return false;
+      const value = String(code || '').trim();
+      if (!value) return false;
+      svgEl.style.transform = '';
+      const wrap = svgEl.parentElement;
+      const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 208);
+      let moduleW = estimatePrintBarcodeModuleWidth(value);
+      const minModule = 0.68; // تحتها الماسح غالباً يفشل — بعدها نستخدم scale موحّد
+      const base = Object.assign({
+        format: 'CODE128',
+        height: 38,
+        margin: 0,
+        marginTop: 0,
+        marginBottom: 0
+      }, opts || {});
+      let ok = false;
+      for (let i = 0; i < 14; i++) {
+        ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: moduleW }));
+        if (!ok) return false;
+        let bw = 0;
+        try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
+        if (!bw || bw <= maxW + 0.8) {
+          svgEl.style.transform = '';
+          return true;
+        }
+        const next = moduleW * (maxW / bw) * 0.97;
+        if (next < minModule) {
+          ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
+          try {
+            const bb = svgEl.getBBox().width;
+            if (bb > maxW + 0.5) {
+              // تصغير موحّد (بدون تمطيط عرضي فقط) حتى يبقى مقروءاً داخل الورقة
+              const scale = Math.max(0.55, maxW / bb);
+              svgEl.style.transform = 'scale(' + scale.toFixed(4) + ')';
+            } else {
+              svgEl.style.transform = '';
+            }
+          } catch (_) {
+            svgEl.style.transform = '';
+          }
+          return ok;
+        }
+        moduleW = next;
+      }
+      return ok;
+    }
+    function fitPrintBarcodeText(el, code) {
+      if (!el) return;
+      const n = String(code || '').length;
+      let px = 9.5;
+      if (n > 18) px = 8.5;
+      if (n > 24) px = 7.5;
+      if (n > 32) px = 6.5;
+      el.style.fontSize = px + 'px';
+    }
     function getPrintQty() {
       const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
       return Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
@@ -8344,8 +8413,8 @@ def home() -> HTMLResponse:
       if (card) card.style.display = 'block';
       updatePrintDualPreviewSlots();
       ensureJsBarcodeLib().then(() => {
-        renderPrintBarcodeSvg(document.getElementById('printPvBarcode' + cap), barcode, {
-          height: 40, width: 1.5, format: 'CODE128'
+        fitPrintBarcodeDynamic(document.getElementById('printPvBarcode' + cap), barcode, {
+          height: 40, format: 'CODE128'
         });
       }).catch(() => {});
     }
@@ -8632,18 +8701,11 @@ def home() -> HTMLResponse:
         label.querySelector('.pl-name').textContent = data.name || '—';
         label.querySelector('.pl-orig').textContent = data.original || '—';
         label.querySelector('.pl-loc').textContent = data.location || '—';
-        label.querySelector('.pl-bc-text').textContent = data.barcode || '';
-        // باركود أعرض ضمن عرض الملصق (~58mm) — مثبت للأسفل
-        const codeLen = Math.max(6, String(data.barcode || '').length);
-        const moduleW = Math.max(1.15, Math.min(2.7, 58 / (codeLen * 9.5)));
-        renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
-          format: 'CODE128',
-          height: 38,
-          width: moduleW,
-          margin: 0,
-          marginTop: 0,
-          marginBottom: 0
-        });
+        const bcText = label.querySelector('.pl-bc-text');
+        bcText.textContent = data.barcode || '';
+        fitPrintBarcodeText(bcText, data.barcode);
+        // عرض ديناميكي حسب طول الباركود — يدخل الورقة ويبقى مقروءاً
+        fitPrintBarcodeDynamic(label.querySelector('.pl-bc'), data.barcode, { height: 38 });
       }
       return label;
     }
@@ -8697,8 +8759,12 @@ def home() -> HTMLResponse:
         sheet.appendChild(rowEl);
         fitPrintNameDynamic(left.querySelector('.pl-name'));
         fitPrintMetaLeft(left.querySelector('.pl-meta'));
+        fitPrintBarcodeDynamic(left.querySelector('.pl-bc'), payloadLeft.barcode, { height: 38 });
+        fitPrintBarcodeText(left.querySelector('.pl-bc-text'), payloadLeft.barcode);
         fitPrintNameDynamic(right.querySelector('.pl-name'));
         fitPrintMetaLeft(right.querySelector('.pl-meta'));
+        fitPrintBarcodeDynamic(right.querySelector('.pl-bc'), payloadRight.barcode, { height: 38 });
+        fitPrintBarcodeText(right.querySelector('.pl-bc-text'), payloadRight.barcode);
       }
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
