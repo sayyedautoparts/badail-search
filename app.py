@@ -6868,52 +6868,68 @@ def home() -> HTMLResponse:
       filter: brightness(1.05);
       box-shadow: 0 2px 10px rgba(20, 108, 64, .4);
     }
-    .print-preview-card {
-      margin-top: 12px;
-      padding: 12px;
-      border-radius: 12px;
-      border: 1px solid #cfe3d6;
-      background: #f4fbf6;
-    }
-    .print-preview-card .pv-name {
-      font-weight: 900;
-      font-size: 1.05rem;
-      margin: 0 0 8px;
-      color: var(--ink);
-      text-align: center;
-    }
-    .print-preview-card .pv-row {
-      display: flex;
-      gap: 10px;
-      justify-content: space-between;
-      font-weight: 700;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-    .print-dual-preview {
+    .print-dual-units {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      gap: 12px;
       direction: ltr;
-      margin-top: 8px;
+      margin-top: 4px;
+      align-items: start;
     }
-    .print-dual-slot {
-      border: 1px dashed #9ec9ae;
-      border-radius: 10px;
+    .print-side-unit {
+      border: 2px solid #b7d8c4;
+      border-radius: 14px;
+      padding: 12px;
+      background: #f4fbf6;
+      min-width: 0;
+    }
+    .print-side-unit[data-side="left"] { border-color: #7eb892; }
+    .print-side-unit[data-side="right"] { border-color: #6a9fd4; background: #f3f8fd; }
+    .print-side-title {
+      margin: 0 0 10px;
+      font-weight: 900;
+      font-size: 15px;
+      text-align: center;
+      color: #1f4d32;
+    }
+    .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
+    .print-side-unit .field-label { margin-top: 8px; }
+    .print-side-unit .field-label:first-of-type { margin-top: 0; }
+    .print-side-preview {
+      margin-top: 10px;
       padding: 8px;
+      border-radius: 10px;
+      border: 1px dashed #9ec9ae;
       background: #fff;
-      min-height: 110px;
       text-align: center;
     }
-    .print-dual-slot .slot-title {
-      font-size: 11px;
-      font-weight: 800;
-      color: #2f6b45;
-      margin: 0 0 6px;
+    .print-side-unit[data-side="right"] .print-side-preview { border-color: #9bb8d9; }
+    .print-side-preview .pv-row {
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      font-weight: 700;
+      font-size: 12px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
     }
-    .print-dual-slot.empty-slot {
+    .print-side-preview .pv-name {
+      font-weight: 900;
+      font-size: 13px;
+      margin: 0 0 4px;
+      color: var(--ink);
+    }
+    .print-side-preview.empty-slot {
       opacity: .45;
       background: #f7faf8;
+    }
+    .print-side-status {
+      margin-top: 6px;
+      font-size: 12px;
+      min-height: 1.2em;
+    }
+    @media (max-width: 720px) {
+      .print-dual-units { grid-template-columns: 1fr; direction: rtl; }
     }
     .print-label-sheet { display: none; }
     .search-panel { display: none; }
@@ -7356,55 +7372,68 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="printSearchPanel" class="search-panel">
-        <label class="field-label" for="printQueryInput">رقم الصنف أو باركود القطعة</label>
-        <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal(true);}" />
-        <div class="print-dual-names" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;direction:ltr;">
-          <div>
-            <label class="field-label" for="printNameLeft">اسم اللزق — يسار</label>
-            <input id="printNameLeft" placeholder="اسم يسار" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview()" />
-          </div>
-          <div>
-            <label class="field-label" for="printNameRight">اسم اللزق — يمين</label>
-            <input id="printNameRight" placeholder="اسم يمين" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview()" />
-          </div>
-        </div>
-        <div class="print-unit-fields" style="margin-top:8px;">
-          <label class="field-label" for="printQtyInput">الكمية (واحدة لليسار واليمين)</label>
-          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كمية واحدة مشتركة · 1 = يسار فقط · 2 = يسار+يمين بنفس الورقة</p>
-        </div>
-        <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان.
-        </p>
-        <div class="btn-row" style="margin-top:10px;">
-          <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
-          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
-        </div>
-        <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
-        <div id="printOriginalWrap" style="display:none;margin-top:10px;">
-          <label class="field-label" for="printOriginalSelect">اختر الرقم الأصلي للطباعة</label>
-          <select id="printOriginalSelect"></select>
-        </div>
-        <div id="printPreviewCard" class="print-preview-card" style="display:none;">
-          <div class="pv-row">
-            <span id="printPvOriginal">الأصلي: —</span>
-            <span id="printPvLocation">الموقع: —</span>
-          </div>
-          <div class="print-dual-preview">
-            <div class="print-dual-slot" id="printSlotLeft">
-              <p class="slot-title">يسار</p>
-              <p class="pv-name" id="printPvNameLeft" style="font-size:13px;margin:0 0 4px;">—</p>
+        <div class="print-dual-units">
+          <div class="print-side-unit" data-side="left">
+            <p class="print-side-title">لزق اليسار</p>
+            <label class="field-label" for="printQueryLeft">رقم الصنف أو الباركود</label>
+            <input id="printQueryLeft" placeholder="رقم / باركود اليسار" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
+            <label class="field-label" for="printNameLeft">اسم اللزق</label>
+            <input id="printNameLeft" placeholder="اسم يسار" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview('left')" />
+            <div class="btn-row" style="margin-top:8px;">
+              <button type="button" id="printFetchBtnLeft" class="btn-secondary" onclick="fetchItemForBarcodePrint('left')">جلب اليسار</button>
+            </div>
+            <div id="printFetchStatusLeft" class="muted print-side-status"></div>
+            <div id="printOriginalWrapLeft" style="display:none;margin-top:8px;">
+              <label class="field-label" for="printOriginalSelectLeft">الرقم الأصلي — يسار</label>
+              <select id="printOriginalSelectLeft"></select>
+            </div>
+            <div id="printPreviewLeft" class="print-side-preview" style="display:none;">
+              <div class="pv-row">
+                <span id="printPvOriginalLeft">الأصلي: —</span>
+                <span id="printPvLocationLeft">الموقع: —</span>
+              </div>
+              <p class="pv-name" id="printPvNameLeft">—</p>
               <svg id="printPvBarcodeLeft"></svg>
               <div id="printPvBarcodeTextLeft" style="font-weight:800;font-size:12px;"></div>
             </div>
-            <div class="print-dual-slot" id="printSlotRight">
-              <p class="slot-title">يمين</p>
-              <p class="pv-name" id="printPvNameRight" style="font-size:13px;margin:0 0 4px;">—</p>
+          </div>
+          <div class="print-side-unit" data-side="right">
+            <p class="print-side-title">لزق اليمين</p>
+            <label class="field-label" for="printQueryRight">رقم الصنف أو الباركود</label>
+            <input id="printQueryRight" placeholder="رقم / باركود اليمين" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
+            <label class="field-label" for="printNameRight">اسم اللزق</label>
+            <input id="printNameRight" placeholder="اسم يمين" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview('right')" />
+            <div class="btn-row" style="margin-top:8px;">
+              <button type="button" id="printFetchBtnRight" class="btn-secondary" onclick="fetchItemForBarcodePrint('right')">جلب اليمين</button>
+            </div>
+            <div id="printFetchStatusRight" class="muted print-side-status"></div>
+            <div id="printOriginalWrapRight" style="display:none;margin-top:8px;">
+              <label class="field-label" for="printOriginalSelectRight">الرقم الأصلي — يمين</label>
+              <select id="printOriginalSelectRight"></select>
+            </div>
+            <div id="printPreviewRight" class="print-side-preview" style="display:none;">
+              <div class="pv-row">
+                <span id="printPvOriginalRight">الأصلي: —</span>
+                <span id="printPvLocationRight">الموقع: —</span>
+              </div>
+              <p class="pv-name" id="printPvNameRight">—</p>
               <svg id="printPvBarcodeRight"></svg>
               <div id="printPvBarcodeTextRight" style="font-weight:800;font-size:12px;"></div>
             </div>
           </div>
         </div>
+        <div class="print-unit-fields" style="margin-top:12px;">
+          <label class="field-label" for="printQtyInput">الكمية (واحدة لليسار واليمين)</label>
+          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كمية واحدة مشتركة · 1 = يسار فقط · 2 = يسار+يمين بنفس الورقة</p>
+        </div>
+        <p class="muted" style="margin:6px 0 0;font-size:12px;">
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان منفصلان.
+        </p>
+        <div class="btn-row" style="margin-top:10px;">
+          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
+        </div>
+        <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
@@ -7553,9 +7582,17 @@ def home() -> HTMLResponse:
     /** اسم الطابعة كما يظهر في ويندوز بعد تثبيت درايفر Rongta */
     const RONGTA_PRINTER_NAME = 'Rongta RP4xx Series';
     const loadedScripts = {};
-    let printBarcodeItem = null;
-    let printBarcodeRows = [];
+    const printSides = {
+      left: { item: null, rows: [], lookupGen: 0, debounce: null },
+      right: { item: null, rows: [], lookupGen: 0, debounce: null }
+    };
     let printJobTitleRestore = null;
+    function printSideKey(side) {
+      return side === 'right' ? 'right' : 'left';
+    }
+    function printSideCap(side) {
+      return printSideKey(side) === 'right' ? 'Right' : 'Left';
+    }
     let localSnapshot = { version: '', updated_at: '', total_rows: 0, rows: [] };
     let snapshotLoadPromise = null;
     let lastNotifiedVersion = '';
@@ -8158,7 +8195,12 @@ def home() -> HTMLResponse:
       });
       return exact || list[0];
     }
-    function setPrintFetchStatus(msg) {
+    function setPrintFetchStatus(msg, side) {
+      if (side === 'left' || side === 'right') {
+        const sideEl = document.getElementById('printFetchStatus' + printSideCap(side));
+        if (sideEl) sideEl.textContent = msg || '';
+        return;
+      }
       const el = document.getElementById('printFetchStatus');
       if (el) el.textContent = msg || '';
     }
@@ -8201,76 +8243,89 @@ def home() -> HTMLResponse:
       }
       return { qty, pages };
     }
-    function getPrintNameLeft() {
-      return ((document.getElementById('printNameLeft') || {}).value || '').trim();
+    function getPrintName(side) {
+      const id = 'printName' + printSideCap(side);
+      return ((document.getElementById(id) || {}).value || '').trim();
     }
-    function getPrintNameRight() {
-      return ((document.getElementById('printNameRight') || {}).value || '').trim();
+    function getPrintNameLeft() { return getPrintName('left'); }
+    function getPrintNameRight() { return getPrintName('right'); }
+    function setPrintName(side, name) {
+      const el = document.getElementById('printName' + printSideCap(side));
+      if (el) {
+        el.value = String(name || '').trim();
+        el.dataset.fromFetch = '1';
+      }
     }
-    function setPrintNamesBoth(name) {
-      const n = String(name || '').trim();
-      const l = document.getElementById('printNameLeft');
-      const r = document.getElementById('printNameRight');
-      if (l) l.value = n;
-      if (r) r.value = n;
-    }
-    function refreshPrintNamePreview() {
-      const leftName = document.getElementById('printPvNameLeft');
-      const rightName = document.getElementById('printPvNameRight');
-      if (leftName) leftName.textContent = getPrintNameLeft() || '—';
-      if (rightName) rightName.textContent = getPrintNameRight() || '—';
+    function refreshPrintNamePreview(side) {
+      const sides = side ? [printSideKey(side)] : ['left', 'right'];
+      sides.forEach((s) => {
+        const nameEl = document.getElementById('printPvName' + printSideCap(s));
+        if (nameEl) nameEl.textContent = getPrintName(s) || '—';
+      });
     }
     function updatePrintDualPreviewSlots() {
       const { qty } = updatePrintQtyHint();
-      const left = document.getElementById('printSlotLeft');
-      const right = document.getElementById('printSlotRight');
+      const left = document.getElementById('printPreviewLeft');
+      const right = document.getElementById('printPreviewRight');
       if (left) left.classList.toggle('empty-slot', qty < 1);
       if (right) right.classList.toggle('empty-slot', qty < 2);
       refreshPrintNamePreview();
     }
-    function updatePrintBarcodePreview() {
-      const card = document.getElementById('printPreviewCard');
-      const sel = document.getElementById('printOriginalSelect');
+    function clearPrintSidePreview(side) {
+      const s = printSideKey(side);
+      const st = printSides[s];
+      st.item = null;
+      st.rows = [];
+      const card = document.getElementById('printPreview' + printSideCap(s));
+      if (card) card.style.display = 'none';
+      const wrap = document.getElementById('printOriginalWrap' + printSideCap(s));
+      if (wrap) wrap.style.display = 'none';
+    }
+    function updatePrintBarcodePreview(side) {
+      const s = printSideKey(side);
+      const cap = printSideCap(s);
+      const st = printSides[s];
+      const card = document.getElementById('printPreview' + cap);
+      const sel = document.getElementById('printOriginalSelect' + cap);
       const chosen = sel && sel.value ? sel.value : '';
-      const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
+      const row = pickPrintRowForOriginal(st.rows, chosen) || st.item;
       if (!row) {
         if (card) card.style.display = 'none';
         return;
       }
-      printBarcodeItem = row;
+      st.item = row;
+      const nameInp = document.getElementById('printName' + cap);
       const name = String(row.item_name || '').trim() || '';
-      // عند الجلب: عبّئ خانتَي الاسم (يسار/يمين) بنفس اسم الصنف — قابل للتعديل
-      setPrintNamesBoth(name);
-      const leftInp = document.getElementById('printNameLeft');
-      const rightInp = document.getElementById('printNameRight');
-      if (leftInp) leftInp.dataset.fromFetch = '1';
-      if (rightInp) rightInp.dataset.fromFetch = '1';
+      if (nameInp && (!nameInp.value.trim() || nameInp.dataset.fromFetch === '1')) {
+        setPrintName(s, name);
+      }
       const original = chosen || String(row.original_number || '').trim() || '—';
       const location = String(row.location || '').trim() || '—';
       const barcode = String(row.barcode || '').trim()
-        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((s) => s.trim()).filter(Boolean)[0]
+        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((x) => x.trim()).filter(Boolean)[0]
         || '';
-      const origEl = document.getElementById('printPvOriginal');
-      const locEl = document.getElementById('printPvLocation');
-      const leftText = document.getElementById('printPvBarcodeTextLeft');
-      const rightText = document.getElementById('printPvBarcodeTextRight');
+      const origEl = document.getElementById('printPvOriginal' + cap);
+      const locEl = document.getElementById('printPvLocation' + cap);
+      const textEl = document.getElementById('printPvBarcodeText' + cap);
       if (origEl) origEl.textContent = 'الأصلي: ' + original;
       if (locEl) locEl.textContent = 'الموقع: ' + location;
-      if (leftText) leftText.textContent = barcode || '—';
-      if (rightText) rightText.textContent = barcode || '—';
+      if (textEl) textEl.textContent = barcode || '—';
       if (card) card.style.display = 'block';
       updatePrintDualPreviewSlots();
       ensureJsBarcodeLib().then(() => {
-        const opt = { height: 40, width: 1.5, format: 'CODE128' };
-        renderPrintBarcodeSvg(document.getElementById('printPvBarcodeLeft'), barcode, opt);
-        renderPrintBarcodeSvg(document.getElementById('printPvBarcodeRight'), barcode, opt);
+        renderPrintBarcodeSvg(document.getElementById('printPvBarcode' + cap), barcode, {
+          height: 40, width: 1.5, format: 'CODE128'
+        });
       }).catch(() => {});
     }
-    function applyPrintLookupRows(rows, message) {
-      printBarcodeRows = Array.isArray(rows) ? rows.slice() : [];
-      const originals = collectPrintOriginalOptions(printBarcodeRows);
-      const wrap = document.getElementById('printOriginalWrap');
-      const sel = document.getElementById('printOriginalSelect');
+    function applyPrintLookupRows(side, rows, message) {
+      const s = printSideKey(side);
+      const cap = printSideCap(s);
+      const st = printSides[s];
+      st.rows = Array.isArray(rows) ? rows.slice() : [];
+      const originals = collectPrintOriginalOptions(st.rows);
+      const wrap = document.getElementById('printOriginalWrap' + cap);
+      const sel = document.getElementById('printOriginalSelect' + cap);
       if (sel) {
         sel.innerHTML = '';
         originals.forEach((o) => {
@@ -8279,19 +8334,19 @@ def home() -> HTMLResponse:
           opt.textContent = o;
           sel.appendChild(opt);
         });
-        sel.onchange = () => updatePrintBarcodePreview();
+        sel.onchange = () => updatePrintBarcodePreview(s);
       }
       if (wrap) wrap.style.display = originals.length > 1 ? 'block' : 'none';
-      if (!printBarcodeRows.length) {
-        printBarcodeItem = null;
-        const card = document.getElementById('printPreviewCard');
+      if (!st.rows.length) {
+        st.item = null;
+        const card = document.getElementById('printPreview' + cap);
         if (card) card.style.display = 'none';
-        setPrintFetchStatus(message || 'غير موجود في قاعدة المواقع');
+        setPrintFetchStatus(message || 'غير موجود في قاعدة المواقع', s);
         return false;
       }
-      printBarcodeItem = pickPrintRowForOriginal(printBarcodeRows, originals[0] || '');
-      setPrintFetchStatus(message || `تم تجهيز الصنف · ${printBarcodeRows.length}`);
-      updatePrintBarcodePreview();
+      st.item = pickPrintRowForOriginal(st.rows, originals[0] || '');
+      setPrintFetchStatus(message || `تم تجهيز الصنف · ${st.rows.length}`, s);
+      updatePrintBarcodePreview(s);
       return true;
     }
     function rankLocationRowsForPrint(rawRows) {
@@ -8349,75 +8404,69 @@ def home() -> HTMLResponse:
       }
       return rankLocationRowsForPrint(rows);
     }
-    let printLocalLookupGen = 0;
-    let printLocalDebounceTimer = null;
-    async function resolvePrintItemFromLocal(showEmptyMsg) {
-      const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+    async function resolvePrintItemFromLocal(side, showEmptyMsg) {
+      const s = printSideKey(side);
+      const st = printSides[s];
+      const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
       if (!raw) {
-        if (showEmptyMsg) setPrintFetchStatus('اكتب رقم الصنف أو الباركود.');
+        if (showEmptyMsg) setPrintFetchStatus('اكتب رقم الصنف أو الباركود.', s);
         return false;
       }
-      const gen = ++printLocalLookupGen;
-      setPrintFetchStatus('بحث في قاعدة المواقع...');
+      const gen = ++st.lookupGen;
+      setPrintFetchStatus('بحث في قاعدة المواقع...', s);
       try {
         const rows = await lookupLocalLocationsForPrint(raw);
-        if (gen !== printLocalLookupGen) return false;
+        if (gen !== st.lookupGen) return false;
         if (rows.length) {
-          return applyPrintLookupRows(rows, `من قاعدة المواقع · ${rows.length}`);
+          return applyPrintLookupRows(s, rows, `من قاعدة المواقع · ${rows.length}`);
         }
-        printBarcodeRows = [];
-        printBarcodeItem = null;
-        const card = document.getElementById('printPreviewCard');
-        if (card) card.style.display = 'none';
-        const wrap = document.getElementById('printOriginalWrap');
-        if (wrap) wrap.style.display = 'none';
+        clearPrintSidePreview(s);
         if (showEmptyMsg) {
-          setPrintFetchStatus('مش موجود بقاعدة المواقع — اضغط «جلب هذا الصنف» من حساباتي.');
+          setPrintFetchStatus('مش موجود بقاعدة المواقع — اضغط «جلب» من حساباتي.', s);
         } else {
-          setPrintFetchStatus('');
+          setPrintFetchStatus('', s);
         }
         return false;
       } catch (err) {
-        if (gen !== printLocalLookupGen) return false;
+        if (gen !== st.lookupGen) return false;
         if (showEmptyMsg) {
-          setPrintFetchStatus((err && err.message) || 'تعذر البحث في قاعدة المواقع.');
+          setPrintFetchStatus((err && err.message) || 'تعذر البحث في قاعدة المواقع.', s);
         }
         return false;
       }
     }
-    function schedulePrintLocalLookup() {
-      clearTimeout(printLocalDebounceTimer);
-      printLocalDebounceTimer = setTimeout(() => {
-        const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+    function schedulePrintLocalLookup(side) {
+      const s = printSideKey(side);
+      const st = printSides[s];
+      clearTimeout(st.debounce);
+      st.debounce = setTimeout(() => {
+        const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
         if (!raw || raw.length < 2) {
-          printBarcodeRows = [];
-          printBarcodeItem = null;
-          const card = document.getElementById('printPreviewCard');
-          if (card) card.style.display = 'none';
-          setPrintFetchStatus('');
+          clearPrintSidePreview(s);
+          setPrintFetchStatus('', s);
           return;
         }
-        resolvePrintItemFromLocal(false);
+        resolvePrintItemFromLocal(s, false);
       }, 280);
     }
-    async function fetchItemForBarcodePrint() {
-      const raw = ((document.getElementById('printQueryInput') || {}).value || '').trim();
+    async function fetchItemForBarcodePrint(side) {
+      const s = printSideKey(side);
+      const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
       if (!raw) {
-        setPrintFetchStatus('اكتب رقم الصنف أو الباركود ثم اضغط جلب.');
+        setPrintFetchStatus('اكتب رقم الصنف أو الباركود ثم اضغط جلب.', s);
         return;
       }
-      const btn = document.getElementById('printFetchBtn');
+      const btn = document.getElementById('printFetchBtn' + printSideCap(s));
       if (btn) btn.disabled = true;
       try {
-        // أولاً قاعدة المواقع المحلية — بدون جلب من حساباتي إن وُجد
-        setPrintFetchStatus('بحث في قاعدة المواقع...');
+        setPrintFetchStatus('بحث في قاعدة المواقع...', s);
         const localRows = await lookupLocalLocationsForPrint(raw);
         if (localRows.length) {
-          applyPrintLookupRows(localRows, `من قاعدة المواقع · ${localRows.length}`);
+          applyPrintLookupRows(s, localRows, `من قاعدة المواقع · ${localRows.length}`);
           return;
         }
         const { barcode, q } = splitPrintQuery(raw);
-        setPrintFetchStatus('غير موجود محلياً — جاري الجلب من حساباتي...');
+        setPrintFetchStatus('غير موجود محلياً — جاري الجلب من حساباتي...', s);
         const t0 = performance.now();
         let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
         let cacheRows = Array.isArray(live && live.rows) ? live.rows : [];
@@ -8449,20 +8498,21 @@ def home() -> HTMLResponse:
         const uiMs = Math.round(performance.now() - t0);
         const timingLine = formatLookupTiming(live, uiMs);
         if (!live || live.ok === false) {
-          applyPrintLookupRows([], (live && live.message) || 'تعذر جلب الصنف.');
+          applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
           return;
         }
         if (live.usage) renderHesabateUsage(live.usage, live.message || '');
         applyHesabateSearchVersion(live);
         if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
-          applyPrintLookupRows([], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
+          applyPrintLookupRows(s, [], 'هذا الصنف مش داخل على حساباتي' + (timingLine ? ` | ${timingLine}` : ''));
           return;
         }
         if (!apiRows.length) {
-          applyPrintLookupRows([], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
+          applyPrintLookupRows(s, [], (live.message || 'هذا الصنف مش داخل على حساباتي') + (timingLine ? ` | ${timingLine}` : ''));
           return;
         }
         applyPrintLookupRows(
+          s,
           apiRows,
           `${live.message || `تم جلب ${apiRows.length} صنف`} | ${timingLine}`
         );
@@ -8470,10 +8520,27 @@ def home() -> HTMLResponse:
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
         else if (err && err.message) hint = String(err.message);
-        applyPrintLookupRows([], hint);
+        applyPrintLookupRows(s, [], hint);
       } finally {
         if (btn) btn.disabled = false;
       }
+    }
+    function buildPrintPayloadForSide(side) {
+      const s = printSideKey(side);
+      const cap = printSideCap(s);
+      const st = printSides[s];
+      const sel = document.getElementById('printOriginalSelect' + cap);
+      const chosen = sel && sel.value ? sel.value : '';
+      const row = pickPrintRowForOriginal(st.rows, chosen) || st.item;
+      if (!row) return null;
+      const name = getPrintName(s) || String(row.item_name || '').trim() || '—';
+      const original = chosen || String(row.original_number || '').trim() || '—';
+      const location = String(row.location || '').trim() || '—';
+      const barcode = String(row.barcode || '').trim()
+        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((x) => x.trim()).filter(Boolean)[0]
+        || '';
+      if (!barcode) return { error: 'no-barcode', side: s };
+      return { name, original, location, barcode };
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
@@ -8542,27 +8609,33 @@ def home() -> HTMLResponse:
       return label;
     }
     async function printBarcodeLabels() {
-      if (!printBarcodeItem && !(printBarcodeRows && printBarcodeRows.length)) {
-        const ok = await resolvePrintItemFromLocal(true);
-        if (!ok) return;
-      }
       const { qty, pages } = updatePrintQtyHint();
-      const sel = document.getElementById('printOriginalSelect');
-      const chosen = sel && sel.value ? sel.value : '';
-      const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
-      if (!row) {
-        setPrintFetchStatus('لا يوجد صنف للطباعة — تأكد أنه موجود بقاعدة المواقع أو اجلبه.');
+      const needLeft = qty >= 1;
+      const needRight = qty >= 2;
+      if (needLeft && !printSides.left.item && !(printSides.left.rows && printSides.left.rows.length)) {
+        const ok = await resolvePrintItemFromLocal('left', true);
+        if (!ok) {
+          setPrintFetchStatus('جهّز صنف اليسار أولاً.');
+          return;
+        }
+      }
+      if (needRight && !printSides.right.item && !(printSides.right.rows && printSides.right.rows.length)) {
+        const ok = await resolvePrintItemFromLocal('right', true);
+        if (!ok) {
+          setPrintFetchStatus('جهّز صنف اليمين أولاً (أو ضع الكمية = 1 لليسار فقط).');
+          return;
+        }
+      }
+      const payloadLeft = needLeft ? buildPrintPayloadForSide('left') : null;
+      const payloadRight = needRight ? buildPrintPayloadForSide('right') : null;
+      if (needLeft && (!payloadLeft || payloadLeft.error === 'no-barcode')) {
+        setPrintFetchStatus('لا يوجد باركود لصنف اليسار.', 'left');
+        setPrintFetchStatus('لا يوجد باركود لصنف اليسار.');
         return;
       }
-      const nameLeft = getPrintNameLeft() || String(row.item_name || '').trim() || '—';
-      const nameRight = getPrintNameRight() || String(row.item_name || '').trim() || '—';
-      const original = chosen || String(row.original_number || '').trim() || '—';
-      const location = String(row.location || '').trim() || '—';
-      const barcode = String(row.barcode || '').trim()
-        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((s) => s.trim()).filter(Boolean)[0]
-        || '';
-      if (!barcode) {
-        setPrintFetchStatus('لا يوجد باركود لهذا الصنف للطباعة.');
+      if (needRight && (!payloadRight || payloadRight.error === 'no-barcode')) {
+        setPrintFetchStatus('لا يوجد باركود لصنف اليمين.', 'right');
+        setPrintFetchStatus('لا يوجد باركود لصنف اليمين.');
         return;
       }
       try {
@@ -8580,9 +8653,7 @@ def home() -> HTMLResponse:
       }
       sheet.className = 'print-label-sheet print-measure';
       sheet.innerHTML = '';
-      const payloadLeft = { name: nameLeft, original, location, barcode };
-      const payloadRight = { name: nameRight, original, location, barcode };
-      // كمية واحدة مشتركة · يسار/يمين بأسماء منفصلة · عدد الأوراق = ceil(qty/2)
+      // كمية مشتركة · كل جهة صنف مستقل · الأوراق = ceil(qty/2)
       for (let page = 0; page < pages; page++) {
         const rowEl = document.createElement('div');
         rowEl.className = 'print-label-row';
@@ -8604,12 +8675,13 @@ def home() -> HTMLResponse:
         }
       }
       sheet.className = 'print-label-sheet';
+      const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
         `جاهز · ${qty} حبة = ${pages} ورقة · Code128 · «${RONGTA_PRINTER_NAME}» · 120×25 مم · مقياس 100%`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       printJobTitleRestore = document.title;
-      document.title = `Barcode-${barcode} · ${RONGTA_PRINTER_NAME}`;
+      document.title = `Barcode-${titleCode} · ${RONGTA_PRINTER_NAME}`;
       const restoreTitle = () => {
         document.body.classList.remove('printing-labels');
         if (printJobTitleRestore != null) {
@@ -11393,11 +11465,13 @@ def home() -> HTMLResponse:
       }
       refreshHesabateStatus();
 
-      const printQueryInput = document.getElementById('printQueryInput');
-      if (printQueryInput) {
-        printQueryInput.addEventListener('input', () => {
-          schedulePrintLocalLookup();
-        });
+      const printQueryLeft = document.getElementById('printQueryLeft');
+      const printQueryRight = document.getElementById('printQueryRight');
+      if (printQueryLeft) {
+        printQueryLeft.addEventListener('input', () => schedulePrintLocalLookup('left'));
+      }
+      if (printQueryRight) {
+        printQueryRight.addEventListener('input', () => schedulePrintLocalLookup('right'));
       }
 
       queryInput.addEventListener('input', () => {
