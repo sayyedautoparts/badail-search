@@ -7037,7 +7037,7 @@ def home() -> HTMLResponse:
         min-height: 0;
         width: 100%;
         max-width: 100%;
-        font-size: 24px;
+        font-size: 28px;
         font-weight: 900;
         margin: 0;
         line-height: 1.05;
@@ -7106,8 +7106,8 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 9px;
-        font-weight: 800;
+        font-size: 8px;
+        font-weight: 900;
         letter-spacing: .02em;
         margin: 0;
         padding: 0 0.2mm;
@@ -8540,19 +8540,18 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— نمط خط باركود للطباعة الحرارية (Rongta 203dpi) ——
-      // CODE128 مع الفراغات · وحدة قياس ثابتة بالنقاط (مش تمديد CSS) · يمين=يسار
+      // —— باركود أصغر (ارتفاع+عرض) + أعمدة bold · اسم الصنف يأخذ المساحة ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      const usableMm = 54;
-      // باركود أقصر ليفسح مجال لاسم الصنف الأكبر
-      const heightMm = 9.2;
+      // أصغر عرضاً من عرض اللزقة الكامل
+      const usableMm = 46;
+      const heightMm = 7.5;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(56, Math.round(heightMm * dotsPerMm));
-      // نمط قياسي: عمود ≈ 0.33مم (3 نقاط) · quiet zone ≈ 10 وحدات
-      const TARGET_MODULE_DOTS = 3;
-      const MIN_MODULE_DOTS = 2;
-      const quietTries = [10, 8, 6];
+      const heightDots = Math.max(48, Math.round(heightMm * dotsPerMm));
+      // أعمدة أثقل (bold) مع بقاء الحجم الكلي أصغر
+      const TARGET_MODULE_DOTS = 4;
+      const MIN_MODULE_DOTS = 3;
+      const quietTries = [8, 6, 5];
 
       function probeUnits(quietMods) {
         const probe = document.createElement('canvas');
@@ -8584,7 +8583,6 @@ def home() -> HTMLResponse:
         const probed = probeUnits(quietMods);
         if (!probed || !probed.units) continue;
         let moduleDots = TARGET_MODULE_DOTS;
-        // إن ما دخل اللزقة بالنمط القياسي: قلّل الـ quiet ثم الوحدة لـ 2 نقاط
         if (probed.units * moduleDots > usableDots) {
           if (i < quietTries.length - 1) continue;
           moduleDots = Math.max(
@@ -8622,9 +8620,8 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width) return false;
 
-      // اطبع بنمط النقاط كما هو — بدون ضغط أفقي يغيّر شكل الخط
-      const widthMm = canvas.width / dotsPerMm;
-      const printHmm = canvas.height / dotsPerMm;
+      const widthMm = Math.min(usableMm, canvas.width / dotsPerMm);
+      const printHmm = heightMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = value;
@@ -8646,12 +8643,13 @@ def home() -> HTMLResponse:
       el.textContent = display;
       el.style.whiteSpace = 'pre';
       const n = display.length;
-      let px = 9;
-      if (n > 16) px = 8;
-      if (n > 22) px = 7;
-      if (n > 28) px = 6.2;
-      if (n > 34) px = 5.5;
+      let px = 8;
+      if (n > 16) px = 7;
+      if (n > 22) px = 6.2;
+      if (n > 28) px = 5.5;
+      if (n > 34) px = 5;
       el.style.fontSize = px + 'px';
+      el.style.fontWeight = '900';
     }
     function getPrintQty() {
       const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
@@ -9034,8 +9032,8 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 30;
-      const minPx = 10;
+      const maxPx = 36;
+      const minPx = 12;
       // يملأ المساحة فوق الموقع/الأصلي: wrap + تكبير/تصغير حسب ارتفاع الورقة المتاح
       el.style.display = 'block';
       el.style.whiteSpace = 'normal';
