@@ -8295,20 +8295,24 @@ def home() -> HTMLResponse:
       const el = document.getElementById('printFetchStatus');
       if (el) el.textContent = msg || '';
     }
-    function normalizePrintBarcodeEncodeValue(code) {
-      // مسافات طويلة مثل «93490D4220        IL26» تدمج الأعمدة عند التصغير — الشفرة بدون مسافات تبقى مقروءة
+    function normalizePrintBarcodeEncodeValue(code, collapseSpaces) {
+      // أبقِ المسافات بين الأرقام/الأحرف — الماسح لازم يرجعها مع الباركود
       let s = lightSanitizeBarcodeValue(code);
       if (!s) return '';
       try { s = translateDigitsLatinJs(s); } catch (_) {}
-      s = String(s).replace(/[\s\u00A0\u2000-\u200B\u202F\u205F\u3000]+/g, '');
-      s = s.replace(/[^A-Za-z0-9\-._]/g, '');
+      // وحّد أنواع المسافات فقط (لا تحذفها)
+      s = String(s).replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ');
+      s = s.replace(/[^A-Za-z0-9\-._ ]+/g, '');
+      s = s.replace(/^ +| +$/g, '');
+      if (collapseSpaces) {
+        // احتياط للعرض الطويل جداً: مسافة واحدة بين المقاطع مع الإبقاء على الفراغ
+        s = s.replace(/ {2,}/g, ' ');
+      }
       return s;
     }
     function formatPrintBarcodeDisplayText(code) {
-      // النص تحت الباركود: اضغط المسافات المتكررة لفراغ واحد فقط (للقراءة)
-      const s = lightSanitizeBarcodeValue(code);
-      if (!s) return '';
-      return s.replace(/[\s\u00A0]+/g, ' ').trim();
+      // نفس قيمة الشفرة المعروضة/الممسوحة (مع المسافات)
+      return normalizePrintBarcodeEncodeValue(code, false) || lightSanitizeBarcodeValue(code);
     }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
@@ -8344,12 +8348,12 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
-      const value = normalizePrintBarcodeEncodeValue(code);
+      // أولاً: المسافات كما هي؛ إن طال جداً نضغط المسافات المتكررة لمسافة واحدة (تبقى موجودة)
+      let value = normalizePrintBarcodeEncodeValue(code, false);
       if (!value) return false;
       svgEl.style.transform = '';
       const wrap = svgEl.parentElement;
       const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 200);
-      let moduleW = estimatePrintBarcodeModuleWidth(value);
       const minModule = 0.85; // تحتها الأعمدة تندمج ويفشل الماسح
       const base = Object.assign({
         format: 'CODE128',
@@ -8358,26 +8362,45 @@ def home() -> HTMLResponse:
         marginTop: 0,
         marginBottom: 0
       }, opts || {});
-      let ok = false;
-      for (let i = 0; i < 14; i++) {
-        ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: moduleW }));
-        if (!ok) return false;
-        let bw = 0;
-        try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
-        if (!bw || bw <= maxW + 0.8) {
-          svgEl.style.transform = '';
-          return true;
+      const tryFit = (encodeValue) => {
+        let moduleW = estimatePrintBarcodeModuleWidth(encodeValue);
+        let ok = false;
+        for (let i = 0; i < 14; i++) {
+          ok = renderPrintBarcodeSvg(svgEl, encodeValue, Object.assign({}, base, { width: moduleW }));
+          if (!ok) return false;
+          let bw = 0;
+          try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
+          if (!bw || bw <= maxW + 0.8) {
+            svgEl.style.transform = '';
+            return true;
+          }
+          const next = moduleW * (maxW / bw) * 0.98;
+          if (next < minModule) {
+            ok = renderPrintBarcodeSvg(svgEl, encodeValue, Object.assign({}, base, { width: minModule }));
+            svgEl.style.transform = '';
+            try {
+              const bb = svgEl.getBBox().width;
+              // إن لسه أطول من اللزقة — اعتبرها غير مناسبة لهذه الصيغة
+              return !!(ok && bb && bb <= maxW + 1.5);
+            } catch (_) {
+              return ok;
+            }
+          }
+          moduleW = next;
         }
-        const next = moduleW * (maxW / bw) * 0.98;
-        if (next < minModule) {
-          // لا نصغّر تحت الحد المقروء — نرسم بالحد الأدنى بدون scale يدمّر الأعمدة
-          ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
-          svgEl.style.transform = '';
-          return ok;
-        }
-        moduleW = next;
+        return ok;
+      };
+      if (tryFit(value)) return true;
+      const collapsed = normalizePrintBarcodeEncodeValue(code, true);
+      if (collapsed && collapsed !== value && tryFit(collapsed)) {
+        // تبقى مسافة واحدة على الأقل بين المقاطع
+        return true;
       }
-      return ok;
+      // آخر محاولة: ارسم مع المسافات المضغوطة بالحد الأدنى المقروء
+      const fallback = collapsed || value;
+      renderPrintBarcodeSvg(svgEl, fallback, Object.assign({}, base, { width: minModule }));
+      svgEl.style.transform = '';
+      return true;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
