@@ -7773,6 +7773,9 @@ def home() -> HTMLResponse:
       left: { item: null, rows: [], lookupGen: 0, debounce: null },
       right: { item: null, rows: [], lookupGen: 0, debounce: null }
     };
+    const PRINT_FORM_STORAGE_KEY = 'printBarcodeFormState';
+    let printFormSaveTimer = null;
+    let printFormRestoreBusy = false;
     let printJobTitleRestore = null;
     function printSideKey(side) {
       return side === 'right' ? 'right' : 'left';
@@ -7872,8 +7875,22 @@ def home() -> HTMLResponse:
         if (locWrap) locWrap.style.display = 'none';
         if (locTable) locTable.style.display = 'none';
         setStats('');
+        // أعد آخر قيم/معاينة إن فُقدت (تحديث صفحة أو غياب الحالة)
+        try {
+          const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
+          const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
+          const need =
+            (!leftQ && !rightQ)
+            || (leftQ && !printSides.left.item && !(printSides.left.rows && printSides.left.rows.length))
+            || (rightQ && !printSides.right.item && !(printSides.right.rows && printSides.right.rows.length));
+          if (need) restorePrintFormState().catch(() => {});
+        } catch (_) {
+          restorePrintFormState().catch(() => {});
+        }
         return;
       }
+      // احفظ حقول الطباعة قبل مغادرة التبويب
+      try { savePrintFormState(); } catch (_) {}
       if (activeSearchTab !== 'location') {
         try { clearLocationTable(null); } catch (_) {}
       }
@@ -8760,6 +8777,95 @@ def home() -> HTMLResponse:
         el.value = sanitizePrintItemName(String(name || '').trim());
         el.dataset.fromFetch = '1';
       }
+      scheduleSavePrintFormState();
+    }
+    function collectPrintFormState() {
+      const sideState = (side) => {
+        const cap = printSideCap(side);
+        const q = document.getElementById('printQuery' + cap);
+        const n = document.getElementById('printName' + cap);
+        const sel = document.getElementById('printOriginalSelect' + cap);
+        return {
+          query: q ? String(q.value || '') : '',
+          name: n ? String(n.value || '') : '',
+          fromFetch: n && n.dataset.fromFetch === '1' ? '1' : '0',
+          original: sel ? String(sel.value || '') : ''
+        };
+      };
+      const qtyEl = document.getElementById('printQtyInput');
+      return {
+        left: sideState('left'),
+        right: sideState('right'),
+        qty: qtyEl ? String(qtyEl.value || '1') : '1',
+        savedAt: Date.now()
+      };
+    }
+    function savePrintFormState() {
+      try {
+        localStorage.setItem(PRINT_FORM_STORAGE_KEY, JSON.stringify(collectPrintFormState()));
+      } catch (_) {}
+    }
+    function scheduleSavePrintFormState() {
+      if (printFormRestoreBusy) return;
+      clearTimeout(printFormSaveTimer);
+      printFormSaveTimer = setTimeout(savePrintFormState, 200);
+    }
+    async function restorePrintFormState() {
+      if (printFormRestoreBusy) return;
+      let data = null;
+      try {
+        const raw = localStorage.getItem(PRINT_FORM_STORAGE_KEY);
+        data = raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        data = null;
+      }
+      if (!data || typeof data !== 'object') return;
+      printFormRestoreBusy = true;
+      try {
+        const qtyEl = document.getElementById('printQtyInput');
+        if (qtyEl && data.qty != null && String(data.qty).trim()) {
+          qtyEl.value = String(data.qty);
+        }
+        for (const side of ['left', 'right']) {
+          const st = data[side] || {};
+          const cap = printSideCap(side);
+          const qEl = document.getElementById('printQuery' + cap);
+          const nEl = document.getElementById('printName' + cap);
+          if (qEl && st.query != null) qEl.value = String(st.query);
+          if (nEl) {
+            if (st.name != null) nEl.value = String(st.name);
+            nEl.dataset.fromFetch = st.fromFetch === '1' ? '1' : '0';
+          }
+        }
+        for (const side of ['left', 'right']) {
+          const st = data[side] || {};
+          const q = String(st.query || '').trim();
+          if (!q) continue;
+          const ok = await resolvePrintItemFromLocal(side, false);
+          if (ok && st.original) {
+            const sel = document.getElementById('printOriginalSelect' + printSideCap(side));
+            if (sel) {
+              const opts = Array.from(sel.options).map((o) => o.value);
+              if (opts.indexOf(st.original) >= 0) {
+                sel.value = st.original;
+                updatePrintBarcodePreview(side, false);
+              }
+            }
+          }
+          if (st.name != null && String(st.name).trim()) {
+            const nEl = document.getElementById('printName' + printSideCap(side));
+            if (nEl) {
+              nEl.value = String(st.name);
+              nEl.dataset.fromFetch = st.fromFetch === '1' ? '1' : '0';
+              refreshPrintNamePreview(side);
+            }
+          }
+        }
+        updatePrintDualPreviewSlots();
+        savePrintFormState();
+      } finally {
+        printFormRestoreBusy = false;
+      }
     }
     function refreshPrintNamePreview(side) {
       const sides = side ? [printSideKey(side)] : ['left', 'right'];
@@ -8767,6 +8873,7 @@ def home() -> HTMLResponse:
         const nameEl = document.getElementById('printPvName' + printSideCap(s));
         if (nameEl) nameEl.textContent = getPrintName(s) || '—';
       });
+      scheduleSavePrintFormState();
     }
     function updatePrintDualPreviewSlots() {
       updatePrintQtyHint();
@@ -8870,6 +8977,7 @@ def home() -> HTMLResponse:
       st.item = pickPrintRowForOriginal(st.rows, (sel && sel.value) || originals[0] || '');
       setPrintFetchStatus(message || `تم تجهيز الصنف · ${st.rows.length}`, s);
       updatePrintBarcodePreview(s, !!forceNameFromRow);
+      scheduleSavePrintFormState();
       return true;
     }
     function rankLocationRowsForPrint(rawRows) {
@@ -8959,14 +9067,17 @@ def home() -> HTMLResponse:
       }
     }
     function schedulePrintLocalLookup(side) {
+      if (printFormRestoreBusy) return;
       const s = printSideKey(side);
       const st = printSides[s];
       clearTimeout(st.debounce);
+      scheduleSavePrintFormState();
       st.debounce = setTimeout(() => {
         const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
         if (!raw || raw.length < 2) {
           clearPrintSidePreview(s);
           setPrintFetchStatus('', s);
+          scheduleSavePrintFormState();
           return;
         }
         resolvePrintItemFromLocal(s, false);
@@ -9340,6 +9451,7 @@ def home() -> HTMLResponse:
         `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 106×28 مم`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
+      try { savePrintFormState(); } catch (_) {}
       printJobTitleRestore = document.title;
       document.title = `Barcode-${titleCode} · ${RONGTA_PRINTER_NAME}`;
       const restoreTitle = () => {
@@ -12136,6 +12248,27 @@ def home() -> HTMLResponse:
       if (printQueryRight) {
         printQueryRight.addEventListener('input', () => schedulePrintLocalLookup('right'));
       }
+      const printNameLeft = document.getElementById('printNameLeft');
+      const printNameRight = document.getElementById('printNameRight');
+      if (printNameLeft) {
+        printNameLeft.addEventListener('input', () => {
+          printNameLeft.dataset.fromFetch = '0';
+          refreshPrintNamePreview('left');
+        });
+      }
+      if (printNameRight) {
+        printNameRight.addEventListener('input', () => {
+          printNameRight.dataset.fromFetch = '0';
+          refreshPrintNamePreview('right');
+        });
+      }
+      const printQtyInput = document.getElementById('printQtyInput');
+      if (printQtyInput) {
+        printQtyInput.addEventListener('input', () => scheduleSavePrintFormState());
+        printQtyInput.addEventListener('change', () => scheduleSavePrintFormState());
+      }
+      // استرجاع آخر طباعة/قيم مكتوبة بعد تحديث الصفحة
+      restorePrintFormState().catch(() => {});
 
       queryInput.addEventListener('input', () => {
         clearTimeout(searchDebounceTimer);
