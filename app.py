@@ -7034,10 +7034,8 @@ def home() -> HTMLResponse:
         font-family: "Segoe UI", Arial, Tahoma, sans-serif;
         color: #000;
         overflow: hidden !important;
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        justify-content: flex-start;
+        position: relative;
+        display: block;
       }
       .print-label-row .print-label:first-child,
       .print-label.print-label-left,
@@ -7049,66 +7047,48 @@ def home() -> HTMLResponse:
       .print-label.print-label-empty {
         visibility: hidden;
       }
+      .print-label .pl-name,
+      .print-label .pl-orig,
+      .print-label .pl-loc,
+      .print-label .pl-bc-wrap {
+        position: absolute;
+        box-sizing: border-box;
+        overflow: hidden !important;
+        margin: 0;
+        padding: 0;
+      }
       .print-label .pl-name {
-        flex: 1 1 auto;
-        min-height: 0;
-        width: 100%;
-        max-width: 100%;
         font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
         font-size: 22px;
         font-weight: 900;
-        margin: 0;
-        padding: 0;
         line-height: 1.02;
         letter-spacing: -0.01em;
-        overflow: hidden !important;
         white-space: normal !important;
         word-break: break-word;
         overflow-wrap: anywhere;
         text-align: center;
         align-content: center;
       }
-      .print-label .pl-meta {
-        flex: 0 0 auto;
-        display: flex;
-        flex-direction: row;
-        direction: ltr;
-        justify-content: center;
-        align-items: center;
-        gap: 1.5mm;
+      .print-label .pl-orig,
+      .print-label .pl-loc {
         font-family: "Segoe UI", Arial, Tahoma, sans-serif;
         font-size: 8px;
         font-weight: 800;
-        margin: 0 auto 0.3mm;
-        max-height: 2.4mm;
-        overflow: hidden !important;
-        white-space: nowrap;
-        width: 100%;
-        text-align: center;
-      }
-      .print-label .pl-meta span {
-        flex: 0 1 auto;
-        min-width: 0;
-        max-width: 48%;
-        overflow: hidden !important;
-        text-overflow: ellipsis;
         white-space: nowrap;
         text-align: center;
         direction: ltr;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
+      .print-label .pl-meta { display: none !important; }
       .print-label .pl-bc-wrap {
-        flex: 0 0 auto;
-        overflow: hidden;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
         gap: 0.1mm;
         padding: 0 0.3mm;
-        margin: 0;
-        width: 100%;
-        max-width: 100%;
-        box-sizing: border-box;
       }
       .print-label .pl-bc-wrap svg,
       .print-label .pl-bc-wrap img.pl-bc {
@@ -7171,8 +7151,8 @@ def home() -> HTMLResponse:
       padding: 0.4mm 0.7mm 0.25mm;
       margin: 0;
       overflow: hidden;
-      display: flex;
-      flex-direction: column;
+      position: relative;
+      display: block;
       font-family: "Segoe UI", Arial, Tahoma, sans-serif;
     }
     .print-label-sheet.print-measure .print-label-row .print-label:first-child,
@@ -7182,44 +7162,40 @@ def home() -> HTMLResponse:
       margin: 0;
       padding: 0.4mm 0.7mm 0.25mm;
     }
-    .print-label-sheet.print-measure .pl-name {
-      flex: 1 1 auto;
-      min-height: 0;
+    .print-label-sheet.print-measure .pl-name,
+    .print-label-sheet.print-measure .pl-orig,
+    .print-label-sheet.print-measure .pl-loc,
+    .print-label-sheet.print-measure .pl-bc-wrap {
+      position: absolute;
+      box-sizing: border-box;
       overflow: hidden;
+      margin: 0;
+    }
+    .print-label-sheet.print-measure .pl-name {
       font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
       font-weight: 900;
       line-height: 1.02;
-      width: 100%;
       white-space: normal;
       word-break: break-word;
       overflow-wrap: anywhere;
+      text-align: center;
     }
-    .print-label-sheet.print-measure .pl-meta {
-      flex: 0 0 auto;
-      display: flex;
-      direction: ltr;
-      justify-content: center;
-      gap: 1.5mm;
-      max-height: 2.4mm;
-      margin: 0 auto 0.3mm;
-      overflow: hidden;
-      white-space: nowrap;
-      width: 100%;
-      font-size: 8px;
+    .print-label-sheet.print-measure .pl-orig,
+    .print-label-sheet.print-measure .pl-loc {
       font-weight: 800;
+      white-space: nowrap;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
+    .print-label-sheet.print-measure .pl-meta { display: none !important; }
     .print-label-sheet.print-measure .pl-bc-wrap {
-      flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: flex-end;
-      width: 100%;
-      max-width: 100%;
-      margin: 0;
       padding: 0 0.3mm;
-      overflow: hidden;
-      box-sizing: border-box;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg,
     .print-label-sheet.print-measure .pl-bc-wrap img.pl-bc {
@@ -7313,8 +7289,6 @@ def home() -> HTMLResponse:
       box-sizing: border-box;
       background: #fff;
       border: 1.5px solid #1a2744;
-      display: flex;
-      flex-direction: column;
       overflow: hidden;
       box-shadow: 0 1px 0 rgba(0,0,0,.06);
     }
@@ -7322,7 +7296,7 @@ def home() -> HTMLResponse:
       position: absolute;
       top: 2px;
       left: 3px;
-      z-index: 3;
+      z-index: 8;
       font-size: 9px;
       font-weight: 800;
       color: #5b667a;
@@ -7331,19 +7305,21 @@ def home() -> HTMLResponse:
     }
     .print-designer-label[data-side="right"] .pdg-side-tag { left: auto; right: 3px; }
     .pdg-zone {
-      position: relative;
+      position: absolute;
       box-sizing: border-box;
-      width: 100%;
       overflow: hidden;
-      flex: 0 0 auto;
-      border-bottom: 1px dotted rgba(45,95,255,.35);
+      border: 1px solid rgba(45,95,255,.45);
+      background: rgba(255,255,255,.92);
+      cursor: grab;
+      z-index: 2;
     }
-    .pdg-zone[data-zone="bc"] { border-bottom: none; }
     .pdg-zone.is-active {
       outline: 2px solid #2d5fff;
-      outline-offset: -2px;
-      background: rgba(45,95,255,.04);
+      outline-offset: -1px;
+      background: rgba(45,95,255,.07);
+      z-index: 4;
     }
+    .pdg-zone.is-dragging { cursor: grabbing; z-index: 6; }
     .pdg-zone-inner {
       width: 100%;
       height: 100%;
@@ -7357,6 +7333,7 @@ def home() -> HTMLResponse:
       font-weight: 800;
       color: #111;
       line-height: 1.05;
+      pointer-events: none;
     }
     .pdg-zone[data-zone="name"] .pdg-zone-inner {
       font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
@@ -7366,26 +7343,10 @@ def home() -> HTMLResponse:
       word-break: break-word;
       overflow-wrap: anywhere;
     }
-    .pdg-zone[data-zone="meta"] .pdg-zone-inner {
-      display: flex;
-      flex-direction: row;
-      direction: ltr;
-      gap: 0;
-      padding: 0;
-    }
-    .pdg-meta-part {
-      height: 100%;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-sizing: border-box;
-      padding: 0 2px;
+    .pdg-zone[data-zone="orig"] .pdg-zone-inner,
+    .pdg-zone[data-zone="loc"] .pdg-zone-inner {
       white-space: nowrap;
-      font-weight: 800;
     }
-    .pdg-meta-part.orig { border-left: none; }
-    .pdg-meta-part.loc { border-right: none; }
     .pdg-zone[data-zone="bc"] .pdg-zone-inner {
       flex-direction: column;
       justify-content: flex-end;
@@ -7414,52 +7375,19 @@ def home() -> HTMLResponse:
       max-width: 100%;
       overflow: hidden;
     }
-    .pdg-handle-h {
+    .pdg-resize {
       position: absolute;
-      left: 8%;
-      right: 8%;
-      height: 10px;
-      margin-top: -5px;
-      cursor: ns-resize;
-      z-index: 5;
-      background: transparent;
-    }
-    .pdg-handle-h::after {
-      content: "";
-      position: absolute;
-      left: 20%;
-      right: 20%;
-      top: 3px;
-      height: 4px;
-      border-radius: 3px;
+      right: -4px;
+      bottom: -4px;
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
       background: #2d5fff;
-      opacity: .55;
+      border: 1px solid #fff;
+      cursor: nwse-resize;
+      z-index: 7;
+      box-shadow: 0 0 0 1px rgba(0,0,0,.15);
     }
-    .pdg-handle-h:hover::after,
-    .pdg-handle-h.is-dragging::after { opacity: 1; }
-    .pdg-handle-v {
-      position: absolute;
-      top: 10%;
-      bottom: 10%;
-      width: 10px;
-      margin-left: -5px;
-      cursor: ew-resize;
-      z-index: 5;
-      background: transparent;
-    }
-    .pdg-handle-v::after {
-      content: "";
-      position: absolute;
-      top: 15%;
-      bottom: 15%;
-      left: 3px;
-      width: 4px;
-      border-radius: 3px;
-      background: #178a4d;
-      opacity: .55;
-    }
-    .pdg-handle-v:hover::after,
-    .pdg-handle-v.is-dragging::after { opacity: 1; }
     .pdg-zone-label {
       position: absolute;
       top: 1px;
@@ -7826,8 +7754,8 @@ def home() -> HTMLResponse:
           <div class="print-designer-body">
             <p class="print-designer-hint">
               الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
-              اسحب الخطوط الزرقاء (ارتفاع الاسم / الموقع / الباركود) والخط الأخضر (عرض الأصلي مقابل الموقع).
-              الحجم اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر تلقائياً جوّا مساحتو عشان ما يطلع برا ويكون مقروء.
+              <strong>اسحب</strong> الاسم أو الأصلي أو الموقع أو الباركود لنقلهم، و<strong>زاوية الزرقا</strong> لتكبير/تصغير الصندوق.
+              اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي</button>
@@ -8901,10 +8829,13 @@ def home() -> HTMLResponse:
       const dotsPerMm = DPI / 25.4;
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings()
-        : { bcHeightMm: 9 };
-      const usableMm = 45;
+        : { bcHmm: 9.1, bcWmm: 45, bcHeightMm: 9.1 };
+      const usableMm = Math.max(20, Math.min(48, Number(layoutS.bcWmm || layoutS.bcWidthMm || 45) - 1));
       // مساحة الباركود ≈ 78% من ارتفاع منطقة bc (الباقي لنص الباركود)
-      const heightMm = Math.max(4.5, Math.min(14, Number(layoutS.bcHeightMm || 9) * 0.78));
+      const heightMm = Math.max(
+        4.5,
+        Math.min(14, Number(layoutS.bcHmm || layoutS.bcHeightMm || 9) * 0.78)
+      );
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(40, Math.round(heightMm * dotsPerMm));
       // أعمدة bold واضحة على العرض الأصغر
@@ -9502,11 +9433,30 @@ def home() -> HTMLResponse:
       contentH: 23.8
     };
     const PRINT_DESIGNER_PX_PER_MM = 4.4;
+    const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 1.4;
+    const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH - 0.65;
     const PRINT_LAYOUT_DEFAULTS = {
       namePx: 36,
       originalPx: 9,
       locationPx: 9,
       bcTextPx: 7,
+      nameXmm: 0,
+      nameYmm: 0,
+      nameWmm: 48.6,
+      nameHmm: 11.5,
+      origXmm: 0,
+      origYmm: 11.5,
+      origWmm: 24.0,
+      origHmm: 3.2,
+      locXmm: 24.6,
+      locYmm: 11.5,
+      locWmm: 24.0,
+      locHmm: 3.2,
+      bcXmm: 0,
+      bcYmm: 14.7,
+      bcWmm: 48.6,
+      bcHmm: 9.1,
+      // توافق خلفي مع الإعدادات القديمة
       nameHeightMm: 11.5,
       metaHeightMm: 3.2,
       bcHeightMm: 9.1,
@@ -9514,57 +9464,129 @@ def home() -> HTMLResponse:
       bcShiftXmm: 0,
       bcShiftYmm: 0
     };
+    const PRINT_ZONE_MIN = {
+      name: { w: 12, h: 4 },
+      orig: { w: 6, h: 1.8 },
+      loc: { w: 6, h: 1.8 },
+      bc: { w: 16, h: 5 }
+    };
     function clampPrintNum(n, lo, hi, fallback) {
       const v = Number(n);
       if (!Number.isFinite(v)) return fallback;
       return Math.max(lo, Math.min(hi, v));
     }
-    function normalizePrintZoneHeights(s) {
+    function migrateLegacyPrintLayout(o) {
+      const out = Object.assign({}, o || {});
+      const hasFree = out.nameXmm != null || out.nameWmm != null || out.nameHmm != null;
+      if (hasFree) return out;
+      // ترحيل من نموذج الارتفاعات القديمة إلى صناديق حرة
+      const nameH = clampPrintNum(out.nameHeightMm, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHmm);
+      const metaH = clampPrintNum(out.metaHeightMm, 2, 8, PRINT_LAYOUT_DEFAULTS.origHmm);
+      const bcH = clampPrintNum(out.bcHeightMm, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHmm);
+      const pct = clampPrintNum(out.origWidthPct, 25, 75, 50) / 100;
+      const cw = PRINT_CONTENT_W_MM;
+      out.nameXmm = 0;
+      out.nameYmm = 0;
+      out.nameWmm = cw;
+      out.nameHmm = nameH;
+      out.origXmm = 0;
+      out.origYmm = nameH;
+      out.origWmm = Math.round(cw * pct * 100) / 100;
+      out.origHmm = metaH;
+      out.locXmm = out.origWmm;
+      out.locYmm = nameH;
+      out.locWmm = Math.round((cw - out.origWmm) * 100) / 100;
+      out.locHmm = metaH;
+      out.bcXmm = 0;
+      out.bcYmm = nameH + metaH;
+      out.bcWmm = cw;
+      out.bcHmm = bcH;
+      return out;
+    }
+    function clampPrintBox(box, minW, minH) {
+      const cw = PRINT_CONTENT_W_MM;
+      const ch = PRINT_CONTENT_H_MM;
+      let w = clampPrintNum(box.w, minW, cw, minW);
+      let h = clampPrintNum(box.h, minH, ch, minH);
+      let x = clampPrintNum(box.x, 0, cw - minW, 0);
+      let y = clampPrintNum(box.y, 0, ch - minH, 0);
+      if (x + w > cw) x = Math.max(0, cw - w);
+      if (y + h > ch) y = Math.max(0, ch - h);
+      if (x + w > cw) w = Math.max(minW, cw - x);
+      if (y + h > ch) h = Math.max(minH, ch - y);
+      return {
+        x: Math.round(x * 100) / 100,
+        y: Math.round(y * 100) / 100,
+        w: Math.round(w * 100) / 100,
+        h: Math.round(h * 100) / 100
+      };
+    }
+    function normalizePrintLayoutBoxes(s) {
       const out = Object.assign({}, s);
-      let nameH = clampPrintNum(out.nameHeightMm, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm);
-      let metaH = clampPrintNum(out.metaHeightMm, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm);
-      let bcH = clampPrintNum(out.bcHeightMm, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm);
-      const target = PRINT_SHEET_MM.contentH;
-      let sum = nameH + metaH + bcH;
-      if (sum > 0.1 && Math.abs(sum - target) > 0.05) {
-        const k = target / sum;
-        nameH = Math.round(nameH * k * 100) / 100;
-        metaH = Math.round(metaH * k * 100) / 100;
-        bcH = Math.round((target - nameH - metaH) * 100) / 100;
-      }
-      out.nameHeightMm = clampPrintNum(nameH, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm);
-      out.metaHeightMm = clampPrintNum(metaH, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm);
-      out.bcHeightMm = clampPrintNum(bcH, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm);
-      // إعادة ضبط بسيطة إن تجاوزنا الحدود
-      const sum2 = out.nameHeightMm + out.metaHeightMm + out.bcHeightMm;
-      if (sum2 > target + 0.01) {
-        out.bcHeightMm = Math.max(5, Math.round((target - out.nameHeightMm - out.metaHeightMm) * 100) / 100);
-      }
+      const name = clampPrintBox(
+        { x: out.nameXmm, y: out.nameYmm, w: out.nameWmm, h: out.nameHmm },
+        PRINT_ZONE_MIN.name.w, PRINT_ZONE_MIN.name.h
+      );
+      const orig = clampPrintBox(
+        { x: out.origXmm, y: out.origYmm, w: out.origWmm, h: out.origHmm },
+        PRINT_ZONE_MIN.orig.w, PRINT_ZONE_MIN.orig.h
+      );
+      const loc = clampPrintBox(
+        { x: out.locXmm, y: out.locYmm, w: out.locWmm, h: out.locHmm },
+        PRINT_ZONE_MIN.loc.w, PRINT_ZONE_MIN.loc.h
+      );
+      const bc = clampPrintBox(
+        { x: out.bcXmm, y: out.bcYmm, w: out.bcWmm, h: out.bcHmm },
+        PRINT_ZONE_MIN.bc.w, PRINT_ZONE_MIN.bc.h
+      );
+      out.nameXmm = name.x; out.nameYmm = name.y; out.nameWmm = name.w; out.nameHmm = name.h;
+      out.origXmm = orig.x; out.origYmm = orig.y; out.origWmm = orig.w; out.origHmm = orig.h;
+      out.locXmm = loc.x; out.locYmm = loc.y; out.locWmm = loc.w; out.locHmm = loc.h;
+      out.bcXmm = bc.x; out.bcYmm = bc.y; out.bcWmm = bc.w; out.bcHmm = bc.h;
+      // مفاتيح توافق للباركود الحراري والواجهات القديمة
+      out.nameHeightMm = out.nameHmm;
+      out.metaHeightMm = Math.max(out.origHmm, out.locHmm);
+      out.bcHeightMm = out.bcHmm;
+      out.origWidthPct = clampPrintNum((out.origWmm / Math.max(0.1, out.origWmm + out.locWmm)) * 100, 25, 75, 50);
+      out.bcShiftXmm = clampPrintNum(out.bcShiftXmm, -6, 6, 0);
+      out.bcShiftYmm = clampPrintNum(out.bcShiftYmm, -5, 5, 0);
       return out;
     }
     function getPrintLayoutSettings() {
       try {
         const raw = localStorage.getItem('printLayoutSettings');
-        const o = raw ? JSON.parse(raw) : {};
+        const o = migrateLegacyPrintLayout(raw ? JSON.parse(raw) : {});
         const base = {
           namePx: clampPrintNum(o.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
           originalPx: clampPrintNum(o.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
           locationPx: clampPrintNum(o.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
           bcTextPx: clampPrintNum(o.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
-          nameHeightMm: clampPrintNum(o.nameHeightMm, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm),
-          metaHeightMm: clampPrintNum(o.metaHeightMm, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm),
-          bcHeightMm: clampPrintNum(o.bcHeightMm, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm),
-          origWidthPct: clampPrintNum(o.origWidthPct, 25, 75, PRINT_LAYOUT_DEFAULTS.origWidthPct),
+          nameXmm: clampPrintNum(o.nameXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.nameXmm),
+          nameYmm: clampPrintNum(o.nameYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.nameYmm),
+          nameWmm: clampPrintNum(o.nameWmm, 8, 50, PRINT_LAYOUT_DEFAULTS.nameWmm),
+          nameHmm: clampPrintNum(o.nameHmm, 3, 25, PRINT_LAYOUT_DEFAULTS.nameHmm),
+          origXmm: clampPrintNum(o.origXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.origXmm),
+          origYmm: clampPrintNum(o.origYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.origYmm),
+          origWmm: clampPrintNum(o.origWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.origWmm),
+          origHmm: clampPrintNum(o.origHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.origHmm),
+          locXmm: clampPrintNum(o.locXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.locXmm),
+          locYmm: clampPrintNum(o.locYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.locYmm),
+          locWmm: clampPrintNum(o.locWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.locWmm),
+          locHmm: clampPrintNum(o.locHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.locHmm),
+          bcXmm: clampPrintNum(o.bcXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.bcXmm),
+          bcYmm: clampPrintNum(o.bcYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.bcYmm),
+          bcWmm: clampPrintNum(o.bcWmm, 12, 50, PRINT_LAYOUT_DEFAULTS.bcWmm),
+          bcHmm: clampPrintNum(o.bcHmm, 4, 20, PRINT_LAYOUT_DEFAULTS.bcHmm),
           bcShiftXmm: clampPrintNum(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
           bcShiftYmm: clampPrintNum(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
         };
-        return normalizePrintZoneHeights(base);
+        return normalizePrintLayoutBoxes(base);
       } catch (_) {
-        return normalizePrintZoneHeights(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
+        return normalizePrintLayoutBoxes(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
       }
     }
     function savePrintLayoutSettings(s) {
-      const normalized = normalizePrintZoneHeights(s || getPrintLayoutSettings());
+      const normalized = normalizePrintLayoutBoxes(s || getPrintLayoutSettings());
       try { localStorage.setItem('printLayoutSettings', JSON.stringify(normalized)); } catch (_) {}
       return normalized;
     }
@@ -9573,10 +9595,12 @@ def home() -> HTMLResponse:
       const el = document.getElementById('printDesignerReadout');
       if (!el) return;
       el.textContent =
-        'اسم ' + st.nameHeightMm.toFixed(1) + 'مم (حد ' + st.namePx + 'px) · '
-        + 'أصلي/موقع ' + st.metaHeightMm.toFixed(1) + 'مم (' + st.originalPx + '/' + st.locationPx + 'px · أصلي '
-        + Math.round(st.origWidthPct) + '%) · '
-        + 'باركود ' + st.bcHeightMm.toFixed(1) + 'مم';
+        'اسم @' + st.nameXmm.toFixed(1) + ',' + st.nameYmm.toFixed(1)
+        + ' (' + st.nameWmm.toFixed(1) + '×' + st.nameHmm.toFixed(1) + 'مم) · '
+        + 'أصلي @' + st.origXmm.toFixed(1) + ',' + st.origYmm.toFixed(1) + ' · '
+        + 'موقع @' + st.locXmm.toFixed(1) + ',' + st.locYmm.toFixed(1) + ' · '
+        + 'باركود @' + st.bcXmm.toFixed(1) + ',' + st.bcYmm.toFixed(1)
+        + ' (' + st.bcWmm.toFixed(1) + '×' + st.bcHmm.toFixed(1) + 'مم)';
     }
     function syncPrintLayoutSettingsUi(s) {
       const st = s || getPrintLayoutSettings();
@@ -9640,24 +9664,45 @@ def home() -> HTMLResponse:
         barcode: s === 'right' ? '1234567890123' : '9876543210987'
       };
     }
+    function printZoneBox(layout, zone) {
+      const s = layout || getPrintLayoutSettings();
+      if (zone === 'name') return { x: s.nameXmm, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm };
+      if (zone === 'orig') return { x: s.origXmm, y: s.origYmm, w: s.origWmm, h: s.origHmm };
+      if (zone === 'loc') return { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm };
+      return { x: s.bcXmm, y: s.bcYmm, w: s.bcWmm, h: s.bcHmm };
+    }
+    function setPrintZoneBox(layout, zone, box) {
+      const s = Object.assign({}, layout);
+      const min = PRINT_ZONE_MIN[zone] || { w: 6, h: 2 };
+      const b = clampPrintBox(box, min.w, min.h);
+      if (zone === 'name') {
+        s.nameXmm = b.x; s.nameYmm = b.y; s.nameWmm = b.w; s.nameHmm = b.h;
+      } else if (zone === 'orig') {
+        s.origXmm = b.x; s.origYmm = b.y; s.origWmm = b.w; s.origHmm = b.h;
+      } else if (zone === 'loc') {
+        s.locXmm = b.x; s.locYmm = b.y; s.locWmm = b.w; s.locHmm = b.h;
+      } else {
+        s.bcXmm = b.x; s.bcYmm = b.y; s.bcWmm = b.w; s.bcHmm = b.h;
+      }
+      return s;
+    }
     function fitDesignerZoneFonts(labelEl, layout, sample) {
       if (!labelEl || !layout) return;
       const nameInner = labelEl.querySelector('.pdg-zone[data-zone="name"] .pdg-zone-inner');
-      const origEl = labelEl.querySelector('.pdg-meta-part.orig');
-      const locEl = labelEl.querySelector('.pdg-meta-part.loc');
+      const origInner = labelEl.querySelector('.pdg-zone[data-zone="orig"] .pdg-zone-inner');
+      const locInner = labelEl.querySelector('.pdg-zone[data-zone="loc"] .pdg-zone-inner');
       const bcText = labelEl.querySelector('.pdg-bc-text');
       if (nameInner) {
         nameInner.textContent = sanitizePrintItemName(sample.name || '—') || '—';
-        const minN = Math.max(9, Math.round(layout.namePx * 0.32));
-        fitTextIntoBox(nameInner, layout.namePx, minN);
+        fitTextIntoBox(nameInner, layout.namePx, Math.max(9, Math.round(layout.namePx * 0.32)));
       }
-      if (origEl) {
-        origEl.textContent = sample.original || '—';
-        fitTextIntoBox(origEl, layout.originalPx, Math.max(6, Math.round(layout.originalPx * 0.55)));
+      if (origInner) {
+        origInner.textContent = sample.original || '—';
+        fitTextIntoBox(origInner, layout.originalPx, Math.max(6, Math.round(layout.originalPx * 0.55)));
       }
-      if (locEl) {
-        locEl.textContent = sample.location || '—';
-        fitTextIntoBox(locEl, layout.locationPx, Math.max(6, Math.round(layout.locationPx * 0.55)));
+      if (locInner) {
+        locInner.textContent = sample.location || '—';
+        fitTextIntoBox(locInner, layout.locationPx, Math.max(6, Math.round(layout.locationPx * 0.55)));
       }
       if (bcText) {
         const bc = printBarcodeExactValue(sample.barcode || '');
@@ -9666,58 +9711,36 @@ def home() -> HTMLResponse:
       }
     }
     function deriveMaxFontsFromZones(layout) {
-      // المساحة الأكبر → حد خط أعلى؛ الطباعة تصوّر الخط تلقائياً جوّا الصندوق
-      const metaPx = clampPrintNum(Math.round(layout.metaHeightMm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx);
       return {
-        namePx: clampPrintNum(Math.round(layout.nameHeightMm * 3.15), 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
-        originalPx: metaPx,
-        locationPx: metaPx,
-        bcTextPx: clampPrintNum(Math.round(layout.bcHeightMm * 0.78), 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx)
+        namePx: clampPrintNum(Math.round(layout.nameHmm * 3.15), 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: clampPrintNum(Math.round(layout.origHmm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
+        locationPx: clampPrintNum(Math.round(layout.locHmm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
+        bcTextPx: clampPrintNum(Math.round(layout.bcHmm * 0.78), 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx)
       };
     }
     let printDesignerDrag = null;
     function applyDesignerDrag(clientY, clientX) {
       if (!printDesignerDrag) return;
       const d = printDesignerDrag;
-      const s = Object.assign({}, getPrintLayoutSettings());
       const ppm = PRINT_DESIGNER_PX_PER_MM;
-      if (d.kind === 'name-meta') {
-        const dyMm = (clientY - d.startY) / ppm;
-        let nameH = d.startName + dyMm;
-        let metaH = d.startMeta - dyMm;
-        nameH = clampPrintNum(nameH, 6, 18, s.nameHeightMm);
-        metaH = clampPrintNum(metaH, 2, 8, s.metaHeightMm);
-        // حافظ على مجموع الاسم+الميتا، والباركود ثابت
-        const pair = d.startName + d.startMeta;
-        if (nameH + metaH !== pair) {
-          metaH = clampPrintNum(pair - nameH, 2, 8, metaH);
-          nameH = clampPrintNum(pair - metaH, 6, 18, nameH);
-        }
-        s.nameHeightMm = Math.round(nameH * 100) / 100;
-        s.metaHeightMm = Math.round(metaH * 100) / 100;
-        s.bcHeightMm = d.startBc;
-      } else if (d.kind === 'meta-bc') {
-        const dyMm = (clientY - d.startY) / ppm;
-        let metaH = d.startMeta + dyMm;
-        let bcH = d.startBc - dyMm;
-        metaH = clampPrintNum(metaH, 2, 8, s.metaHeightMm);
-        bcH = clampPrintNum(bcH, 5, 16, s.bcHeightMm);
-        const pair = d.startMeta + d.startBc;
-        if (metaH + bcH !== pair) {
-          bcH = clampPrintNum(pair - metaH, 5, 16, bcH);
-          metaH = clampPrintNum(pair - bcH, 2, 8, metaH);
-        }
-        s.nameHeightMm = d.startName;
-        s.metaHeightMm = Math.round(metaH * 100) / 100;
-        s.bcHeightMm = Math.round(bcH * 100) / 100;
-      } else if (d.kind === 'orig-loc') {
-        const dxMm = (clientX - d.startX) / ppm;
-        const labelInnerW = PRINT_SHEET_MM.labelW - 1.4;
-        const pctDelta = (dxMm / labelInnerW) * 100;
-        s.origWidthPct = clampPrintNum(d.startOrigPct + pctDelta, 25, 75, s.origWidthPct);
-        s.nameHeightMm = d.startName;
-        s.metaHeightMm = d.startMeta;
-        s.bcHeightMm = d.startBc;
+      const dxMm = (clientX - d.startX) / ppm;
+      const dyMm = (clientY - d.startY) / ppm;
+      let s = Object.assign({}, getPrintLayoutSettings());
+      const start = d.startBox;
+      if (d.mode === 'move') {
+        s = setPrintZoneBox(s, d.zone, {
+          x: start.x + dxMm,
+          y: start.y + dyMm,
+          w: start.w,
+          h: start.h
+        });
+      } else if (d.mode === 'resize') {
+        s = setPrintZoneBox(s, d.zone, {
+          x: start.x,
+          y: start.y,
+          w: start.w + dxMm,
+          h: start.h + dyMm
+        });
       }
       const fonts = deriveMaxFontsFromZones(s);
       s.namePx = fonts.namePx;
@@ -9730,8 +9753,8 @@ def home() -> HTMLResponse:
     }
     function endDesignerDrag() {
       if (!printDesignerDrag) return;
-      document.querySelectorAll('.pdg-handle-h.is-dragging, .pdg-handle-v.is-dragging').forEach((h) => {
-        h.classList.remove('is-dragging');
+      document.querySelectorAll('.pdg-zone.is-dragging, .pdg-zone.is-active, .pdg-resize.is-dragging').forEach((h) => {
+        h.classList.remove('is-dragging', 'is-active');
       });
       printDesignerDrag = null;
       try {
@@ -9740,22 +9763,28 @@ def home() -> HTMLResponse:
       } catch (_) {}
       refreshPrintDesignerBoard();
     }
-    function startDesignerDrag(kind, ev) {
+    function startDesignerZoneInteract(zone, mode, ev) {
       ev.preventDefault();
       ev.stopPropagation();
       const s = getPrintLayoutSettings();
       printDesignerDrag = {
-        kind: kind,
+        zone: zone,
+        mode: mode,
         startX: ev.clientX,
         startY: ev.clientY,
-        startName: s.nameHeightMm,
-        startMeta: s.metaHeightMm,
-        startBc: s.bcHeightMm,
-        startOrigPct: s.origWidthPct
+        startBox: printZoneBox(s, zone)
       };
-      if (ev.currentTarget) ev.currentTarget.classList.add('is-dragging');
+      const zoneEl = ev.currentTarget && ev.currentTarget.closest
+        ? ev.currentTarget.closest('.pdg-zone')
+        : null;
+      if (zoneEl) {
+        zoneEl.classList.add('is-dragging', 'is-active');
+      }
+      if (ev.currentTarget && ev.currentTarget.classList) {
+        ev.currentTarget.classList.add('is-dragging');
+      }
       try {
-        document.body.style.cursor = kind === 'orig-loc' ? 'ew-resize' : 'ns-resize';
+        document.body.style.cursor = mode === 'resize' ? 'nwse-resize' : 'grabbing';
         document.body.style.userSelect = 'none';
       } catch (_) {}
     }
@@ -9763,67 +9792,59 @@ def home() -> HTMLResponse:
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
       const s = layout || getPrintLayoutSettings();
+      const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const padTop = 0.4 * ppm;
+      const padX = 0.7 * ppm;
       board.querySelectorAll('.print-designer-label').forEach((labelEl) => {
-        const nameZ = labelEl.querySelector('.pdg-zone[data-zone="name"]');
-        const metaZ = labelEl.querySelector('.pdg-zone[data-zone="meta"]');
-        const bcZ = labelEl.querySelector('.pdg-zone[data-zone="bc"]');
-        const orig = labelEl.querySelector('.pdg-meta-part.orig');
-        const loc = labelEl.querySelector('.pdg-meta-part.loc');
-        const hName = s.nameHeightMm * PRINT_DESIGNER_PX_PER_MM;
-        const hMeta = s.metaHeightMm * PRINT_DESIGNER_PX_PER_MM;
-        const hBc = s.bcHeightMm * PRINT_DESIGNER_PX_PER_MM;
-        if (nameZ) nameZ.style.height = hName + 'px';
-        if (metaZ) metaZ.style.height = hMeta + 'px';
-        if (bcZ) bcZ.style.height = hBc + 'px';
-        if (orig) orig.style.width = s.origWidthPct + '%';
-        if (loc) loc.style.width = (100 - s.origWidthPct) + '%';
+        ['name', 'orig', 'loc', 'bc'].forEach((zone) => {
+          const zEl = labelEl.querySelector('.pdg-zone[data-zone="' + zone + '"]');
+          if (!zEl) return;
+          const b = printZoneBox(s, zone);
+          zEl.style.left = (padX + b.x * ppm) + 'px';
+          zEl.style.top = (padTop + b.y * ppm) + 'px';
+          zEl.style.width = (b.w * ppm) + 'px';
+          zEl.style.height = (b.h * ppm) + 'px';
+        });
         const side = labelEl.getAttribute('data-side') || 'left';
         fitDesignerZoneFonts(labelEl, s, designerSamplePayload(side));
-        const padTop = 0.4 * PRINT_DESIGNER_PX_PER_MM;
-        const padX = 0.7 * PRINT_DESIGNER_PX_PER_MM;
-        const innerW = (PRINT_SHEET_MM.labelW * PRINT_DESIGNER_PX_PER_MM) - (padX * 2);
-        const h1 = labelEl.querySelector('.pdg-handle-h[data-kind="name-meta"]');
-        const h2 = labelEl.querySelector('.pdg-handle-h[data-kind="meta-bc"]');
-        const hv = labelEl.querySelector('.pdg-handle-v');
-        if (h1) h1.style.top = (padTop + hName) + 'px';
-        if (h2) h2.style.top = (padTop + hName + hMeta) + 'px';
-        if (hv) {
-          hv.style.top = (padTop + hName) + 'px';
-          hv.style.height = Math.max(8, hMeta) + 'px';
-          hv.style.left = (padX + (innerW * (s.origWidthPct / 100))) + 'px';
-        }
       });
       updatePrintDesignerReadout(s);
     }
     function buildPrintDesignerLabelEl(side, layout) {
-      const s = layout || getPrintLayoutSettings();
       const ppm = PRINT_DESIGNER_PX_PER_MM;
       const label = document.createElement('div');
       label.className = 'print-designer-label';
       label.setAttribute('data-side', printSideKey(side));
       label.style.width = (PRINT_SHEET_MM.labelW * ppm) + 'px';
       label.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
-      label.style.padding = (0.4 * ppm) + 'px ' + (0.7 * ppm) + 'px ' + (0.25 * ppm) + 'px';
-      label.innerHTML =
-        '<span class="pdg-side-tag">' + (printSideKey(side) === 'right' ? 'يمين' : 'يسار') + '</span>' +
-        '<div class="pdg-zone" data-zone="name"><span class="pdg-zone-label">اسم الصنف</span><div class="pdg-zone-inner"></div></div>' +
-        '<div class="pdg-zone" data-zone="meta"><span class="pdg-zone-label">أصلي · موقع</span>' +
-          '<div class="pdg-zone-inner">' +
-            '<div class="pdg-meta-part orig"></div>' +
-            '<div class="pdg-meta-part loc"></div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="pdg-zone" data-zone="bc"><span class="pdg-zone-label">باركود</span>' +
-          '<div class="pdg-zone-inner"><div class="pdg-bc-bars"></div><div class="pdg-bc-text"></div></div>' +
-        '</div>' +
-        '<div class="pdg-handle-h" data-kind="name-meta" title="اسحب لتغيير ارتفاع الاسم / الموقع"></div>' +
-        '<div class="pdg-handle-h" data-kind="meta-bc" title="اسحب لتغيير ارتفاع الموقع / الباركود"></div>' +
-        '<div class="pdg-handle-v" data-kind="orig-loc" title="اسحب لتغيير عرض الأصلي مقابل الموقع"></div>';
-      label.querySelectorAll('.pdg-handle-h').forEach((h) => {
-        h.addEventListener('pointerdown', (ev) => startDesignerDrag(h.getAttribute('data-kind'), ev));
+      const zones = [
+        { key: 'name', title: 'اسم الصنف' },
+        { key: 'orig', title: 'الرقم الأصلي' },
+        { key: 'loc', title: 'الموقع' },
+        { key: 'bc', title: 'الباركود' }
+      ];
+      let html = '<span class="pdg-side-tag">' + (printSideKey(side) === 'right' ? 'يمين' : 'يسار') + '</span>';
+      zones.forEach((z) => {
+        html += '<div class="pdg-zone" data-zone="' + z.key + '" title="اسحب لنقل · الزاوية لتكبير/تصغير">'
+          + '<span class="pdg-zone-label">' + z.title + '</span>'
+          + '<div class="pdg-zone-inner">'
+          + (z.key === 'bc' ? '<div class="pdg-bc-bars"></div><div class="pdg-bc-text"></div>' : '')
+          + '</div>'
+          + '<div class="pdg-resize" data-zone="' + z.key + '" title="تكبير / تصغير"></div>'
+          + '</div>';
       });
-      const hv = label.querySelector('.pdg-handle-v');
-      if (hv) hv.addEventListener('pointerdown', (ev) => startDesignerDrag('orig-loc', ev));
+      label.innerHTML = html;
+      label.querySelectorAll('.pdg-zone').forEach((zEl) => {
+        const zone = zEl.getAttribute('data-zone');
+        zEl.addEventListener('pointerdown', (ev) => {
+          if (ev.target && ev.target.classList && ev.target.classList.contains('pdg-resize')) return;
+          startDesignerZoneInteract(zone, 'move', ev);
+        });
+      });
+      label.querySelectorAll('.pdg-resize').forEach((rEl) => {
+        const zone = rEl.getAttribute('data-zone');
+        rEl.addEventListener('pointerdown', (ev) => startDesignerZoneInteract(zone, 'resize', ev));
+      });
       return label;
     }
     function refreshPrintDesignerBoard() {
@@ -9851,6 +9872,19 @@ def home() -> HTMLResponse:
       paintPrintDesignerZones(s);
       syncPrintLayoutSettingsUi(s);
     }
+    function applyPrintBoxStyle(el, box) {
+      if (!el || !box) return;
+      el.style.position = 'absolute';
+      el.style.left = box.x + 'mm';
+      el.style.top = box.y + 'mm';
+      el.style.width = box.w + 'mm';
+      el.style.height = box.h + 'mm';
+      el.style.maxWidth = box.w + 'mm';
+      el.style.maxHeight = box.h + 'mm';
+      el.style.boxSizing = 'border-box';
+      el.style.overflow = 'hidden';
+      el.style.margin = '0';
+    }
     function applyPrintLayoutToLabel(label) {
       if (!label) return;
       const s = getPrintLayoutSettings();
@@ -9860,41 +9894,34 @@ def home() -> HTMLResponse:
       const locEl = label.querySelector('.pl-loc');
       const wrap = label.querySelector('.pl-bc-wrap');
       const bcText = label.querySelector('.pl-bc-text');
+      if (metaEl) metaEl.style.display = 'none';
       if (nameEl) {
         nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
         nameEl.style.fontWeight = '900';
         nameEl.dataset.maxNamePx = String(s.namePx);
-        nameEl.style.flex = '0 0 ' + s.nameHeightMm + 'mm';
-        nameEl.style.height = s.nameHeightMm + 'mm';
-        nameEl.style.maxHeight = s.nameHeightMm + 'mm';
-        nameEl.style.minHeight = '0';
+        applyPrintBoxStyle(nameEl, { x: s.nameXmm, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
       }
       if (origEl) {
         origEl.style.fontSize = s.originalPx + 'px';
         origEl.style.fontWeight = '800';
-        origEl.style.flex = '0 0 ' + s.origWidthPct + '%';
-        origEl.style.maxWidth = s.origWidthPct + '%';
+        applyPrintBoxStyle(origEl, { x: s.origXmm, y: s.origYmm, w: s.origWmm, h: s.origHmm });
       }
       if (locEl) {
         locEl.style.fontSize = s.locationPx + 'px';
         locEl.style.fontWeight = '800';
-        locEl.style.flex = '0 0 ' + (100 - s.origWidthPct) + '%';
-        locEl.style.maxWidth = (100 - s.origWidthPct) + '%';
-      }
-      if (metaEl) {
-        const metaPx = Math.max(s.originalPx, s.locationPx);
-        metaEl.style.fontSize = metaPx + 'px';
-        metaEl.style.flex = '0 0 ' + s.metaHeightMm + 'mm';
-        metaEl.style.height = s.metaHeightMm + 'mm';
-        metaEl.style.maxHeight = s.metaHeightMm + 'mm';
-        metaEl.style.marginBottom = '0';
-        metaEl.style.gap = '0.6mm';
+        applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        wrap.style.flex = '0 0 ' + s.bcHeightMm + 'mm';
-        wrap.style.height = s.bcHeightMm + 'mm';
-        wrap.style.maxHeight = s.bcHeightMm + 'mm';
-        wrap.style.transform = 'translate(' + s.bcShiftXmm + 'mm, ' + s.bcShiftYmm + 'mm)';
+        applyPrintBoxStyle(wrap, {
+          x: s.bcXmm + (s.bcShiftXmm || 0),
+          y: s.bcYmm + (s.bcShiftYmm || 0),
+          w: s.bcWmm,
+          h: s.bcHmm
+        });
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.alignItems = 'center';
+        wrap.style.justifyContent = 'flex-end';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
@@ -9921,9 +9948,12 @@ def home() -> HTMLResponse:
     function fitPrintMetaLeft(el) {
       if (!el) return;
       const s = getPrintLayoutSettings();
-      const orig = el.querySelector('.pl-orig');
-      const loc = el.querySelector('.pl-loc');
-      el.style.justifyContent = 'center';
+      const orig = el.classList && el.classList.contains('pl-orig')
+        ? el
+        : el.querySelector('.pl-orig');
+      const loc = el.classList && el.classList.contains('pl-loc')
+        ? el
+        : el.querySelector('.pl-loc');
       if (orig) fitTextIntoBox(orig, s.originalPx, Math.max(6, Math.round(s.originalPx * 0.55)));
       if (loc) fitTextIntoBox(loc, s.locationPx, Math.max(6, Math.round(s.locationPx * 0.55)));
       if (!orig && !loc) {
@@ -9944,7 +9974,8 @@ def home() -> HTMLResponse:
       label.setAttribute('data-print-side', sideKey);
       label.innerHTML =
         `<div class="pl-name"></div>` +
-        `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
+        `<div class="pl-orig"></div>` +
+        `<div class="pl-loc"></div>` +
         `<div class="pl-bc-wrap"><svg class="pl-bc"></svg><div class="pl-bc-text"></div></div>`;
       if (data && !data.empty) {
         label.querySelector('.pl-name').textContent = sanitizePrintItemName(data.name || '—') || '—';
@@ -10007,14 +10038,16 @@ def home() -> HTMLResponse:
         sheet.appendChild(rowEl);
         applyPrintLayoutToLabel(left);
         fitPrintNameDynamic(left.querySelector('.pl-name'));
-        fitPrintMetaLeft(left.querySelector('.pl-meta'));
+        fitPrintMetaLeft(left.querySelector('.pl-orig'));
+        fitPrintMetaLeft(left.querySelector('.pl-loc'));
         fitPrintBarcodeText(left.querySelector('.pl-bc-text'), payloadLeft.barcode);
         fitPrintBarcodeDynamic(left.querySelector('.pl-bc'), payloadLeft.barcode, { height: 38 });
         applyPrintLayoutToLabel(left);
 
         applyPrintLayoutToLabel(right);
         fitPrintNameDynamic(right.querySelector('.pl-name'));
-        fitPrintMetaLeft(right.querySelector('.pl-meta'));
+        fitPrintMetaLeft(right.querySelector('.pl-orig'));
+        fitPrintMetaLeft(right.querySelector('.pl-loc'));
         fitPrintBarcodeText(right.querySelector('.pl-bc-text'), payloadRight.barcode);
         fitPrintBarcodeDynamic(right.querySelector('.pl-bc'), payloadRight.barcode, { height: 38 });
         applyPrintLayoutToLabel(right);
