@@ -7259,6 +7259,35 @@ def home() -> HTMLResponse:
       color: #1b4332;
       font-size: 0.95rem;
     }
+    details.sync-collapse {
+      margin: 12px 0 0;
+      padding: 0;
+      background: #eef7f1;
+      border-radius: 12px;
+      border: 1px solid #b7d7c2;
+      overflow: hidden;
+    }
+    details.sync-collapse > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      font-weight: 800;
+      font-size: 0.95rem;
+      color: #1b4332;
+      background: #e3f3ea;
+      user-select: none;
+    }
+    details.sync-collapse > summary::-webkit-details-marker { display: none; }
+    details.sync-collapse > summary::after {
+      content: "▾";
+      float: left;
+      opacity: .55;
+    }
+    details.sync-collapse[open] > summary::after { content: "▴"; }
+    details.sync-collapse .sync-collapse-body {
+      padding: 10px 12px 12px;
+      border-top: 1px solid #c5e0d0;
+    }
     .sync-meta {
       margin: 0;
       font-size: 12.5px;
@@ -7626,24 +7655,6 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="locationSearchPanel" class="search-panel">
-        <div class="sync-box">
-          <p class="sync-title">حساباتي</p>
-          <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
-          <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
-          <p id="hesabateAutoSyncCounter" class="sync-meta"><strong>تحديث تلقائي:</strong> —</p>
-          <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
-            مزامنة تلقائية كل ساعة ونصف والتطبيق مغلق (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · بيانات حساباتي هي المعروضة · الزر اليدوي يعمل دائماً
-          </p>
-          <div class="btn-row" style="margin-top:10px;">
-            <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
-          </div>
-          <details style="margin-top:10px;">
-            <summary class="muted" style="cursor:pointer;font-size:13px;font-weight:700;">Excel للمواقع</summary>
-            <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="margin-top:8px;" />
-            <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">تحديث المواقع</button>
-            <div id="locationUploadStatus" class="muted"></div>
-          </details>
-        </div>
         <label class="field-label" for="locationTextQueryInput">اسم / رقم أصلي / ملاحظات</label>
         <input id="locationTextQueryInput" placeholder="اسم الصنف أو الرقم الأصلي أو رقم من الملاحظات" inputmode="search" autocomplete="off" />
         <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
@@ -7653,6 +7664,26 @@ def home() -> HTMLResponse:
           <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد من حساباتي بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
           <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
         </div>
+        <details class="sync-collapse">
+          <summary>حساباتي — تحديث الكل والمزامنة</summary>
+          <div class="sync-collapse-body">
+            <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
+            <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
+            <p id="hesabateAutoSyncCounter" class="sync-meta"><strong>تحديث تلقائي:</strong> —</p>
+            <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
+              مزامنة تلقائية كل ساعة ونصف والتطبيق مغلق (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · بيانات حساباتي هي المعروضة · الزر اليدوي يعمل دائماً
+            </p>
+            <div class="btn-row" style="margin-top:10px;">
+              <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
+            </div>
+            <details style="margin-top:10px;">
+              <summary class="muted" style="cursor:pointer;font-size:13px;font-weight:700;">Excel للمواقع</summary>
+              <input type="file" id="locationSheetFileInput" accept=".xlsx,.xlsm,.xls" style="margin-top:8px;" />
+              <button type="button" class="btn-secondary" onclick="uploadLocationSheetFile()">تحديث المواقع</button>
+              <div id="locationUploadStatus" class="muted"></div>
+            </details>
+          </div>
+        </details>
       </div>
 
       <div id="stats" class="status-line" style="display:none;"></div>
