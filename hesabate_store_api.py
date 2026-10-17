@@ -361,6 +361,17 @@ def _text(v: Any) -> str:
     return str(v or "").strip()
 
 
+def _barcode_text(v: Any) -> str:
+    """
+    باركود للتخزين/الطباعة: لا نحذف المسافات الداخلية ولا نضغطها.
+    (مسار البحث يطبّع المفاتيح منفصلاً عبر barcode_search_keys.)
+    """
+    if v is None:
+        return ""
+    s = str(v).replace("\r", "").replace("\n", "")
+    return s
+
+
 def looks_like_hesabate_product_id(value: Any, *, not_barcode_keys: Optional[List[str]] = None) -> bool:
     """
     المعرّف الداخلي للصنف = حقل id من حساباتي (أرقام).
@@ -596,8 +607,8 @@ def map_products_to_location_rows(
         if not pid:
             continue
         item_name = _text(prod.get("name"))
-        # الباركود فقط من حقل barcode — لا نخلطه مع model_no/other_codes
-        barcode = _text(prod.get("barcode"))
+        # الباركود فقط من حقل barcode — مع الإبقاء على كل المسافات كما هي للطباعة
+        barcode = _barcode_text(prod.get("barcode"))
         original_number = _text(prod.get("model_no"))
         other_codes = _text(prod.get("other_codes"))
         notes = _text(prod.get("note"))

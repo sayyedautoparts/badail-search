@@ -8295,34 +8295,35 @@ def home() -> HTMLResponse:
       const el = document.getElementById('printFetchStatus');
       if (el) el.textContent = msg || '';
     }
-    function normalizePrintBarcodeEncodeValue(code, collapseSpaces) {
-      // أبقِ المسافات بين الأرقام/الأحرف — الماسح لازم يرجعها مع الباركود
-      let s = lightSanitizeBarcodeValue(code);
-      if (!s) return '';
-      try { s = translateDigitsLatinJs(s); } catch (_) {}
-      // وحّد أنواع المسافات فقط (لا تحذفها)
-      s = String(s).replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ');
-      s = s.replace(/[^A-Za-z0-9\-._ ]+/g, '');
-      s = s.replace(/^ +| +$/g, '');
-      if (collapseSpaces) {
-        // احتياط للعرض الطويل جداً: مسافة واحدة بين المقاطع مع الإبقاء على الفراغ
-        s = s.replace(/ {2,}/g, ' ');
-      }
+    function printBarcodeExactValue(code) {
+      // طباعة فقط — منفصلة كلياً عن بحث/قراءة الباركود.
+      // لا trim ولا حذف/ضغط فراغات: كل المسافات تُطبع كما هي في المصدر.
+      if (code == null) return '';
+      let s = String(code);
+      // أزل فقط أحرف تحكم تكسر JsBarcode — المسافات العادية تبقى كلها
+      s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+      s = s.replace(/\r|\n/g, '');
+      // مسافات يونيكود الخاصة → مسافة عادية (نفس الموضع، بدون دمج متكرر)
+      s = s.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
       return s;
     }
-    function formatPrintBarcodeDisplayText(code) {
-      // نفس قيمة الشفرة المعروضة/الممسوحة (مع المسافات)
-      return normalizePrintBarcodeEncodeValue(code, false) || lightSanitizeBarcodeValue(code);
+    function pickPrintBarcodeExactFromRow(row) {
+      // خذ حقل barcode كما هو؛ لا split على المسافات (هذا لبحث القراءة فقط)
+      const bc = row && row.barcode != null ? String(row.barcode) : '';
+      if (/[A-Za-z0-9]/.test(bc)) return bc;
+      const ub = row && row.unit_barcodes != null ? String(row.unit_barcodes) : '';
+      if (/[A-Za-z0-9]/.test(ub)) return ub;
+      return '';
     }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      const value = normalizePrintBarcodeEncodeValue(code);
-      if (!value) {
+      // استخدم القيمة كما وصلت للطباعة — بدون مسار قراءة/تطبيع البحث
+      const value = printBarcodeExactValue(code);
+      if (!value || !/[A-Za-z0-9]/.test(value)) {
         svgEl.innerHTML = '';
         return false;
       }
       try {
-        // Code128 فقط حسب طلب الطباعة
         JsBarcode(svgEl, value, Object.assign({
           format: 'CODE128',
           displayValue: false,
@@ -8339,22 +8340,20 @@ def home() -> HTMLResponse:
       }
     }
     function estimatePrintBarcodeModuleWidth(code) {
-      // Code128 تقريباً ~11 وحدة/حرف + ~35 للبداية/النهاية/التحقق
       const n = Math.max(1, String(code || '').length);
       const estModules = n * 11 + 35;
-      const targetPx = 200; // ≈ عرض اللزقة 59مم بعد الهوامش
-      // حد أدنى أعلى قليلاً حتى لا تندمج الأعمدة عند المسح
-      return Math.max(0.9, Math.min(2.35, targetPx / estModules));
+      const targetPx = 200;
+      return Math.max(0.85, Math.min(2.35, targetPx / estModules));
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
-      // أولاً: المسافات كما هي؛ إن طال جداً نضغط المسافات المتكررة لمسافة واحدة (تبقى موجودة)
-      let value = normalizePrintBarcodeEncodeValue(code, false);
-      if (!value) return false;
+      // اطبع كما هو — لا ضغط فراغات أبداً؛ فقط صغّر عرض العمود ليدخل اللزقة
+      const value = printBarcodeExactValue(code);
+      if (!value || !/[A-Za-z0-9]/.test(value)) return false;
       svgEl.style.transform = '';
       const wrap = svgEl.parentElement;
       const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 200);
-      const minModule = 0.85; // تحتها الأعمدة تندمج ويفشل الماسح
+      const minModule = 0.82;
       const base = Object.assign({
         format: 'CODE128',
         height: 38,
@@ -8362,51 +8361,33 @@ def home() -> HTMLResponse:
         marginTop: 0,
         marginBottom: 0
       }, opts || {});
-      const tryFit = (encodeValue) => {
-        let moduleW = estimatePrintBarcodeModuleWidth(encodeValue);
-        let ok = false;
-        for (let i = 0; i < 14; i++) {
-          ok = renderPrintBarcodeSvg(svgEl, encodeValue, Object.assign({}, base, { width: moduleW }));
-          if (!ok) return false;
-          let bw = 0;
-          try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
-          if (!bw || bw <= maxW + 0.8) {
-            svgEl.style.transform = '';
-            return true;
-          }
-          const next = moduleW * (maxW / bw) * 0.98;
-          if (next < minModule) {
-            ok = renderPrintBarcodeSvg(svgEl, encodeValue, Object.assign({}, base, { width: minModule }));
-            svgEl.style.transform = '';
-            try {
-              const bb = svgEl.getBBox().width;
-              // إن لسه أطول من اللزقة — اعتبرها غير مناسبة لهذه الصيغة
-              return !!(ok && bb && bb <= maxW + 1.5);
-            } catch (_) {
-              return ok;
-            }
-          }
-          moduleW = next;
+      let moduleW = estimatePrintBarcodeModuleWidth(value);
+      let ok = false;
+      for (let i = 0; i < 16; i++) {
+        ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: moduleW }));
+        if (!ok) return false;
+        let bw = 0;
+        try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
+        if (!bw || bw <= maxW + 0.8) {
+          svgEl.style.transform = '';
+          return true;
         }
-        return ok;
-      };
-      if (tryFit(value)) return true;
-      const collapsed = normalizePrintBarcodeEncodeValue(code, true);
-      if (collapsed && collapsed !== value && tryFit(collapsed)) {
-        // تبقى مسافة واحدة على الأقل بين المقاطع
-        return true;
+        const next = moduleW * (maxW / bw) * 0.98;
+        if (next < minModule) {
+          ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
+          svgEl.style.transform = '';
+          return ok;
+        }
+        moduleW = next;
       }
-      // آخر محاولة: ارسم مع المسافات المضغوطة بالحد الأدنى المقروء
-      const fallback = collapsed || value;
-      renderPrintBarcodeSvg(svgEl, fallback, Object.assign({}, base, { width: minModule }));
-      svgEl.style.transform = '';
-      return true;
+      return ok;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      const display = formatPrintBarcodeDisplayText(code);
-      el.textContent = display || String(code || '');
-      const n = display.length || String(code || '').length;
+      // النص تحت الباركود = نفس القيمة المطبوعة حرفاً بحرف (مع كل الفراغات)
+      const display = printBarcodeExactValue(code);
+      el.textContent = display;
+      const n = display.length;
       let px = 9.5;
       if (n > 16) px = 8.5;
       if (n > 22) px = 7.5;
@@ -8487,15 +8468,17 @@ def home() -> HTMLResponse:
       }
       const original = chosen || String(row.original_number || '').trim() || '—';
       const location = String(row.location || '').trim() || '—';
-      const barcode = String(row.barcode || '').trim()
-        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((x) => x.trim()).filter(Boolean)[0]
-        || '';
+      // طباعة: الباركود كما هو في الصف — بدون trim/split مسافات (مسار البحث منفصل)
+      const barcode = pickPrintBarcodeExactFromRow(row);
       const origEl = document.getElementById('printPvOriginal' + cap);
       const locEl = document.getElementById('printPvLocation' + cap);
       const textEl = document.getElementById('printPvBarcodeText' + cap);
       if (origEl) origEl.textContent = 'الأصلي: ' + original;
       if (locEl) locEl.textContent = 'الموقع: ' + location;
-      if (textEl) textEl.textContent = barcode || '—';
+      if (textEl) {
+        fitPrintBarcodeText(textEl, barcode);
+        if (!barcode) textEl.textContent = '—';
+      }
       if (card) card.style.display = 'block';
       updatePrintDualPreviewSlots();
       ensureJsBarcodeLib().then(() => {
@@ -8773,10 +8756,8 @@ def home() -> HTMLResponse:
       const name = getPrintName(s) || String(row.item_name || '').trim() || '—';
       const original = chosen || String(row.original_number || '').trim() || '—';
       const location = String(row.location || '').trim() || '—';
-      const barcode = String(row.barcode || '').trim()
-        || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((x) => x.trim()).filter(Boolean)[0]
-        || '';
-      if (!barcode) return { error: 'no-barcode', side: s };
+      const barcode = pickPrintBarcodeExactFromRow(row);
+      if (!barcode || !/[A-Za-z0-9]/.test(barcode)) return { error: 'no-barcode', side: s };
       return { name, original, location, barcode };
     }
     function fitPrintNameDynamic(el) {
