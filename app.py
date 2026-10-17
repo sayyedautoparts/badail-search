@@ -8339,14 +8339,21 @@ def home() -> HTMLResponse:
     function printBarcodeExactValue(code) {
       // طباعة فقط — منفصلة كلياً عن بحث/قراءة الباركود.
       // لا trim ولا حذف/ضغط فراغات: كل المسافات تُطبع كما هي في المصدر.
+      // بدون regex escapes: بايثون يفسّر \\n/\\u داخل نص HTML ويكسر الـ JS.
       if (code == null) return '';
-      let s = String(code);
-      // أزل فقط أحرف تحكم تكسر JsBarcode — المسافات العادية تبقى كلها
-      s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
-      s = s.replace(/\r|\n/g, '');
-      // مسافات يونيكود الخاصة → مسافة عادية (نفس الموضع، بدون دمج متكرر)
-      s = s.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
-      return s;
+      const s = String(code);
+      let out = '';
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c === 10 || c === 13) continue;
+        if (c <= 8 || c === 11 || c === 12 || (c >= 14 && c <= 31) || c === 127) continue;
+        if (c === 0xA0 || (c >= 0x2000 && c <= 0x200A) || c === 0x202F || c === 0x205F || c === 0x3000) {
+          out += ' ';
+          continue;
+        }
+        out += s.charAt(i);
+      }
+      return out;
     }
     function pickPrintBarcodeExactFromRow(row) {
       // خذ حقل barcode كما هو؛ لا split على المسافات (هذا لبحث القراءة فقط)
