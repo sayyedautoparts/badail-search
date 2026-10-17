@@ -7358,14 +7358,23 @@ def home() -> HTMLResponse:
       <div id="printSearchPanel" class="search-panel">
         <label class="field-label" for="printQueryInput">رقم الصنف أو باركود القطعة</label>
         <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal(true);}" />
+        <div class="print-dual-names" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;direction:ltr;">
+          <div>
+            <label class="field-label" for="printNameLeft">اسم اللزق — يسار</label>
+            <input id="printNameLeft" placeholder="اسم يسار" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview()" />
+          </div>
+          <div>
+            <label class="field-label" for="printNameRight">اسم اللزق — يمين</label>
+            <input id="printNameRight" placeholder="اسم يمين" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview()" />
+          </div>
+        </div>
         <div class="print-unit-fields" style="margin-top:8px;">
-          <label class="field-label" for="printQtyInput">عدد الحبات (كمية واحدة لليسار واليمين)</label>
+          <label class="field-label" for="printQtyInput">الكمية (واحدة لليسار واليمين)</label>
           <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">1 حبة = ورقة واحدة (يسار فقط) · 2 حبة = ورقة واحدة (يسار+يمين)</p>
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كمية واحدة مشتركة · 1 = يسار فقط · 2 = يسار+يمين بنفس الورقة</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
           الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان.
-          اختر الحجم 120×25 مم، بدون هوامش، مقياس 100%.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
@@ -7377,7 +7386,6 @@ def home() -> HTMLResponse:
           <select id="printOriginalSelect"></select>
         </div>
         <div id="printPreviewCard" class="print-preview-card" style="display:none;">
-          <p class="pv-name" id="printPvName">—</p>
           <div class="pv-row">
             <span id="printPvOriginal">الأصلي: —</span>
             <span id="printPvLocation">الموقع: —</span>
@@ -7385,11 +7393,13 @@ def home() -> HTMLResponse:
           <div class="print-dual-preview">
             <div class="print-dual-slot" id="printSlotLeft">
               <p class="slot-title">يسار</p>
+              <p class="pv-name" id="printPvNameLeft" style="font-size:13px;margin:0 0 4px;">—</p>
               <svg id="printPvBarcodeLeft"></svg>
               <div id="printPvBarcodeTextLeft" style="font-weight:800;font-size:12px;"></div>
             </div>
             <div class="print-dual-slot" id="printSlotRight">
               <p class="slot-title">يمين</p>
+              <p class="pv-name" id="printPvNameRight" style="font-size:13px;margin:0 0 4px;">—</p>
               <svg id="printPvBarcodeRight"></svg>
               <div id="printPvBarcodeTextRight" style="font-weight:800;font-size:12px;"></div>
             </div>
@@ -8191,12 +8201,32 @@ def home() -> HTMLResponse:
       }
       return { qty, pages };
     }
+    function getPrintNameLeft() {
+      return ((document.getElementById('printNameLeft') || {}).value || '').trim();
+    }
+    function getPrintNameRight() {
+      return ((document.getElementById('printNameRight') || {}).value || '').trim();
+    }
+    function setPrintNamesBoth(name) {
+      const n = String(name || '').trim();
+      const l = document.getElementById('printNameLeft');
+      const r = document.getElementById('printNameRight');
+      if (l) l.value = n;
+      if (r) r.value = n;
+    }
+    function refreshPrintNamePreview() {
+      const leftName = document.getElementById('printPvNameLeft');
+      const rightName = document.getElementById('printPvNameRight');
+      if (leftName) leftName.textContent = getPrintNameLeft() || '—';
+      if (rightName) rightName.textContent = getPrintNameRight() || '—';
+    }
     function updatePrintDualPreviewSlots() {
       const { qty } = updatePrintQtyHint();
       const left = document.getElementById('printSlotLeft');
       const right = document.getElementById('printSlotRight');
       if (left) left.classList.toggle('empty-slot', qty < 1);
       if (right) right.classList.toggle('empty-slot', qty < 2);
+      refreshPrintNamePreview();
     }
     function updatePrintBarcodePreview() {
       const card = document.getElementById('printPreviewCard');
@@ -8208,18 +8238,22 @@ def home() -> HTMLResponse:
         return;
       }
       printBarcodeItem = row;
-      const name = String(row.item_name || '').trim() || '—';
+      const name = String(row.item_name || '').trim() || '';
+      // عند الجلب: عبّئ خانتَي الاسم (يسار/يمين) بنفس اسم الصنف — قابل للتعديل
+      setPrintNamesBoth(name);
+      const leftInp = document.getElementById('printNameLeft');
+      const rightInp = document.getElementById('printNameRight');
+      if (leftInp) leftInp.dataset.fromFetch = '1';
+      if (rightInp) rightInp.dataset.fromFetch = '1';
       const original = chosen || String(row.original_number || '').trim() || '—';
       const location = String(row.location || '').trim() || '—';
       const barcode = String(row.barcode || '').trim()
         || String(row.unit_barcodes || '').split(/[\s,/|;]+/).map((s) => s.trim()).filter(Boolean)[0]
         || '';
-      const nameEl = document.getElementById('printPvName');
       const origEl = document.getElementById('printPvOriginal');
       const locEl = document.getElementById('printPvLocation');
       const leftText = document.getElementById('printPvBarcodeTextLeft');
       const rightText = document.getElementById('printPvBarcodeTextRight');
-      if (nameEl) nameEl.textContent = name;
       if (origEl) origEl.textContent = 'الأصلي: ' + original;
       if (locEl) locEl.textContent = 'الموقع: ' + location;
       if (leftText) leftText.textContent = barcode || '—';
@@ -8520,7 +8554,8 @@ def home() -> HTMLResponse:
         setPrintFetchStatus('لا يوجد صنف للطباعة — تأكد أنه موجود بقاعدة المواقع أو اجلبه.');
         return;
       }
-      const name = String(row.item_name || '').trim() || '—';
+      const nameLeft = getPrintNameLeft() || String(row.item_name || '').trim() || '—';
+      const nameRight = getPrintNameRight() || String(row.item_name || '').trim() || '—';
       const original = chosen || String(row.original_number || '').trim() || '—';
       const location = String(row.location || '').trim() || '—';
       const barcode = String(row.barcode || '').trim()
@@ -8545,16 +8580,17 @@ def home() -> HTMLResponse:
       }
       sheet.className = 'print-label-sheet print-measure';
       sheet.innerHTML = '';
-      const payload = { name, original, location, barcode };
-      // عدد الأوراق = ceil(الحبات/2) بالضبط — لا صفحات زيادة
+      const payloadLeft = { name: nameLeft, original, location, barcode };
+      const payloadRight = { name: nameRight, original, location, barcode };
+      // كمية واحدة مشتركة · يسار/يمين بأسماء منفصلة · عدد الأوراق = ceil(qty/2)
       for (let page = 0; page < pages; page++) {
         const rowEl = document.createElement('div');
         rowEl.className = 'print-label-row';
         const stickersBefore = page * 2;
         const leftOn = stickersBefore < qty;
         const rightOn = (stickersBefore + 1) < qty;
-        const left = buildPrintLabelEl(leftOn ? payload : { empty: true });
-        const right = buildPrintLabelEl(rightOn ? payload : { empty: true });
+        const left = buildPrintLabelEl(leftOn ? payloadLeft : { empty: true });
+        const right = buildPrintLabelEl(rightOn ? payloadRight : { empty: true });
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
