@@ -6880,6 +6880,7 @@ def home() -> HTMLResponse:
       font-size: 1.05rem;
       margin: 0 0 8px;
       color: var(--ink);
+      text-align: center;
     }
     .print-preview-card .pv-row {
       display: flex;
@@ -6889,42 +6890,68 @@ def home() -> HTMLResponse:
       margin-bottom: 8px;
       flex-wrap: wrap;
     }
+    .print-dual-preview {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      direction: ltr;
+      margin-top: 8px;
+    }
+    .print-dual-slot {
+      border: 1px dashed #9ec9ae;
+      border-radius: 10px;
+      padding: 8px;
+      background: #fff;
+      min-height: 110px;
+      text-align: center;
+    }
+    .print-dual-slot .slot-title {
+      font-size: 11px;
+      font-weight: 800;
+      color: #2f6b45;
+      margin: 0 0 6px;
+    }
+    .print-dual-slot.empty-slot {
+      opacity: .45;
+      background: #f7faf8;
+    }
     .print-label-sheet { display: none; }
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* Rongta RP4xx Series — لزيق دبل 120×25 مم */
+      /* Rongta RP4xx — ورقة واحدة = لزيقان يمين/يسار 120×25 مم */
       @page {
         size: 120mm 25mm;
         margin: 0;
       }
       html, body {
         width: 120mm !important;
-        height: 25mm !important;
+        height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
         background: #fff !important;
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
       }
-      body * { visibility: hidden !important; }
-      .print-label-sheet, .print-label-sheet * { visibility: visible !important; }
+      /* أخفِ كل شيء إلا ورقة اللزق — يمنع صفحات زيادة */
+      body.printing-labels > *:not(#printLabelSheet) {
+        display: none !important;
+      }
       .print-label-sheet {
         display: block !important;
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 12cm;
+        position: static !important;
+        width: 120mm;
         margin: 0;
         padding: 0;
         background: #fff;
       }
-      /* صف لزيق دبل: ملصقان جنب بعض = ورقة واحدة */
       .print-label-row {
         display: flex;
         flex-direction: row;
-        width: 12cm;
-        height: 2.5cm;
+        direction: ltr;
+        width: 120mm;
+        height: 25mm;
+        max-height: 25mm;
         box-sizing: border-box;
         margin: 0;
         padding: 0;
@@ -6935,14 +6962,14 @@ def home() -> HTMLResponse:
         overflow: hidden;
       }
       .print-label-row:last-child {
-        page-break-after: auto;
-        break-after: auto;
+        page-break-after: auto !important;
+        break-after: auto !important;
       }
       .print-label {
-        width: 6cm;
-        max-width: 6cm;
-        height: 2.5cm;
-        max-height: 2.5cm;
+        width: 60mm;
+        max-width: 60mm;
+        height: 25mm;
+        max-height: 25mm;
         box-sizing: border-box;
         padding: 0.6mm 1.2mm 0.4mm;
         margin: 0;
@@ -6956,7 +6983,7 @@ def home() -> HTMLResponse:
         justify-content: flex-start;
       }
       .print-label.print-label-empty {
-        visibility: hidden !important;
+        visibility: hidden;
       }
       .print-label .pl-name {
         flex: 0 0 auto;
@@ -7044,14 +7071,15 @@ def home() -> HTMLResponse:
     }
     .print-label-sheet.print-measure .print-label-row {
       display: flex;
-      width: 12cm;
-      height: 2.5cm;
+      direction: ltr;
+      width: 120mm;
+      height: 25mm;
     }
     .print-label-sheet.print-measure .print-label {
-      width: 6cm;
-      max-width: 6cm;
-      height: 2.5cm;
-      max-height: 2.5cm;
+      width: 60mm;
+      max-width: 60mm;
+      height: 25mm;
+      max-height: 25mm;
       box-sizing: border-box;
       padding: 0.6mm 1.2mm 0.4mm;
       overflow: hidden;
@@ -7330,11 +7358,14 @@ def home() -> HTMLResponse:
       <div id="printSearchPanel" class="search-panel">
         <label class="field-label" for="printQueryInput">رقم الصنف أو باركود القطعة</label>
         <input id="printQueryInput" placeholder="رقم الصنف (pro_id) أو الباركود" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal(true);}" />
-        <label class="field-label" for="printQtyInput">عدد الحبات للطباعة</label>
-        <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+        <div class="print-unit-fields" style="margin-top:8px;">
+          <label class="field-label" for="printQtyInput">عدد الحبات (كمية واحدة لليسار واليمين)</label>
+          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">1 حبة = ورقة واحدة (يسار فقط) · 2 حبة = ورقة واحدة (يسار+يمين)</p>
+        </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · لزيق دبل 120×25 مم (ملصقان 60×25 مم).
-          من نافذة الطباعة اختر هذه الطابعة، الحجم 120×25 مم، بدون هوامش، مقياس 100%.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان.
+          اختر الحجم 120×25 مم، بدون هوامش، مقياس 100%.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" id="printFetchBtn" class="btn-secondary" onclick="fetchItemForBarcodePrint()">جلب هذا الصنف</button>
@@ -7351,9 +7382,17 @@ def home() -> HTMLResponse:
             <span id="printPvOriginal">الأصلي: —</span>
             <span id="printPvLocation">الموقع: —</span>
           </div>
-          <div style="text-align:center;">
-            <svg id="printPvBarcode"></svg>
-            <div id="printPvBarcodeText" style="font-weight:800;margin-top:4px;"></div>
+          <div class="print-dual-preview">
+            <div class="print-dual-slot" id="printSlotLeft">
+              <p class="slot-title">يسار</p>
+              <svg id="printPvBarcodeLeft"></svg>
+              <div id="printPvBarcodeTextLeft" style="font-weight:800;font-size:12px;"></div>
+            </div>
+            <div class="print-dual-slot" id="printSlotRight">
+              <p class="slot-title">يمين</p>
+              <svg id="printPvBarcodeRight"></svg>
+              <div id="printPvBarcodeTextRight" style="font-weight:800;font-size:12px;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -8121,6 +8160,7 @@ def home() -> HTMLResponse:
         return false;
       }
       try {
+        // Code128 فقط حسب طلب الطباعة
         JsBarcode(svgEl, value, Object.assign({
           format: 'CODE128',
           displayValue: false,
@@ -8132,22 +8172,31 @@ def home() -> HTMLResponse:
         }, opts || {}));
         return true;
       } catch (_) {
-        try {
-          JsBarcode(svgEl, value, {
-            format: 'CODE39',
-            displayValue: false,
-            margin: 0,
-            width: 1.6,
-            height: 56,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-          return true;
-        } catch (err2) {
-          svgEl.innerHTML = '';
-          return false;
-        }
+        svgEl.innerHTML = '';
+        return false;
       }
+    }
+    function getPrintQty() {
+      const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
+      return Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
+    }
+    function updatePrintQtyHint() {
+      const qty = getPrintQty();
+      const pages = Math.ceil(qty / 2);
+      const hint = document.getElementById('printQtyHint');
+      if (hint) {
+        hint.textContent = qty === 1
+          ? '1 حبة = ورقة واحدة (يسار فقط، اليمين فاضي)'
+          : `${qty} حبة = ${pages} ورقة · كل ورقة لزيقان (يسار + يمين)`;
+      }
+      return { qty, pages };
+    }
+    function updatePrintDualPreviewSlots() {
+      const { qty } = updatePrintQtyHint();
+      const left = document.getElementById('printSlotLeft');
+      const right = document.getElementById('printSlotRight');
+      if (left) left.classList.toggle('empty-slot', qty < 1);
+      if (right) right.classList.toggle('empty-slot', qty < 2);
     }
     function updatePrintBarcodePreview() {
       const card = document.getElementById('printPreviewCard');
@@ -8168,15 +8217,19 @@ def home() -> HTMLResponse:
       const nameEl = document.getElementById('printPvName');
       const origEl = document.getElementById('printPvOriginal');
       const locEl = document.getElementById('printPvLocation');
-      const bcTextEl = document.getElementById('printPvBarcodeText');
-      const svg = document.getElementById('printPvBarcode');
+      const leftText = document.getElementById('printPvBarcodeTextLeft');
+      const rightText = document.getElementById('printPvBarcodeTextRight');
       if (nameEl) nameEl.textContent = name;
       if (origEl) origEl.textContent = 'الأصلي: ' + original;
       if (locEl) locEl.textContent = 'الموقع: ' + location;
-      if (bcTextEl) bcTextEl.textContent = barcode || '—';
+      if (leftText) leftText.textContent = barcode || '—';
+      if (rightText) rightText.textContent = barcode || '—';
       if (card) card.style.display = 'block';
+      updatePrintDualPreviewSlots();
       ensureJsBarcodeLib().then(() => {
-        renderPrintBarcodeSvg(svg, barcode, { height: 48, width: 1.8 });
+        const opt = { height: 40, width: 1.5, format: 'CODE128' };
+        renderPrintBarcodeSvg(document.getElementById('printPvBarcodeLeft'), barcode, opt);
+        renderPrintBarcodeSvg(document.getElementById('printPvBarcodeRight'), barcode, opt);
       }).catch(() => {});
     }
     function applyPrintLookupRows(rows, message) {
@@ -8444,7 +8497,8 @@ def home() -> HTMLResponse:
         const codeLen = Math.max(6, String(data.barcode || '').length);
         const moduleW = Math.max(0.85, Math.min(2.1, 57 / (codeLen * 11)));
         renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
-          height: 46,
+          format: 'CODE128',
+          height: 42,
           width: moduleW,
           margin: 0,
           marginTop: 0,
@@ -8458,8 +8512,7 @@ def home() -> HTMLResponse:
         const ok = await resolvePrintItemFromLocal(true);
         if (!ok) return;
       }
-      const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
-      const qty = Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
+      const { qty, pages } = updatePrintQtyHint();
       const sel = document.getElementById('printOriginalSelect');
       const chosen = sel && sel.value ? sel.value : '';
       const row = pickPrintRowForOriginal(printBarcodeRows, chosen) || printBarcodeItem;
@@ -8493,32 +8546,36 @@ def home() -> HTMLResponse:
       sheet.className = 'print-label-sheet print-measure';
       sheet.innerHTML = '';
       const payload = { name, original, location, barcode };
-      // لزيق دبل: كل ورقة = ملصقان (6سم × 2.5سم) داخل 12سم × 2.5سم
-      for (let i = 0; i < qty; i += 2) {
+      // عدد الأوراق = ceil(الحبات/2) بالضبط — لا صفحات زيادة
+      for (let page = 0; page < pages; page++) {
         const rowEl = document.createElement('div');
         rowEl.className = 'print-label-row';
-        const left = buildPrintLabelEl(payload);
-        const right = (i + 1 < qty) ? buildPrintLabelEl(payload) : buildPrintLabelEl({ empty: true });
+        const stickersBefore = page * 2;
+        const leftOn = stickersBefore < qty;
+        const rightOn = (stickersBefore + 1) < qty;
+        const left = buildPrintLabelEl(leftOn ? payload : { empty: true });
+        const right = buildPrintLabelEl(rightOn ? payload : { empty: true });
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
-        fitPrintNameDynamic(left.querySelector('.pl-name'));
-        fitPrintMetaLeft(left.querySelector('.pl-meta'));
-        if (!right.classList.contains('print-label-empty')) {
+        if (leftOn) {
+          fitPrintNameDynamic(left.querySelector('.pl-name'));
+          fitPrintMetaLeft(left.querySelector('.pl-meta'));
+        }
+        if (rightOn) {
           fitPrintNameDynamic(right.querySelector('.pl-name'));
           fitPrintMetaLeft(right.querySelector('.pl-meta'));
         }
       }
-      // أعد للصنف المعتاد قبل نافذة الطباعة
       sheet.className = 'print-label-sheet';
       setPrintFetchStatus(
-        `جاهز · ${qty} ملصق · اختر الطابعة «${RONGTA_PRINTER_NAME}» · حجم 120×25 مم · مقياس 100% · بدون هوامش`
+        `جاهز · ${qty} حبة = ${pages} ورقة · Code128 · «${RONGTA_PRINTER_NAME}» · 120×25 مم · مقياس 100%`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
-      // اسم مهمة الطباعة يساعد تمييز المهمة؛ اختيار الطابعة من نافذة النظام
       printJobTitleRestore = document.title;
       document.title = `Barcode-${barcode} · ${RONGTA_PRINTER_NAME}`;
       const restoreTitle = () => {
+        document.body.classList.remove('printing-labels');
         if (printJobTitleRestore != null) {
           document.title = printJobTitleRestore;
           printJobTitleRestore = null;
@@ -8526,7 +8583,7 @@ def home() -> HTMLResponse:
         window.removeEventListener('afterprint', restoreTitle);
       };
       window.addEventListener('afterprint', restoreTitle);
-      // المتصفح لا يفرض الطابعة برمجياً — لازم Rongta تكون مختارة/افتراضية على الجهاز
+      document.body.classList.add('printing-labels');
       setTimeout(() => {
         try {
           window.print();
