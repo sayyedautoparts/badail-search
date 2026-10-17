@@ -7655,16 +7655,7 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="locationSearchPanel" class="search-panel">
-        <label class="field-label" for="locationTextQueryInput">اسم / رقم أصلي / ملاحظات</label>
-        <input id="locationTextQueryInput" placeholder="اسم الصنف أو الرقم الأصلي أو رقم من الملاحظات" inputmode="search" autocomplete="off" />
-        <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
-        <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
-        <div class="btn-row">
-          <button type="button" onclick="searchNow('location')" title="بحث محلي في قاعدة البيانات فقط — بدون طلب حساباتي">بحث</button>
-          <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد من حساباتي بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
-          <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
-        </div>
-        <details class="sync-collapse">
+        <details class="sync-collapse" style="margin:0 0 12px;">
           <summary>حساباتي — تحديث الكل والمزامنة</summary>
           <div class="sync-collapse-body">
             <p id="hesabateSyncStatus" class="sync-meta">جاري التحقق...</p>
@@ -7684,6 +7675,15 @@ def home() -> HTMLResponse:
             </details>
           </div>
         </details>
+        <label class="field-label" for="locationTextQueryInput">اسم / رقم أصلي / ملاحظات</label>
+        <input id="locationTextQueryInput" placeholder="اسم الصنف أو الرقم الأصلي أو رقم من الملاحظات" inputmode="search" autocomplete="off" />
+        <label class="field-label" for="locationBarcodeQueryInput">باركود</label>
+        <input id="locationBarcodeQueryInput" type="text" placeholder="اكتب أو امسح الباركود" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <div class="btn-row">
+          <button type="button" onclick="searchNow('location')" title="بحث محلي في قاعدة البيانات فقط — بدون طلب حساباتي">بحث</button>
+          <button type="button" id="hesabateFetchOneBtn" class="btn-secondary" onclick="fetchOneItemFromHesabate()" title="جلب صنف واحد من حساباتي بالباركود أو الاسم أو رقم الملاحظات">جلب صنف واحد</button>
+          <button type="button" class="btn-camera" onclick="openLocationBarcodeScanner()">كاميرا</button>
+        </div>
       </div>
 
       <div id="stats" class="status-line" style="display:none;"></div>
