@@ -6909,7 +6909,9 @@ def home() -> HTMLResponse:
     .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
     .print-side-unit .field-label { margin-top: 8px; }
     .print-side-unit .field-label:first-of-type { margin-top: 0; }
+    /* معاينة النص داخل صناديق اليسار/اليمين مخفية — الشكل يظهر في GUI أعلاه */
     .print-side-preview {
+      display: none !important;
       margin-top: 10px;
       padding: 8px;
       border-radius: 10px;
@@ -7694,63 +7696,8 @@ def home() -> HTMLResponse:
       </div>
 
       <div id="printSearchPanel" class="search-panel">
-        <div class="print-dual-units">
-          <div class="print-side-unit" data-side="left">
-            <p class="print-side-title">لزق اليسار</p>
-            <label class="field-label" for="printQueryLeft">رقم الصنف أو الباركود</label>
-            <input id="printQueryLeft" placeholder="رقم / باركود اليسار" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
-            <label class="field-label" for="printNameLeft">اسم اللزق</label>
-            <input id="printNameLeft" placeholder="اسم يسار" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview('left')" />
-            <div class="btn-row" style="margin-top:8px;">
-              <button type="button" id="printFetchBtnLeft" class="btn-secondary" onclick="fetchItemForBarcodePrint('left')">جلب اليسار</button>
-            </div>
-            <div id="printFetchStatusLeft" class="muted print-side-status"></div>
-            <div id="printOriginalWrapLeft" style="display:none;margin-top:8px;">
-              <label class="field-label" for="printOriginalSelectLeft">الرقم الأصلي — يسار</label>
-              <select id="printOriginalSelectLeft"></select>
-            </div>
-            <div id="printPreviewLeft" class="print-side-preview" style="display:none;">
-              <div class="pv-row">
-                <span id="printPvOriginalLeft">الأصلي: —</span>
-                <span id="printPvLocationLeft">الموقع: —</span>
-              </div>
-              <p class="pv-name" id="printPvNameLeft">—</p>
-              <svg id="printPvBarcodeLeft"></svg>
-              <div id="printPvBarcodeTextLeft" style="font-weight:800;font-size:12px;"></div>
-            </div>
-          </div>
-          <div class="print-side-unit" data-side="right">
-            <p class="print-side-title">لزق اليمين</p>
-            <label class="field-label" for="printQueryRight">رقم الصنف أو الباركود</label>
-            <input id="printQueryRight" placeholder="رقم / باركود اليمين" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
-            <label class="field-label" for="printNameRight">اسم اللزق</label>
-            <input id="printNameRight" placeholder="اسم يمين" autocomplete="off" oninput="this.dataset.fromFetch='0';refreshPrintNamePreview('right')" />
-            <div class="btn-row" style="margin-top:8px;">
-              <button type="button" id="printFetchBtnRight" class="btn-secondary" onclick="fetchItemForBarcodePrint('right')">جلب اليمين</button>
-            </div>
-            <div id="printFetchStatusRight" class="muted print-side-status"></div>
-            <div id="printOriginalWrapRight" style="display:none;margin-top:8px;">
-              <label class="field-label" for="printOriginalSelectRight">الرقم الأصلي — يمين</label>
-              <select id="printOriginalSelectRight"></select>
-            </div>
-            <div id="printPreviewRight" class="print-side-preview" style="display:none;">
-              <div class="pv-row">
-                <span id="printPvOriginalRight">الأصلي: —</span>
-                <span id="printPvLocationRight">الموقع: —</span>
-              </div>
-              <p class="pv-name" id="printPvNameRight">—</p>
-              <svg id="printPvBarcodeRight"></svg>
-              <div id="printPvBarcodeTextRight" style="font-weight:800;font-size:12px;"></div>
-            </div>
-          </div>
-        </div>
-        <div class="print-unit-fields" style="margin-top:12px;">
-          <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
-          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
-        </div>
-        <details id="printLayoutDesigner" class="print-designer-wrap" open>
-          <summary>تصميم اللزقتين (GUI) — اسحب الحدود بالماوس لتثبيت القياس الرسمي</summary>
+        <details id="printLayoutDesigner" class="print-designer-wrap" open style="margin-top:0;margin-bottom:12px;">
+          <summary>شكل الليبل · تصميم GUI اللزقتين — اسحب لنقل العناصر أو كبّر/صغّر من الزاوية</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
               الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
@@ -7765,7 +7712,6 @@ def home() -> HTMLResponse:
             <div class="print-designer-scroll">
               <div id="printDesignerBoard" class="print-designer-sheet" aria-label="محرر شكل اللزقتين"></div>
             </div>
-            <!-- حقول مخفية للتوافق — تتحدّث من المحرر -->
             <div style="display:none;" aria-hidden="true">
               <input id="printSetNamePx" type="range" min="16" max="56" step="1" value="36" />
               <input id="printSetOriginalPx" type="range" min="6" max="16" step="1" value="9" />
@@ -7780,6 +7726,62 @@ def home() -> HTMLResponse:
             </div>
           </div>
         </details>
+
+        <div class="print-dual-units">
+          <div class="print-side-unit" data-side="left">
+            <p class="print-side-title">لزق اليسار</p>
+            <label class="field-label" for="printQueryLeft">رقم الصنف أو الباركود</label>
+            <input id="printQueryLeft" placeholder="رقم / باركود اليسار" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
+            <input id="printNameLeft" type="hidden" value="" data-from-fetch="1" />
+            <div class="btn-row" style="margin-top:8px;">
+              <button type="button" id="printFetchBtnLeft" class="btn-secondary" onclick="fetchItemForBarcodePrint('left')">جلب اليسار</button>
+            </div>
+            <div id="printFetchStatusLeft" class="muted print-side-status"></div>
+            <div id="printOriginalWrapLeft" style="display:none;margin-top:8px;">
+              <label class="field-label" for="printOriginalSelectLeft">الرقم الأصلي — يسار</label>
+              <select id="printOriginalSelectLeft"></select>
+            </div>
+            <!-- معاينة مخفية للتوافق مع منطق الطباعة -->
+            <div id="printPreviewLeft" class="print-side-preview" style="display:none !important;" aria-hidden="true">
+              <div class="pv-row">
+                <span id="printPvOriginalLeft">الأصلي: —</span>
+                <span id="printPvLocationLeft">الموقع: —</span>
+              </div>
+              <p class="pv-name" id="printPvNameLeft">—</p>
+              <svg id="printPvBarcodeLeft"></svg>
+              <div id="printPvBarcodeTextLeft"></div>
+            </div>
+          </div>
+          <div class="print-side-unit" data-side="right">
+            <p class="print-side-title">لزق اليمين</p>
+            <label class="field-label" for="printQueryRight">رقم الصنف أو الباركود</label>
+            <input id="printQueryRight" placeholder="رقم / باركود اليمين" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
+            <input id="printNameRight" type="hidden" value="" data-from-fetch="1" />
+            <div class="btn-row" style="margin-top:8px;">
+              <button type="button" id="printFetchBtnRight" class="btn-secondary" onclick="fetchItemForBarcodePrint('right')">جلب اليمين</button>
+            </div>
+            <div id="printFetchStatusRight" class="muted print-side-status"></div>
+            <div id="printOriginalWrapRight" style="display:none;margin-top:8px;">
+              <label class="field-label" for="printOriginalSelectRight">الرقم الأصلي — يمين</label>
+              <select id="printOriginalSelectRight"></select>
+            </div>
+            <div id="printPreviewRight" class="print-side-preview" style="display:none !important;" aria-hidden="true">
+              <div class="pv-row">
+                <span id="printPvOriginalRight">الأصلي: —</span>
+                <span id="printPvLocationRight">الموقع: —</span>
+              </div>
+              <p class="pv-name" id="printPvNameRight">—</p>
+              <svg id="printPvBarcodeRight"></svg>
+              <div id="printPvBarcodeTextRight"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="print-unit-fields" style="margin-top:12px;">
+          <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
+          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
+        </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
           الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 106×28 مم · كل لزقة 50×25 مم · فجوة 3 مم · هوامش 1.5 مم.
         </p>
@@ -9124,13 +9126,13 @@ def home() -> HTMLResponse:
         fitPrintBarcodeText(textEl, barcode);
         if (!barcode) textEl.textContent = '—';
       }
-      if (card) card.style.display = 'block';
+      if (card) card.style.display = 'none';
       updatePrintDualPreviewSlots();
-      ensureJsBarcodeLib().then(() => {
-        fitPrintBarcodeDynamic(document.getElementById('printPvBarcode' + cap), barcode, {
-          height: 40, format: 'CODE128'
-        });
-      }).catch(() => {});
+      // لا ترسم معاينة شاشة — الشكل يظهر في محرر GUI أعلى الصفحة
+      try {
+        const des = document.getElementById('printLayoutDesigner');
+        if (des && des.open) refreshPrintDesignerBoard();
+      } catch (_) {}
     }
     function applyPrintLookupRows(side, rows, message, forceNameFromRow) {
       const s = printSideKey(side);
