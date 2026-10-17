@@ -7691,11 +7691,16 @@ def home() -> HTMLResponse:
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
+        // نفس بيانات الطباعة/المواقع — أعد عرض نتائج المواقع من القاعدة المشتركة
+        if (hasSharedLocationQuery()) {
+          searchNow('location').catch(() => {});
+        }
       } else {
         stopHesabateLocationPoller();
       }
       if (activeSearchTab === 'print') {
         ensureJsBarcodeLib().catch(() => {});
+        refreshLoadedPrintSidesFromSharedDb().catch(() => {});
         document.getElementById('names').innerHTML = '';
         document.getElementById('resultsTable').style.display = 'none';
         const wiperWrap = document.getElementById('wipersTableWrap');
@@ -7745,19 +7750,51 @@ def home() -> HTMLResponse:
       if (lastErr) line += ` · خطأ: ${lastErr}`;
       if (st) st.textContent = line;
     }
+    let sharedLocPrintSyncBusy = false;
+    function hasSharedLocationQuery() {
+      const t = ((document.getElementById('locationTextQueryInput') || {}).value || '').trim();
+      const b = lightSanitizeBarcodeValue(
+        (document.getElementById('locationBarcodeQueryInput') || {}).value || ''
+      );
+      return !!(t || b);
+    }
+    async function refreshLoadedPrintSidesFromSharedDb() {
+      for (const side of ['left', 'right']) {
+        const raw = ((document.getElementById('printQuery' + printSideCap(side)) || {}).value || '').trim();
+        if (!raw) continue;
+        const st = printSides[side];
+        if (!st || (!(st.rows && st.rows.length) && !st.item)) continue;
+        try {
+          const rows = await lookupLocalLocationsForPrint(raw);
+          if (rows.length) {
+            applyPrintLookupRows(side, rows, 'متزامن مع بيانات المواقع', true);
+          }
+        } catch (_) {}
+      }
+    }
+    async function syncSharedLocationAndPrintData(source) {
+      // المواقع وطباعة الباركود يشتركان بنفس location_rows — أي تحديث يحدّث الواجهتين
+      if (sharedLocPrintSyncBusy) return;
+      sharedLocPrintSyncBusy = true;
+      try {
+        if (source !== 'location-search' && hasSharedLocationQuery() && !locationLiveRefreshBusy) {
+          try { await searchNow('location'); } catch (_) {}
+        }
+        if (source !== 'print-local') {
+          await refreshLoadedPrintSidesFromSharedDb();
+        }
+      } finally {
+        sharedLocPrintSyncBusy = false;
+      }
+    }
     function applyHesabateSearchVersion(data) {
       const ver = data && data.search_version != null ? Number(data.search_version) : null;
       if (ver == null || Number.isNaN(ver)) return;
-      if (lastHesabateSearchVersion != null && ver !== lastHesabateSearchVersion) {
-        // لا تُعد البحث عند وجود باركود — التحديث التلقائي يتكفّل به ويمنع حلقة لا نهائية
-        const bcNow = lightSanitizeBarcodeValue(
-          (document.getElementById('locationBarcodeQueryInput') || {}).value || ''
-        );
-        if (activeSearchTab === 'location' && !bcNow && !locationLiveRefreshBusy) {
-          searchNow('location');
-        }
-      }
+      const changed = lastHesabateSearchVersion != null && ver !== lastHesabateSearchVersion;
       lastHesabateSearchVersion = ver;
+      if (changed) {
+        syncSharedLocationAndPrintData('version');
+      }
     }
 
     async function refreshHesabateStatus() {
@@ -8017,6 +8054,7 @@ def home() -> HTMLResponse:
               `${live.message || 'محدّث'} | محلي ${localMs != null ? localMs + 'ms' : '—'} → تحديث ${uiMs}ms | ${timingLine}`
             );
             if (stEl) stEl.textContent = live.message || 'تم التحديث من حساباتي';
+            syncSharedLocationAndPrintData('location-auto');
           } else if (unsupported || live.products_fetch_mode === 'local_only_no_pro_id') {
             // أبقِ النتائج المحلية ظاهرة — هذه ليست خطأ شبكة
             const soft = hadLocalRows
@@ -8179,6 +8217,7 @@ def home() -> HTMLResponse:
             `${live.message || (imported ? `تم جلب صنف جديد · ${rows.length}` : `تم جلب ${rows.length} صنف`)} | ${timingLine}`
           );
           if (stEl) stEl.textContent = live.message || `تم جلب ${n} صنف.`;
+          await syncSharedLocationAndPrintData('location-fetch');
         } catch (err) {
           let hint = 'تعذر جلب الصنف.';
           if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة أو استخدم «تحديث الكل الآن».';
@@ -8654,13 +8693,14 @@ def home() -> HTMLResponse:
           }
           return;
         }
-        // بيانات حساباتي المحدّثة (الموقع الجديد) هي المعروضة للطباعة
+        // بيانات حساباتي المحدّثة (الموقع الجديد) هي المعروضة للطباعة + تُزامَن مع تبويب المواقع
         applyPrintLookupRows(
           s,
           rankLocationRowsForPrint(apiRows),
           `${live.message || `تم تحديث الصنف · ${apiRows.length}`} | ${timingLine}`,
           true
         );
+        await syncSharedLocationAndPrintData('print-fetch');
       } catch (err) {
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
@@ -8861,7 +8901,7 @@ def home() -> HTMLResponse:
             : 'تم التحديث من حساباتي.');
         if (stEl) stEl.textContent = msg;
         setStats( msg);
-        if (activeSearchTab === 'location') await searchNow('location');
+        await syncSharedLocationAndPrintData('full-import');
       } finally {
         /* no-op */
       }
