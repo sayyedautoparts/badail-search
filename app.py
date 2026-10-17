@@ -6962,13 +6962,14 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* Rongta RP4xx — ورقة واحدة = لزيقان يمين/يسار 120×30 مم (+5مم عن 25) */
+      /* ورقة اللزقتين حسب المقاس الفعلي: 106×28 مم
+         هوامش 1.5مم · فجوة وسط 3مم · كل لزقة 50×25 مم */
       @page {
-        size: 120mm 30mm;
+        size: 106mm 28mm;
         margin: 0;
       }
       html, body {
-        width: 120mm !important;
+        width: 106mm !important;
         height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
@@ -6976,14 +6977,13 @@ def home() -> HTMLResponse:
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
       }
-      /* أخفِ كل شيء إلا ورقة اللزق — يمنع صفحات زيادة */
       body.printing-labels > *:not(#printLabelSheet) {
         display: none !important;
       }
       .print-label-sheet {
         display: block !important;
         position: static !important;
-        width: 120mm;
+        width: 106mm;
         margin: 0;
         padding: 0;
         background: #fff;
@@ -6993,12 +6993,14 @@ def home() -> HTMLResponse:
         flex-direction: row;
         direction: ltr;
         justify-content: flex-start;
-        width: 120mm;
-        height: 30mm;
-        max-height: 30mm;
+        align-items: flex-start;
+        width: 106mm;
+        height: 28mm;
+        max-height: 28mm;
         box-sizing: border-box;
         margin: 0;
-        padding: 0;
+        padding: 1.5mm;
+        gap: 3mm;
         page-break-after: always;
         break-after: page;
         page-break-inside: avoid;
@@ -7010,16 +7012,15 @@ def home() -> HTMLResponse:
         break-after: auto !important;
       }
       .print-label {
-        /* كل لزقة 59مم + فراغ 1مم من جهة الوسط لكل جهة = 120مم */
-        width: 59mm;
-        max-width: 59mm;
-        height: 30mm;
-        max-height: 30mm;
+        width: 50mm;
+        max-width: 50mm;
+        height: 25mm;
+        max-height: 25mm;
         box-sizing: border-box;
-        padding: 0.35mm 0.8mm 0.25mm;
+        padding: 0.4mm 0.7mm 0.25mm;
         margin: 0;
         text-align: center;
-        font-family: Tahoma, Arial, sans-serif;
+        font-family: "Segoe UI", Arial, Tahoma, sans-serif;
         color: #000;
         overflow: hidden !important;
         display: flex;
@@ -7028,31 +7029,22 @@ def home() -> HTMLResponse:
         justify-content: flex-start;
       }
       .print-label-row .print-label:first-child,
-      .print-label.print-label-left {
-        /* لزق اليسار (حافة الورقة) — هامش خارجي أكبر حتى لا يُقصّ quiet zone */
-        margin-right: 1mm;
-        padding-left: 1.6mm;
-        padding-right: 0.5mm;
-      }
+      .print-label.print-label-left,
       .print-label-row .print-label:last-child,
       .print-label.print-label-right {
-        /* لزق اليمين */
-        margin-left: 1mm;
-        padding-right: 1.6mm;
-        padding-left: 0.5mm;
+        margin: 0;
+        padding: 0.4mm 0.7mm 0.25mm;
       }
       .print-label.print-label-empty {
         visibility: hidden;
       }
-      /* كل المساحة فوق الأصلي/الموقع = اسم الصنف */
       .print-label .pl-name {
         flex: 1 1 auto;
         min-height: 0;
         width: 100%;
         max-width: 100%;
-        /* خط أوضح للطباعة الحرارية (عربي + إنجليزي) */
         font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
-        font-size: 42px;
+        font-size: 22px;
         font-weight: 900;
         margin: 0;
         padding: 0;
@@ -7065,7 +7057,6 @@ def home() -> HTMLResponse:
         text-align: center;
         align-content: center;
       }
-      /* الأصلي + الموقع مباشرة فوق الباركود */
       .print-label .pl-meta {
         flex: 0 0 auto;
         display: flex;
@@ -7073,12 +7064,12 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: center;
         align-items: center;
-        gap: 2mm;
+        gap: 1.5mm;
         font-family: "Segoe UI", Arial, Tahoma, sans-serif;
-        font-size: 9px;
+        font-size: 8px;
         font-weight: 800;
-        margin: 0 auto 0.4mm;
-        max-height: 2.8mm;
+        margin: 0 auto 0.3mm;
+        max-height: 2.4mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7101,8 +7092,8 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0.15mm;
-        padding: 0 0.4mm;
+        gap: 0.1mm;
+        padding: 0 0.3mm;
         margin: 0;
         width: 100%;
         max-width: 100%;
@@ -7113,7 +7104,6 @@ def home() -> HTMLResponse:
         display: block;
         margin: 0 auto;
         overflow: visible;
-        /* nearest-neighbor — مهم للماسح على الطابعة الحرارية */
         image-rendering: pixelated;
         image-rendering: crisp-edges;
         -ms-interpolation-mode: nearest-neighbor;
@@ -7124,13 +7114,12 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        /* خط monospace أوضح تحت الباركود */
         font-family: Consolas, "Courier New", monospace;
-        font-size: 7px;
+        font-size: 6.5px;
         font-weight: 700;
-        letter-spacing: .03em;
+        letter-spacing: .02em;
         margin: 0;
-        padding: 0 0.2mm;
+        padding: 0;
         line-height: 1;
         overflow: hidden !important;
         text-overflow: clip;
@@ -7146,7 +7135,7 @@ def home() -> HTMLResponse:
       position: fixed !important;
       left: -10000px !important;
       top: 0 !important;
-      width: 12cm !important;
+      width: 106mm !important;
       visibility: hidden !important;
       pointer-events: none !important;
       z-index: -1 !important;
@@ -7155,32 +7144,32 @@ def home() -> HTMLResponse:
       display: flex;
       direction: ltr;
       justify-content: flex-start;
-      width: 120mm;
-      height: 30mm;
+      align-items: flex-start;
+      width: 106mm;
+      height: 28mm;
+      padding: 1.5mm;
+      gap: 3mm;
+      box-sizing: border-box;
     }
     .print-label-sheet.print-measure .print-label {
-      width: 59mm;
-      max-width: 59mm;
-      height: 30mm;
-      max-height: 30mm;
+      width: 50mm;
+      max-width: 50mm;
+      height: 25mm;
+      max-height: 25mm;
       box-sizing: border-box;
-      padding: 0.35mm 0.8mm 0.25mm;
+      padding: 0.4mm 0.7mm 0.25mm;
+      margin: 0;
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Segoe UI", Arial, Tahoma, sans-serif;
     }
     .print-label-sheet.print-measure .print-label-row .print-label:first-child,
-    .print-label-sheet.print-measure .print-label.print-label-left {
-      margin-right: 1mm;
-      padding-left: 1.6mm;
-      padding-right: 0.5mm;
-    }
+    .print-label-sheet.print-measure .print-label.print-label-left,
     .print-label-sheet.print-measure .print-label-row .print-label:last-child,
     .print-label-sheet.print-measure .print-label.print-label-right {
-      margin-left: 1mm;
-      padding-right: 1.6mm;
-      padding-left: 0.5mm;
+      margin: 0;
+      padding: 0.4mm 0.7mm 0.25mm;
     }
     .print-label-sheet.print-measure .pl-name {
       flex: 1 1 auto;
@@ -7199,13 +7188,13 @@ def home() -> HTMLResponse:
       display: flex;
       direction: ltr;
       justify-content: center;
-      gap: 2mm;
-      max-height: 2.8mm;
-      margin: 0 auto 0.4mm;
+      gap: 1.5mm;
+      max-height: 2.4mm;
+      margin: 0 auto 0.3mm;
       overflow: hidden;
       white-space: nowrap;
       width: 100%;
-      font-size: 9px;
+      font-size: 8px;
       font-weight: 800;
     }
     .print-label-sheet.print-measure .pl-bc-wrap {
@@ -7558,16 +7547,16 @@ def home() -> HTMLResponse:
           <summary style="cursor:pointer;font-weight:800;">إعدادات شكل اللزقة (أحجام الخط وموضع الباركود)</summary>
           <div class="print-layout-grid" style="margin-top:10px;display:grid;gap:10px;">
             <div>
-              <label class="field-label" for="printSetNamePx">حجم خط اسم الصنف: <strong id="printSetNamePxVal">48</strong>px</label>
-              <input id="printSetNamePx" type="range" min="18" max="72" step="1" value="48" oninput="onPrintLayoutSettingChange()" />
+              <label class="field-label" for="printSetNamePx">حجم خط اسم الصنف: <strong id="printSetNamePxVal">36</strong>px</label>
+              <input id="printSetNamePx" type="range" min="16" max="56" step="1" value="36" oninput="onPrintLayoutSettingChange()" />
             </div>
             <div>
-              <label class="field-label" for="printSetOriginalPx">حجم خط الرقم الأصلي: <strong id="printSetOriginalPxVal">10</strong>px</label>
-              <input id="printSetOriginalPx" type="range" min="6" max="18" step="1" value="10" oninput="onPrintLayoutSettingChange()" />
+              <label class="field-label" for="printSetOriginalPx">حجم خط الرقم الأصلي: <strong id="printSetOriginalPxVal">9</strong>px</label>
+              <input id="printSetOriginalPx" type="range" min="6" max="16" step="1" value="9" oninput="onPrintLayoutSettingChange()" />
             </div>
             <div>
-              <label class="field-label" for="printSetLocationPx">حجم خط الموقع: <strong id="printSetLocationPxVal">10</strong>px</label>
-              <input id="printSetLocationPx" type="range" min="6" max="18" step="1" value="10" oninput="onPrintLayoutSettingChange()" />
+              <label class="field-label" for="printSetLocationPx">حجم خط الموقع: <strong id="printSetLocationPxVal">9</strong>px</label>
+              <input id="printSetLocationPx" type="range" min="6" max="16" step="1" value="9" oninput="onPrintLayoutSettingChange()" />
             </div>
             <div>
               <label class="field-label" for="printSetBcShiftX">إزاحة الباركود يمين/يسار: <strong id="printSetBcShiftXVal">0</strong> مم</label>
@@ -7584,7 +7573,7 @@ def home() -> HTMLResponse:
           </div>
         </details>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×30 مم = لزيقان منفصلان.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 106×28 مم · كل لزقة 50×25 مم · فجوة 3 مم · هوامش 1.5 مم.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -8592,14 +8581,14 @@ def home() -> HTMLResponse:
       // —— باركود أصغر (ارتفاع+عرض) + أعمدة bold · اسم الصنف يأخذ المساحة ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      // عرض أكبر ~10% عن السابق (44→48.5) مع إبقاء الارتفاع مضغوط للاسم
-      const usableMm = 48.5;
-      const heightMm = 6.8;
+      // لزقة 50مم: عرض باركود ≈ 45مم · ارتفاع مضغوط لاسم أكبر
+      const usableMm = 45;
+      const heightMm = 6.2;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(42, Math.round(heightMm * dotsPerMm));
-      // أعمدة bold واضحة
-      const TARGET_MODULE_DOTS = 4;
-      const MIN_MODULE_DOTS = 3;
+      const heightDots = Math.max(40, Math.round(heightMm * dotsPerMm));
+      // أعمدة bold واضحة على العرض الأصغر
+      const TARGET_MODULE_DOTS = 3;
+      const MIN_MODULE_DOTS = 2;
       const quietTries = [8, 6, 5];
 
       function probeUnits(quietMods) {
@@ -9080,9 +9069,9 @@ def home() -> HTMLResponse:
       return { name, original, location, barcode };
     }
     const PRINT_LAYOUT_DEFAULTS = {
-      namePx: 48,
-      originalPx: 10,
-      locationPx: 10,
+      namePx: 36,
+      originalPx: 9,
+      locationPx: 9,
       bcShiftXmm: 0,
       bcShiftYmm: 0
     };
@@ -9096,9 +9085,9 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const o = raw ? JSON.parse(raw) : {};
         return {
-          namePx: clamp(o.namePx, 18, 72, PRINT_LAYOUT_DEFAULTS.namePx),
-          originalPx: clamp(o.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
-          locationPx: clamp(o.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
+          namePx: clamp(o.namePx, 16, 56, PRINT_LAYOUT_DEFAULTS.namePx),
+          originalPx: clamp(o.originalPx, 6, 16, PRINT_LAYOUT_DEFAULTS.originalPx),
+          locationPx: clamp(o.locationPx, 6, 16, PRINT_LAYOUT_DEFAULTS.locationPx),
           bcShiftXmm: clamp(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
           bcShiftYmm: clamp(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
         };
@@ -9305,7 +9294,7 @@ def home() -> HTMLResponse:
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 120×30 مم`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 106×28 مم`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       printJobTitleRestore = document.title;
