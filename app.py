@@ -8263,11 +8263,23 @@ def home() -> HTMLResponse:
         .map((s) => s.trim())
         .filter(Boolean);
     }
+    function isPrintOriginalMenuToken(tok) {
+      // قائمة اختيار الأصلي: استبعد أي مقطع فيه @ أو + أو /
+      const t = String(tok || '').trim();
+      if (!t) return false;
+      if (/[@+/]/.test(t)) return false;
+      return true;
+    }
+    function sanitizePrintItemName(name) {
+      // عند الطباعة: لا تطبع حرف @ داخل اسم الصنف
+      return String(name == null ? '' : name).replace(/@/g, '');
+    }
     function collectPrintOriginalOptions(rows) {
       const seen = new Set();
       const opts = [];
       (Array.isArray(rows) ? rows : []).forEach((r) => {
         splitOriginalTokens(r && r.original_number).forEach((tok) => {
+          if (!isPrintOriginalMenuToken(tok)) return;
           const key = tok.toLowerCase();
           if (seen.has(key)) return;
           seen.add(key);
@@ -8413,14 +8425,14 @@ def home() -> HTMLResponse:
     }
     function getPrintName(side) {
       const id = 'printName' + printSideCap(side);
-      return ((document.getElementById(id) || {}).value || '').trim();
+      return sanitizePrintItemName(((document.getElementById(id) || {}).value || '').trim());
     }
     function getPrintNameLeft() { return getPrintName('left'); }
     function getPrintNameRight() { return getPrintName('right'); }
     function setPrintName(side, name) {
       const el = document.getElementById('printName' + printSideCap(side));
       if (el) {
-        el.value = String(name || '').trim();
+        el.value = sanitizePrintItemName(String(name || '').trim());
         el.dataset.fromFetch = '1';
       }
     }
@@ -8463,7 +8475,7 @@ def home() -> HTMLResponse:
       }
       st.item = row;
       const nameInp = document.getElementById('printName' + cap);
-      const name = String(row.item_name || '').trim() || '';
+      const name = sanitizePrintItemName(String(row.item_name || '').trim() || '');
       if (nameInp && (forceNameFromRow || !nameInp.value.trim() || nameInp.dataset.fromFetch === '1')) {
         setPrintName(s, name);
       }
@@ -8754,8 +8766,16 @@ def home() -> HTMLResponse:
       const chosen = sel && sel.value ? sel.value : '';
       const row = pickPrintRowForOriginal(st.rows, chosen) || st.item;
       if (!row) return null;
-      const name = getPrintName(s) || String(row.item_name || '').trim() || '—';
-      const original = chosen || String(row.original_number || '').trim() || '—';
+      const name = getPrintName(s)
+        || sanitizePrintItemName(String(row.item_name || '').trim())
+        || '—';
+      // الأصلي المعروض على اللزقة: إن المختار فيه @/+// تجاهله
+      let original = chosen || '';
+      if (!isPrintOriginalMenuToken(original)) {
+        const okTok = splitOriginalTokens(row.original_number).find(isPrintOriginalMenuToken);
+        original = okTok || '';
+      }
+      if (!original) original = '—';
       const location = String(row.location || '').trim() || '—';
       const barcode = pickPrintBarcodeExactFromRow(row);
       if (!barcode || !/[A-Za-z0-9]/.test(barcode)) return { error: 'no-barcode', side: s };
@@ -8810,7 +8830,7 @@ def home() -> HTMLResponse:
         `<div class="pl-meta"><span class="pl-orig"></span><span class="pl-loc"></span></div>` +
         `<div class="pl-bc-wrap"><svg class="pl-bc"></svg><div class="pl-bc-text"></div></div>`;
       if (data && !data.empty) {
-        label.querySelector('.pl-name').textContent = data.name || '—';
+        label.querySelector('.pl-name').textContent = sanitizePrintItemName(data.name || '—') || '—';
         label.querySelector('.pl-orig').textContent = data.original || '—';
         label.querySelector('.pl-loc').textContent = data.location || '—';
         const bcText = label.querySelector('.pl-bc-text');
