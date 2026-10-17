@@ -7236,6 +7236,244 @@ def home() -> HTMLResponse:
       max-width: 100%;
       overflow: hidden;
     }
+    /* محرر GUI للزقتين — مقياس شاشة (مم→بكسل) */
+    .print-designer-wrap {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #f7f9fc;
+      overflow: hidden;
+    }
+    .print-designer-wrap > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      font-weight: 800;
+      background: #eef3fa;
+      user-select: none;
+    }
+    .print-designer-wrap > summary::-webkit-details-marker { display: none; }
+    .print-designer-wrap > summary::after {
+      content: "▾";
+      float: left;
+      opacity: .5;
+    }
+    .print-designer-wrap[open] > summary::after { content: "▴"; }
+    .print-designer-body { padding: 12px; }
+    .print-designer-hint {
+      margin: 0 0 10px;
+      font-size: 12.5px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .print-designer-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .print-designer-toolbar .btn-secondary,
+    .print-designer-toolbar button {
+      width: auto;
+      margin: 0;
+      padding: 8px 12px;
+    }
+    #printDesignerReadout {
+      font-size: 12px;
+      font-weight: 700;
+      color: #1a2744;
+      line-height: 1.4;
+    }
+    .print-designer-scroll {
+      overflow: auto;
+      max-width: 100%;
+      padding-bottom: 6px;
+    }
+    .print-designer-sheet {
+      position: relative;
+      box-sizing: border-box;
+      background: #dfe6f1;
+      border: 1px dashed #8fa0b8;
+      border-radius: 6px;
+      margin: 0 auto;
+      direction: ltr;
+      user-select: none;
+      touch-action: none;
+    }
+    .print-designer-row {
+      position: absolute;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: row;
+      direction: ltr;
+    }
+    .print-designer-label {
+      position: relative;
+      box-sizing: border-box;
+      background: #fff;
+      border: 1.5px solid #1a2744;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 1px 0 rgba(0,0,0,.06);
+    }
+    .print-designer-label .pdg-side-tag {
+      position: absolute;
+      top: 2px;
+      left: 3px;
+      z-index: 3;
+      font-size: 9px;
+      font-weight: 800;
+      color: #5b667a;
+      pointer-events: none;
+      opacity: .75;
+    }
+    .print-designer-label[data-side="right"] .pdg-side-tag { left: auto; right: 3px; }
+    .pdg-zone {
+      position: relative;
+      box-sizing: border-box;
+      width: 100%;
+      overflow: hidden;
+      flex: 0 0 auto;
+      border-bottom: 1px dotted rgba(45,95,255,.35);
+    }
+    .pdg-zone[data-zone="bc"] { border-bottom: none; }
+    .pdg-zone.is-active {
+      outline: 2px solid #2d5fff;
+      outline-offset: -2px;
+      background: rgba(45,95,255,.04);
+    }
+    .pdg-zone-inner {
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 1px 3px;
+      overflow: hidden;
+      font-weight: 800;
+      color: #111;
+      line-height: 1.05;
+    }
+    .pdg-zone[data-zone="name"] .pdg-zone-inner {
+      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+      font-weight: 900;
+      align-content: center;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .pdg-zone[data-zone="meta"] .pdg-zone-inner {
+      display: flex;
+      flex-direction: row;
+      direction: ltr;
+      gap: 0;
+      padding: 0;
+    }
+    .pdg-meta-part {
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 0 2px;
+      white-space: nowrap;
+      font-weight: 800;
+    }
+    .pdg-meta-part.orig { border-left: none; }
+    .pdg-meta-part.loc { border-right: none; }
+    .pdg-zone[data-zone="bc"] .pdg-zone-inner {
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 1px;
+      padding: 1px 2px 0;
+    }
+    .pdg-bc-bars {
+      width: 92%;
+      background: repeating-linear-gradient(
+        90deg,
+        #000 0,
+        #000 1.5px,
+        #fff 1.5px,
+        #fff 3px
+      );
+      border: 1px solid #222;
+      flex: 1 1 auto;
+      min-height: 8px;
+      max-height: 100%;
+    }
+    .pdg-bc-text {
+      font-family: Consolas, "Courier New", monospace;
+      font-weight: 700;
+      white-space: pre;
+      line-height: 1;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .pdg-handle-h {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      height: 10px;
+      margin-top: -5px;
+      cursor: ns-resize;
+      z-index: 5;
+      background: transparent;
+    }
+    .pdg-handle-h::after {
+      content: "";
+      position: absolute;
+      left: 20%;
+      right: 20%;
+      top: 3px;
+      height: 4px;
+      border-radius: 3px;
+      background: #2d5fff;
+      opacity: .55;
+    }
+    .pdg-handle-h:hover::after,
+    .pdg-handle-h.is-dragging::after { opacity: 1; }
+    .pdg-handle-v {
+      position: absolute;
+      top: 10%;
+      bottom: 10%;
+      width: 10px;
+      margin-left: -5px;
+      cursor: ew-resize;
+      z-index: 5;
+      background: transparent;
+    }
+    .pdg-handle-v::after {
+      content: "";
+      position: absolute;
+      top: 15%;
+      bottom: 15%;
+      left: 3px;
+      width: 4px;
+      border-radius: 3px;
+      background: #178a4d;
+      opacity: .55;
+    }
+    .pdg-handle-v:hover::after,
+    .pdg-handle-v.is-dragging::after { opacity: 1; }
+    .pdg-zone-label {
+      position: absolute;
+      top: 1px;
+      right: 3px;
+      font-size: 8px;
+      font-weight: 700;
+      color: #5b667a;
+      pointer-events: none;
+      opacity: .7;
+      z-index: 2;
+    }
+    @media (max-width: 720px) {
+      .print-designer-sheet { transform-origin: top center; }
+    }
     /* جدول المواقع خارج لوحته — لا يظهر في طباعة/رئيسي/قياسات/قشطان */
     body.tab-print #locationsTableWrap,
     body.tab-print #wipersTableWrap,
@@ -7583,33 +7821,35 @@ def home() -> HTMLResponse:
           <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
-        <details id="printLayoutSettings" class="print-layout-settings" style="margin-top:12px;">
-          <summary style="cursor:pointer;font-weight:800;">إعدادات شكل اللزقة (أحجام الخط وموضع الباركود)</summary>
-          <div class="print-layout-grid" style="margin-top:10px;display:grid;gap:10px;">
-            <div>
-              <label class="field-label" for="printSetNamePx">حجم خط اسم الصنف: <strong id="printSetNamePxVal">36</strong>px</label>
-              <input id="printSetNamePx" type="range" min="16" max="56" step="1" value="36" oninput="onPrintLayoutSettingChange()" />
-            </div>
-            <div>
-              <label class="field-label" for="printSetOriginalPx">حجم خط الرقم الأصلي: <strong id="printSetOriginalPxVal">9</strong>px</label>
-              <input id="printSetOriginalPx" type="range" min="6" max="16" step="1" value="9" oninput="onPrintLayoutSettingChange()" />
-            </div>
-            <div>
-              <label class="field-label" for="printSetLocationPx">حجم خط الموقع: <strong id="printSetLocationPxVal">9</strong>px</label>
-              <input id="printSetLocationPx" type="range" min="6" max="16" step="1" value="9" oninput="onPrintLayoutSettingChange()" />
-            </div>
-            <div>
-              <label class="field-label" for="printSetBcShiftX">إزاحة الباركود يمين/يسار: <strong id="printSetBcShiftXVal">0</strong> مم</label>
-              <input id="printSetBcShiftX" type="range" min="-6" max="6" step="0.5" value="0" oninput="onPrintLayoutSettingChange()" />
-            </div>
-            <div>
-              <label class="field-label" for="printSetBcShiftY">إزاحة الباركود فوق/تحت: <strong id="printSetBcShiftYVal">0</strong> مم</label>
-              <input id="printSetBcShiftY" type="range" min="-5" max="5" step="0.5" value="0" oninput="onPrintLayoutSettingChange()" />
-            </div>
-            <div class="btn-row">
+        <details id="printLayoutDesigner" class="print-designer-wrap" open>
+          <summary>تصميم اللزقتين (GUI) — اسحب الحدود بالماوس لتثبيت القياس الرسمي</summary>
+          <div class="print-designer-body">
+            <p class="print-designer-hint">
+              الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
+              اسحب الخطوط الزرقاء (ارتفاع الاسم / الموقع / الباركود) والخط الأخضر (عرض الأصلي مقابل الموقع).
+              الحجم اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر تلقائياً جوّا مساحتو عشان ما يطلع برا ويكون مقروء.
+            </p>
+            <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي</button>
+              <button type="button" class="btn-secondary" onclick="refreshPrintDesignerBoard()">تحديث من الأصناف الحالية</button>
+              <div id="printDesignerReadout">—</div>
             </div>
-            <p class="muted" style="margin:0;font-size:12px;">الإعدادات تُحفظ على هذا الجهاز وتُطبَّق عند الطباعة على الرسمة.</p>
+            <div class="print-designer-scroll">
+              <div id="printDesignerBoard" class="print-designer-sheet" aria-label="محرر شكل اللزقتين"></div>
+            </div>
+            <!-- حقول مخفية للتوافق — تتحدّث من المحرر -->
+            <div style="display:none;" aria-hidden="true">
+              <input id="printSetNamePx" type="range" min="16" max="56" step="1" value="36" />
+              <input id="printSetOriginalPx" type="range" min="6" max="16" step="1" value="9" />
+              <input id="printSetLocationPx" type="range" min="6" max="16" step="1" value="9" />
+              <input id="printSetBcShiftX" type="range" min="-6" max="6" step="0.5" value="0" />
+              <input id="printSetBcShiftY" type="range" min="-5" max="5" step="0.5" value="0" />
+              <span id="printSetNamePxVal"></span>
+              <span id="printSetOriginalPxVal"></span>
+              <span id="printSetLocationPxVal"></span>
+              <span id="printSetBcShiftXVal"></span>
+              <span id="printSetBcShiftYVal"></span>
+            </div>
           </div>
         </details>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
@@ -7887,6 +8127,7 @@ def home() -> HTMLResponse:
         } catch (_) {
           restorePrintFormState().catch(() => {});
         }
+        try { refreshPrintDesignerBoard(); } catch (_) {}
         return;
       }
       // احفظ حقول الطباعة قبل مغادرة التبويب
@@ -8638,12 +8879,15 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— باركود أصغر (ارتفاع+عرض) + أعمدة bold · اسم الصنف يأخذ المساحة ——
+      // —— باركود حراري 203dpi · الارتفاع من إعدادات المحرر الرسمي ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      // لزقة 50مم: عرض باركود ≈ 45مم · ارتفاع مضغوط لاسم أكبر
+      const layoutS = (typeof getPrintLayoutSettings === 'function')
+        ? getPrintLayoutSettings()
+        : { bcHeightMm: 9 };
       const usableMm = 45;
-      const heightMm = 6.2;
+      // مساحة الباركود ≈ 78% من ارتفاع منطقة bc (الباقي لنص الباركود)
+      const heightMm = Math.max(4.5, Math.min(14, Number(layoutS.bcHeightMm || 9) * 0.78));
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(40, Math.round(heightMm * dotsPerMm));
       // أعمدة bold واضحة على العرض الأصغر
@@ -8740,13 +8984,16 @@ def home() -> HTMLResponse:
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
+      const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings() : null;
+      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 8;
       const n = display.length;
-      let px = 8;
-      if (n > 16) px = 7;
-      if (n > 22) px = 6.2;
-      if (n > 28) px = 5.5;
-      if (n > 34) px = 5;
-      el.style.fontSize = px + 'px';
+      let hint = maxPx;
+      if (n > 16) hint = Math.min(hint, 7);
+      if (n > 22) hint = Math.min(hint, 6.2);
+      if (n > 28) hint = Math.min(hint, 5.5);
+      if (n > 34) hint = Math.min(hint, 5);
+      el.style.fontSize = hint + 'px';
+      fitTextIntoBox(el, hint, 4.5);
       el.style.fontWeight = '900';
     }
     function getPrintQty() {
@@ -8978,6 +9225,10 @@ def home() -> HTMLResponse:
       setPrintFetchStatus(message || `تم تجهيز الصنف · ${st.rows.length}`, s);
       updatePrintBarcodePreview(s, !!forceNameFromRow);
       scheduleSavePrintFormState();
+      try {
+        const des = document.getElementById('printLayoutDesigner');
+        if (des && des.open) refreshPrintDesignerBoard();
+      } catch (_) {}
       return true;
     }
     function rankLocationRowsForPrint(rawRows) {
@@ -9222,35 +9473,92 @@ def home() -> HTMLResponse:
       if (!barcode || !/[A-Za-z0-9]/.test(barcode)) return { error: 'no-barcode', side: s };
       return { name, original, location, barcode };
     }
+    const PRINT_SHEET_MM = {
+      sheetW: 106,
+      sheetH: 28,
+      margin: 1.5,
+      gap: 3,
+      labelW: 50,
+      labelH: 25,
+      padY: 0.65,
+      contentH: 23.8
+    };
+    const PRINT_DESIGNER_PX_PER_MM = 4.4;
     const PRINT_LAYOUT_DEFAULTS = {
       namePx: 36,
       originalPx: 9,
       locationPx: 9,
+      bcTextPx: 7,
+      nameHeightMm: 11.5,
+      metaHeightMm: 3.2,
+      bcHeightMm: 9.1,
+      origWidthPct: 50,
       bcShiftXmm: 0,
       bcShiftYmm: 0
     };
+    function clampPrintNum(n, lo, hi, fallback) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return fallback;
+      return Math.max(lo, Math.min(hi, v));
+    }
+    function normalizePrintZoneHeights(s) {
+      const out = Object.assign({}, s);
+      let nameH = clampPrintNum(out.nameHeightMm, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm);
+      let metaH = clampPrintNum(out.metaHeightMm, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm);
+      let bcH = clampPrintNum(out.bcHeightMm, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm);
+      const target = PRINT_SHEET_MM.contentH;
+      let sum = nameH + metaH + bcH;
+      if (sum > 0.1 && Math.abs(sum - target) > 0.05) {
+        const k = target / sum;
+        nameH = Math.round(nameH * k * 100) / 100;
+        metaH = Math.round(metaH * k * 100) / 100;
+        bcH = Math.round((target - nameH - metaH) * 100) / 100;
+      }
+      out.nameHeightMm = clampPrintNum(nameH, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm);
+      out.metaHeightMm = clampPrintNum(metaH, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm);
+      out.bcHeightMm = clampPrintNum(bcH, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm);
+      // إعادة ضبط بسيطة إن تجاوزنا الحدود
+      const sum2 = out.nameHeightMm + out.metaHeightMm + out.bcHeightMm;
+      if (sum2 > target + 0.01) {
+        out.bcHeightMm = Math.max(5, Math.round((target - out.nameHeightMm - out.metaHeightMm) * 100) / 100);
+      }
+      return out;
+    }
     function getPrintLayoutSettings() {
-      const clamp = (n, lo, hi, fallback) => {
-        const v = Number(n);
-        if (!Number.isFinite(v)) return fallback;
-        return Math.max(lo, Math.min(hi, v));
-      };
       try {
         const raw = localStorage.getItem('printLayoutSettings');
         const o = raw ? JSON.parse(raw) : {};
-        return {
-          namePx: clamp(o.namePx, 16, 56, PRINT_LAYOUT_DEFAULTS.namePx),
-          originalPx: clamp(o.originalPx, 6, 16, PRINT_LAYOUT_DEFAULTS.originalPx),
-          locationPx: clamp(o.locationPx, 6, 16, PRINT_LAYOUT_DEFAULTS.locationPx),
-          bcShiftXmm: clamp(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
-          bcShiftYmm: clamp(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+        const base = {
+          namePx: clampPrintNum(o.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
+          originalPx: clampPrintNum(o.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
+          locationPx: clampPrintNum(o.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
+          bcTextPx: clampPrintNum(o.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
+          nameHeightMm: clampPrintNum(o.nameHeightMm, 6, 18, PRINT_LAYOUT_DEFAULTS.nameHeightMm),
+          metaHeightMm: clampPrintNum(o.metaHeightMm, 2, 8, PRINT_LAYOUT_DEFAULTS.metaHeightMm),
+          bcHeightMm: clampPrintNum(o.bcHeightMm, 5, 16, PRINT_LAYOUT_DEFAULTS.bcHeightMm),
+          origWidthPct: clampPrintNum(o.origWidthPct, 25, 75, PRINT_LAYOUT_DEFAULTS.origWidthPct),
+          bcShiftXmm: clampPrintNum(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
+          bcShiftYmm: clampPrintNum(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
         };
+        return normalizePrintZoneHeights(base);
       } catch (_) {
-        return Object.assign({}, PRINT_LAYOUT_DEFAULTS);
+        return normalizePrintZoneHeights(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
       }
     }
     function savePrintLayoutSettings(s) {
-      try { localStorage.setItem('printLayoutSettings', JSON.stringify(s || getPrintLayoutSettings())); } catch (_) {}
+      const normalized = normalizePrintZoneHeights(s || getPrintLayoutSettings());
+      try { localStorage.setItem('printLayoutSettings', JSON.stringify(normalized)); } catch (_) {}
+      return normalized;
+    }
+    function updatePrintDesignerReadout(s) {
+      const st = s || getPrintLayoutSettings();
+      const el = document.getElementById('printDesignerReadout');
+      if (!el) return;
+      el.textContent =
+        'اسم ' + st.nameHeightMm.toFixed(1) + 'مم (حد ' + st.namePx + 'px) · '
+        + 'أصلي/موقع ' + st.metaHeightMm.toFixed(1) + 'مم (' + st.originalPx + '/' + st.locationPx + 'px · أصلي '
+        + Math.round(st.origWidthPct) + '%) · '
+        + 'باركود ' + st.bcHeightMm.toFixed(1) + 'مم';
     }
     function syncPrintLayoutSettingsUi(s) {
       const st = s || getPrintLayoutSettings();
@@ -9265,28 +9573,265 @@ def home() -> HTMLResponse:
       set('printSetLocationPx', st.locationPx, 'printSetLocationPxVal');
       set('printSetBcShiftX', st.bcShiftXmm, 'printSetBcShiftXVal');
       set('printSetBcShiftY', st.bcShiftYmm, 'printSetBcShiftYVal');
+      updatePrintDesignerReadout(st);
     }
     function readPrintLayoutSettingsFromUi() {
-      const num = (id, fallback) => {
-        const v = Number((document.getElementById(id) || {}).value);
-        return Number.isFinite(v) ? v : fallback;
-      };
-      return {
-        namePx: num('printSetNamePx', PRINT_LAYOUT_DEFAULTS.namePx),
-        originalPx: num('printSetOriginalPx', PRINT_LAYOUT_DEFAULTS.originalPx),
-        locationPx: num('printSetLocationPx', PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcShiftXmm: num('printSetBcShiftX', PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
-        bcShiftYmm: num('printSetBcShiftY', PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
-      };
+      return getPrintLayoutSettings();
     }
     function onPrintLayoutSettingChange() {
-      const s = readPrintLayoutSettingsFromUi();
-      savePrintLayoutSettings(s);
-      syncPrintLayoutSettingsUi(s);
+      syncPrintLayoutSettingsUi(getPrintLayoutSettings());
+      refreshPrintDesignerBoard();
     }
     function resetPrintLayoutSettings() {
-      savePrintLayoutSettings(PRINT_LAYOUT_DEFAULTS);
-      syncPrintLayoutSettingsUi(PRINT_LAYOUT_DEFAULTS);
+      const s = savePrintLayoutSettings(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
+      syncPrintLayoutSettingsUi(s);
+      refreshPrintDesignerBoard();
+    }
+    function fitTextIntoBox(el, maxPx, minPx) {
+      if (!el) return minPx;
+      const hi0 = Math.max(minPx, maxPx);
+      const lo0 = Math.min(minPx, hi0);
+      el.style.overflow = 'hidden';
+      let lo = lo0;
+      let hi = hi0;
+      let best = lo0;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        el.style.fontSize = mid + 'px';
+        const okH = el.clientHeight <= 1 || el.scrollHeight <= el.clientHeight + 0.75;
+        const okW = el.clientWidth <= 1 || el.scrollWidth <= el.clientWidth + 0.75;
+        if (okH && okW) {
+          best = mid;
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      el.style.fontSize = best + 'px';
+      return best;
+    }
+    function designerSamplePayload(side) {
+      const s = printSideKey(side);
+      const p = buildPrintPayloadForSide(s);
+      if (p && !p.error) return p;
+      const name = getPrintName(s) || (s === 'right' ? 'اسم الصنف يمين' : 'اسم الصنف يسار');
+      return {
+        name: name,
+        original: 'ORIGINAL',
+        location: 'A-01',
+        barcode: s === 'right' ? '1234567890123' : '9876543210987'
+      };
+    }
+    function fitDesignerZoneFonts(labelEl, layout, sample) {
+      if (!labelEl || !layout) return;
+      const nameInner = labelEl.querySelector('.pdg-zone[data-zone="name"] .pdg-zone-inner');
+      const origEl = labelEl.querySelector('.pdg-meta-part.orig');
+      const locEl = labelEl.querySelector('.pdg-meta-part.loc');
+      const bcText = labelEl.querySelector('.pdg-bc-text');
+      if (nameInner) {
+        nameInner.textContent = sanitizePrintItemName(sample.name || '—') || '—';
+        const minN = Math.max(9, Math.round(layout.namePx * 0.32));
+        fitTextIntoBox(nameInner, layout.namePx, minN);
+      }
+      if (origEl) {
+        origEl.textContent = sample.original || '—';
+        fitTextIntoBox(origEl, layout.originalPx, Math.max(6, Math.round(layout.originalPx * 0.55)));
+      }
+      if (locEl) {
+        locEl.textContent = sample.location || '—';
+        fitTextIntoBox(locEl, layout.locationPx, Math.max(6, Math.round(layout.locationPx * 0.55)));
+      }
+      if (bcText) {
+        const bc = printBarcodeExactValue(sample.barcode || '');
+        bcText.textContent = bc || '—';
+        fitTextIntoBox(bcText, layout.bcTextPx, 4.5);
+      }
+    }
+    function deriveMaxFontsFromZones(layout) {
+      // المساحة الأكبر → حد خط أعلى؛ الطباعة تصوّر الخط تلقائياً جوّا الصندوق
+      const metaPx = clampPrintNum(Math.round(layout.metaHeightMm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx);
+      return {
+        namePx: clampPrintNum(Math.round(layout.nameHeightMm * 3.15), 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: metaPx,
+        locationPx: metaPx,
+        bcTextPx: clampPrintNum(Math.round(layout.bcHeightMm * 0.78), 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx)
+      };
+    }
+    let printDesignerDrag = null;
+    function applyDesignerDrag(clientY, clientX) {
+      if (!printDesignerDrag) return;
+      const d = printDesignerDrag;
+      const s = Object.assign({}, getPrintLayoutSettings());
+      const ppm = PRINT_DESIGNER_PX_PER_MM;
+      if (d.kind === 'name-meta') {
+        const dyMm = (clientY - d.startY) / ppm;
+        let nameH = d.startName + dyMm;
+        let metaH = d.startMeta - dyMm;
+        nameH = clampPrintNum(nameH, 6, 18, s.nameHeightMm);
+        metaH = clampPrintNum(metaH, 2, 8, s.metaHeightMm);
+        // حافظ على مجموع الاسم+الميتا، والباركود ثابت
+        const pair = d.startName + d.startMeta;
+        if (nameH + metaH !== pair) {
+          metaH = clampPrintNum(pair - nameH, 2, 8, metaH);
+          nameH = clampPrintNum(pair - metaH, 6, 18, nameH);
+        }
+        s.nameHeightMm = Math.round(nameH * 100) / 100;
+        s.metaHeightMm = Math.round(metaH * 100) / 100;
+        s.bcHeightMm = d.startBc;
+      } else if (d.kind === 'meta-bc') {
+        const dyMm = (clientY - d.startY) / ppm;
+        let metaH = d.startMeta + dyMm;
+        let bcH = d.startBc - dyMm;
+        metaH = clampPrintNum(metaH, 2, 8, s.metaHeightMm);
+        bcH = clampPrintNum(bcH, 5, 16, s.bcHeightMm);
+        const pair = d.startMeta + d.startBc;
+        if (metaH + bcH !== pair) {
+          bcH = clampPrintNum(pair - metaH, 5, 16, bcH);
+          metaH = clampPrintNum(pair - bcH, 2, 8, metaH);
+        }
+        s.nameHeightMm = d.startName;
+        s.metaHeightMm = Math.round(metaH * 100) / 100;
+        s.bcHeightMm = Math.round(bcH * 100) / 100;
+      } else if (d.kind === 'orig-loc') {
+        const dxMm = (clientX - d.startX) / ppm;
+        const labelInnerW = PRINT_SHEET_MM.labelW - 1.4;
+        const pctDelta = (dxMm / labelInnerW) * 100;
+        s.origWidthPct = clampPrintNum(d.startOrigPct + pctDelta, 25, 75, s.origWidthPct);
+        s.nameHeightMm = d.startName;
+        s.metaHeightMm = d.startMeta;
+        s.bcHeightMm = d.startBc;
+      }
+      const fonts = deriveMaxFontsFromZones(s);
+      s.namePx = fonts.namePx;
+      s.originalPx = fonts.originalPx;
+      s.locationPx = fonts.locationPx;
+      s.bcTextPx = fonts.bcTextPx;
+      const saved = savePrintLayoutSettings(s);
+      syncPrintLayoutSettingsUi(saved);
+      paintPrintDesignerZones(saved);
+    }
+    function endDesignerDrag() {
+      if (!printDesignerDrag) return;
+      document.querySelectorAll('.pdg-handle-h.is-dragging, .pdg-handle-v.is-dragging').forEach((h) => {
+        h.classList.remove('is-dragging');
+      });
+      printDesignerDrag = null;
+      try {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      } catch (_) {}
+      refreshPrintDesignerBoard();
+    }
+    function startDesignerDrag(kind, ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const s = getPrintLayoutSettings();
+      printDesignerDrag = {
+        kind: kind,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        startName: s.nameHeightMm,
+        startMeta: s.metaHeightMm,
+        startBc: s.bcHeightMm,
+        startOrigPct: s.origWidthPct
+      };
+      if (ev.currentTarget) ev.currentTarget.classList.add('is-dragging');
+      try {
+        document.body.style.cursor = kind === 'orig-loc' ? 'ew-resize' : 'ns-resize';
+        document.body.style.userSelect = 'none';
+      } catch (_) {}
+    }
+    function paintPrintDesignerZones(layout) {
+      const board = document.getElementById('printDesignerBoard');
+      if (!board) return;
+      const s = layout || getPrintLayoutSettings();
+      board.querySelectorAll('.print-designer-label').forEach((labelEl) => {
+        const nameZ = labelEl.querySelector('.pdg-zone[data-zone="name"]');
+        const metaZ = labelEl.querySelector('.pdg-zone[data-zone="meta"]');
+        const bcZ = labelEl.querySelector('.pdg-zone[data-zone="bc"]');
+        const orig = labelEl.querySelector('.pdg-meta-part.orig');
+        const loc = labelEl.querySelector('.pdg-meta-part.loc');
+        const hName = s.nameHeightMm * PRINT_DESIGNER_PX_PER_MM;
+        const hMeta = s.metaHeightMm * PRINT_DESIGNER_PX_PER_MM;
+        const hBc = s.bcHeightMm * PRINT_DESIGNER_PX_PER_MM;
+        if (nameZ) nameZ.style.height = hName + 'px';
+        if (metaZ) metaZ.style.height = hMeta + 'px';
+        if (bcZ) bcZ.style.height = hBc + 'px';
+        if (orig) orig.style.width = s.origWidthPct + '%';
+        if (loc) loc.style.width = (100 - s.origWidthPct) + '%';
+        const side = labelEl.getAttribute('data-side') || 'left';
+        fitDesignerZoneFonts(labelEl, s, designerSamplePayload(side));
+        const padTop = 0.4 * PRINT_DESIGNER_PX_PER_MM;
+        const padX = 0.7 * PRINT_DESIGNER_PX_PER_MM;
+        const innerW = (PRINT_SHEET_MM.labelW * PRINT_DESIGNER_PX_PER_MM) - (padX * 2);
+        const h1 = labelEl.querySelector('.pdg-handle-h[data-kind="name-meta"]');
+        const h2 = labelEl.querySelector('.pdg-handle-h[data-kind="meta-bc"]');
+        const hv = labelEl.querySelector('.pdg-handle-v');
+        if (h1) h1.style.top = (padTop + hName) + 'px';
+        if (h2) h2.style.top = (padTop + hName + hMeta) + 'px';
+        if (hv) {
+          hv.style.top = (padTop + hName) + 'px';
+          hv.style.height = Math.max(8, hMeta) + 'px';
+          hv.style.left = (padX + (innerW * (s.origWidthPct / 100))) + 'px';
+        }
+      });
+      updatePrintDesignerReadout(s);
+    }
+    function buildPrintDesignerLabelEl(side, layout) {
+      const s = layout || getPrintLayoutSettings();
+      const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const label = document.createElement('div');
+      label.className = 'print-designer-label';
+      label.setAttribute('data-side', printSideKey(side));
+      label.style.width = (PRINT_SHEET_MM.labelW * ppm) + 'px';
+      label.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
+      label.style.padding = (0.4 * ppm) + 'px ' + (0.7 * ppm) + 'px ' + (0.25 * ppm) + 'px';
+      label.innerHTML =
+        '<span class="pdg-side-tag">' + (printSideKey(side) === 'right' ? 'يمين' : 'يسار') + '</span>' +
+        '<div class="pdg-zone" data-zone="name"><span class="pdg-zone-label">اسم الصنف</span><div class="pdg-zone-inner"></div></div>' +
+        '<div class="pdg-zone" data-zone="meta"><span class="pdg-zone-label">أصلي · موقع</span>' +
+          '<div class="pdg-zone-inner">' +
+            '<div class="pdg-meta-part orig"></div>' +
+            '<div class="pdg-meta-part loc"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="pdg-zone" data-zone="bc"><span class="pdg-zone-label">باركود</span>' +
+          '<div class="pdg-zone-inner"><div class="pdg-bc-bars"></div><div class="pdg-bc-text"></div></div>' +
+        '</div>' +
+        '<div class="pdg-handle-h" data-kind="name-meta" title="اسحب لتغيير ارتفاع الاسم / الموقع"></div>' +
+        '<div class="pdg-handle-h" data-kind="meta-bc" title="اسحب لتغيير ارتفاع الموقع / الباركود"></div>' +
+        '<div class="pdg-handle-v" data-kind="orig-loc" title="اسحب لتغيير عرض الأصلي مقابل الموقع"></div>';
+      label.querySelectorAll('.pdg-handle-h').forEach((h) => {
+        h.addEventListener('pointerdown', (ev) => startDesignerDrag(h.getAttribute('data-kind'), ev));
+      });
+      const hv = label.querySelector('.pdg-handle-v');
+      if (hv) hv.addEventListener('pointerdown', (ev) => startDesignerDrag('orig-loc', ev));
+      return label;
+    }
+    function refreshPrintDesignerBoard() {
+      const board = document.getElementById('printDesignerBoard');
+      if (!board) return;
+      const s = getPrintLayoutSettings();
+      const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const sheetW = PRINT_SHEET_MM.sheetW * ppm;
+      const sheetH = PRINT_SHEET_MM.sheetH * ppm;
+      board.style.width = sheetW + 'px';
+      board.style.height = sheetH + 'px';
+      board.innerHTML = '';
+      const row = document.createElement('div');
+      row.className = 'print-designer-row';
+      row.style.left = (PRINT_SHEET_MM.margin * ppm) + 'px';
+      row.style.top = (PRINT_SHEET_MM.margin * ppm) + 'px';
+      row.style.width = ((PRINT_SHEET_MM.sheetW - PRINT_SHEET_MM.margin * 2) * ppm) + 'px';
+      row.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
+      row.style.gap = (PRINT_SHEET_MM.gap * ppm) + 'px';
+      const left = buildPrintDesignerLabelEl('left', s);
+      const right = buildPrintDesignerLabelEl('right', s);
+      row.appendChild(left);
+      row.appendChild(right);
+      board.appendChild(row);
+      paintPrintDesignerZones(s);
+      syncPrintLayoutSettingsUi(s);
     }
     function applyPrintLayoutToLabel(label) {
       if (!label) return;
@@ -9296,34 +9841,52 @@ def home() -> HTMLResponse:
       const origEl = label.querySelector('.pl-orig');
       const locEl = label.querySelector('.pl-loc');
       const wrap = label.querySelector('.pl-bc-wrap');
+      const bcText = label.querySelector('.pl-bc-text');
       if (nameEl) {
         nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
         nameEl.style.fontWeight = '900';
         nameEl.dataset.maxNamePx = String(s.namePx);
+        nameEl.style.flex = '0 0 ' + s.nameHeightMm + 'mm';
+        nameEl.style.height = s.nameHeightMm + 'mm';
+        nameEl.style.maxHeight = s.nameHeightMm + 'mm';
+        nameEl.style.minHeight = '0';
       }
       if (origEl) {
         origEl.style.fontSize = s.originalPx + 'px';
         origEl.style.fontWeight = '800';
+        origEl.style.flex = '0 0 ' + s.origWidthPct + '%';
+        origEl.style.maxWidth = s.origWidthPct + '%';
       }
       if (locEl) {
         locEl.style.fontSize = s.locationPx + 'px';
         locEl.style.fontWeight = '800';
+        locEl.style.flex = '0 0 ' + (100 - s.origWidthPct) + '%';
+        locEl.style.maxWidth = (100 - s.origWidthPct) + '%';
       }
       if (metaEl) {
         const metaPx = Math.max(s.originalPx, s.locationPx);
         metaEl.style.fontSize = metaPx + 'px';
-        metaEl.style.maxHeight = Math.max(2.4, metaPx * 0.32) + 'mm';
-        metaEl.style.marginBottom = '0.4mm';
+        metaEl.style.flex = '0 0 ' + s.metaHeightMm + 'mm';
+        metaEl.style.height = s.metaHeightMm + 'mm';
+        metaEl.style.maxHeight = s.metaHeightMm + 'mm';
+        metaEl.style.marginBottom = '0';
+        metaEl.style.gap = '0.6mm';
       }
       if (wrap) {
+        wrap.style.flex = '0 0 ' + s.bcHeightMm + 'mm';
+        wrap.style.height = s.bcHeightMm + 'mm';
+        wrap.style.maxHeight = s.bcHeightMm + 'mm';
         wrap.style.transform = 'translate(' + s.bcShiftXmm + 'mm, ' + s.bcShiftYmm + 'mm)';
+      }
+      if (bcText) {
+        bcText.dataset.maxBcTextPx = String(s.bcTextPx);
       }
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
       const s = getPrintLayoutSettings();
       const maxPx = Number(el.dataset.maxNamePx) || s.namePx || 48;
-      const minPx = Math.min(18, Math.max(10, Math.round(maxPx * 0.35)));
+      const minPx = Math.min(14, Math.max(9, Math.round(maxPx * 0.32)));
       el.style.display = 'block';
       el.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
       el.style.fontWeight = '900';
@@ -9335,31 +9898,24 @@ def home() -> HTMLResponse:
       el.style.lineHeight = '1.02';
       el.style.webkitLineClamp = 'unset';
       el.style.lineClamp = 'unset';
-      let lo = minPx;
-      let hi = maxPx;
-      let best = minPx;
-      while (hi - lo > 0.35) {
-        const mid = (lo + hi) / 2;
-        el.style.fontSize = mid + 'px';
-        if (el.clientHeight > 2 && el.scrollHeight <= el.clientHeight + 0.5) {
-          best = mid;
-          lo = mid;
-        } else {
-          hi = mid;
-        }
-      }
-      el.style.fontSize = best + 'px';
+      fitTextIntoBox(el, maxPx, minPx);
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
       const s = getPrintLayoutSettings();
-      let size = Math.max(s.originalPx, s.locationPx);
-      el.style.fontSize = size + 'px';
+      const orig = el.querySelector('.pl-orig');
+      const loc = el.querySelector('.pl-loc');
       el.style.justifyContent = 'center';
-      const floor = Math.max(6, Math.min(size, 7));
-      while (size > floor && el.scrollWidth > el.clientWidth + 0.5) {
-        size -= 0.35;
+      if (orig) fitTextIntoBox(orig, s.originalPx, Math.max(6, Math.round(s.originalPx * 0.55)));
+      if (loc) fitTextIntoBox(loc, s.locationPx, Math.max(6, Math.round(s.locationPx * 0.55)));
+      if (!orig && !loc) {
+        let size = Math.max(s.originalPx, s.locationPx);
         el.style.fontSize = size + 'px';
+        const floor = Math.max(6, Math.min(size, 7));
+        while (size > floor && el.scrollWidth > el.clientWidth + 0.5) {
+          size -= 0.35;
+          el.style.fontSize = size + 'px';
+        }
       }
     }
     function buildPrintLabelEl(data, side) {
@@ -12486,7 +13042,18 @@ def home() -> HTMLResponse:
       ensureLatestClientVersion();
       // تحديث مواقع حساباتي تلقائياً بدون انتظار فتح تبويب معيّن
       startHesabateAutoEnsure();
-      try { syncPrintLayoutSettingsUi(getPrintLayoutSettings()); } catch (_) {}
+      try {
+        syncPrintLayoutSettingsUi(getPrintLayoutSettings());
+        refreshPrintDesignerBoard();
+      } catch (_) {}
+      try {
+        window.addEventListener('pointermove', (ev) => {
+          if (!printDesignerDrag) return;
+          applyDesignerDrag(ev.clientY, ev.clientX);
+        });
+        window.addEventListener('pointerup', () => endDesignerDrag());
+        window.addEventListener('pointercancel', () => endDesignerDrag());
+      } catch (_) {}
       setTimeout(() => {
         try {
           restoreServerFromLocalSnapshotIfEmpty();
