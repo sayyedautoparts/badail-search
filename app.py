@@ -8527,9 +8527,9 @@ def home() -> HTMLResponse:
         if (!svgEl) return false;
         const okPrev = renderPrintBarcodeSvg(svgEl, value, Object.assign({
           format: 'CODE128B',
-          height: (opts && opts.height) || 44,
-          width: 2.4,
-          margin: 12,
+          height: (opts && opts.height) || 40,
+          width: 2,
+          margin: 10,
           marginTop: 0,
           marginBottom: 0,
           displayValue: false
@@ -8543,14 +8543,14 @@ def home() -> HTMLResponse:
       }
 
       // —— طباعة لزقة Rongta 203dpi ——
-      // نفس سماكة الأعمدة لليسار واليمين؛ ارتفاع أقل ~20% وأعمدة خميلة
+      // سماكة معتدلة (~3 نقاط): مقروءة بدون ما تثقل الخط زيادة
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      const usableMm = 53.5;
+      const usableMm = 54;
       const heightMm = 11.6;
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(72, Math.round(heightMm * dotsPerMm));
-      const quietTries = [7, 5, 4];
+      const quietTries = [8, 6, 5];
 
       let best = null;
       for (let i = 0; i < quietTries.length; i++) {
@@ -8587,20 +8587,19 @@ def home() -> HTMLResponse:
         }
         const units = probe.width || 0;
         if (!units) continue;
-        // أعمدة خميلة واضحة: فضّل 4–5 نقاط
+        // وسط: 3 نقاط عادة (مش 4–5 الثقيلة)
         let moduleDots = Math.floor(usableDots / units);
-        if (moduleDots < 4) {
+        if (moduleDots < 3) {
           if (i < quietTries.length - 1) continue;
-          moduleDots = 4;
+          moduleDots = 3;
         }
-        if (moduleDots > 5) moduleDots = 5;
+        if (moduleDots > 3) moduleDots = 3;
         if (units * moduleDots > usableDots + 2) {
           const fit = Math.floor(usableDots / units);
-          moduleDots = Math.max(3, fit);
-          if (units * moduleDots > usableDots + 2) moduleDots = Math.max(2, fit);
+          moduleDots = Math.max(2, fit);
         }
         best = { quietMods, moduleDots, units };
-        if (moduleDots >= 4 && units * moduleDots <= usableDots) break;
+        if (moduleDots >= 3 && units * moduleDots <= usableDots) break;
       }
       if (!best) return false;
 
