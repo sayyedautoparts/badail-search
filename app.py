@@ -7079,24 +7079,26 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0.15mm;
-        padding: 0;
+        gap: 0.1mm;
+        padding: 0 0.6mm;
         margin: 0;
         width: 100%;
         max-width: 100%;
+        box-sizing: border-box;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
-        /* العرض يُضبط من JS (viewBox) ليدخل اللزقة حتى مع باركود طويل */
+        /* العرض يُضبط من JS بالمليمتر ليدخل اللزقة */
         max-width: 100% !important;
         width: auto;
-        max-height: 10.5mm !important;
-        height: 10.5mm !important;
-        overflow: hidden;
+        max-height: 9.5mm !important;
+        height: 9.5mm !important;
+        overflow: hidden !important;
         transform-origin: center bottom;
       }
       .print-label .pl-bc-wrap svg.print-bc-fit {
         width: 100% !important;
+        max-width: 100% !important;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
@@ -7105,12 +7107,13 @@ def home() -> HTMLResponse:
         font-weight: 800;
         letter-spacing: .02em;
         margin: 0;
-        padding: 0;
+        padding: 0 0.4mm;
         line-height: 1;
         overflow: hidden !important;
         text-overflow: ellipsis;
         white-space: nowrap;
         direction: ltr;
+        box-sizing: border-box;
       }
     }
     /* قياس مؤقت قبل الطباعة حتى يشتغل تكبير/تصغير الاسم */
@@ -7181,19 +7184,21 @@ def home() -> HTMLResponse:
       width: 100%;
       max-width: 100%;
       margin: 0;
-      padding: 0;
+      padding: 0 0.6mm;
       overflow: hidden;
+      box-sizing: border-box;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg {
       max-width: 100%;
       width: auto;
-      max-height: 10.5mm;
-      height: 10.5mm;
+      max-height: 9.5mm;
+      height: 9.5mm;
       overflow: hidden;
       transform-origin: center bottom;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg.print-bc-fit {
       width: 100%;
+      max-width: 100%;
     }
     /* جدول المواقع خارج لوحته — لا يظهر في طباعة/رئيسي/قياسات/قشطان */
     body.tab-print #locationsTableWrap,
@@ -8442,11 +8447,15 @@ def home() -> HTMLResponse:
     function estimatePrintBarcodeModuleWidth(code) {
       const n = Math.max(1, String(code || '').length);
       const estModules = n * 11 + 35;
-      // عرض لزقة ≈ 57مم صافٍ (~216px عند 96dpi)
-      const targetPx = 210;
-      return Math.max(0.7, Math.min(2.2, targetPx / estModules));
+      // هدف أضيق من عرض اللزقة حتى ما يطلع الباركود الطويل برا
+      const targetPx = 180;
+      return Math.max(0.55, Math.min(2.0, targetPx / estModules));
     }
     function printBarcodeMaxWidthPx(svgEl) {
+      const inLabel = !!(svgEl && svgEl.closest && svgEl.closest('.print-label'));
+      // لزقة 59مم − حواف/بادينغ ≈ 48–50مم صافٍ للباركود الطويل
+      const hardMm = inLabel ? 48 : 54;
+      const hardPx = Math.round(hardMm * 96 / 25.4);
       const wrap = svgEl && svgEl.parentElement;
       let w = 0;
       try {
@@ -8454,11 +8463,13 @@ def home() -> HTMLResponse:
           w = wrap.clientWidth || (wrap.getBoundingClientRect && wrap.getBoundingClientRect().width) || 0;
         }
       } catch (_) { w = 0; }
-      // 59مم لزقة − حواف ≈ 57مم → ~216px
-      const fallback = Math.round(57 * 96 / 25.4);
-      return Math.max(100, (w > 20 ? w - 2 : fallback));
+      if (inLabel) {
+        // لا تعتمد على clientWidth المتوسّع مع الـ SVG — اقفل بالمليمتر
+        return hardPx;
+      }
+      return Math.max(100, Math.min(hardPx, w > 20 ? w - 4 : hardPx));
     }
-    function constrainPrintBarcodeSvgToWidth(svgEl, maxW) {
+    function constrainPrintBarcodeSvgToWidth(svgEl, maxW, forceFit) {
       if (!svgEl || !(maxW > 0)) return;
       let bw = 0;
       let bh = 0;
@@ -8470,24 +8481,34 @@ def home() -> HTMLResponse:
         bw = Number(svgEl.getAttribute('width')) || svgEl.clientWidth || 0;
         bh = Number(svgEl.getAttribute('height')) || svgEl.clientHeight || 38;
       }
+      const inLabel = !!(svgEl.closest && svgEl.closest('.print-label'));
+      const hardMm = inLabel ? 48 : null;
       svgEl.style.transform = '';
       svgEl.style.maxWidth = '100%';
-      if (!bw || bw <= maxW + 0.5) {
-        // قصير: لا تمدّد لملء العرض (يضر بالمسح)
+      const needsFit = forceFit || !bw || bw > maxW + 0.5;
+      if (!needsFit) {
         svgEl.style.width = 'auto';
         svgEl.classList.remove('print-bc-fit');
         svgEl.removeAttribute('preserveAspectRatio');
         return;
       }
-      // طويل: اضغط أفقياً فقط ليدخل عرض اللزقة
+      // طويل / لزقة طباعة: اضغط أفقياً وأقفل العرض بالمليمتر (أدق من البكسل عند الطباعة)
       const h = bh || 38;
+      if (!bw) bw = maxW;
       svgEl.setAttribute('viewBox', `0 0 ${bw} ${h}`);
       svgEl.setAttribute('preserveAspectRatio', 'none');
-      svgEl.setAttribute('width', String(maxW));
-      svgEl.setAttribute('height', String(h));
+      if (hardMm != null) {
+        svgEl.setAttribute('width', hardMm + 'mm');
+        svgEl.setAttribute('height', '9.5mm');
+        svgEl.style.width = hardMm + 'mm';
+        svgEl.style.height = '9.5mm';
+      } else {
+        svgEl.setAttribute('width', String(maxW));
+        svgEl.setAttribute('height', String(h));
+        svgEl.style.width = '100%';
+        svgEl.style.height = '';
+      }
       svgEl.classList.add('print-bc-fit');
-      svgEl.style.width = '100%';
-      svgEl.style.height = '';
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
@@ -8495,35 +8516,38 @@ def home() -> HTMLResponse:
       const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) return false;
       svgEl.style.transform = '';
+      const inLabel = !!(svgEl.closest && svgEl.closest('.print-label'));
       const maxW = printBarcodeMaxWidthPx(svgEl);
-      const minModule = 0.62;
+      const longCode = value.length >= 14;
+      const minModule = longCode ? 0.48 : 0.58;
       const base = Object.assign({
         format: 'CODE128',
-        height: 38,
+        height: inLabel ? 34 : 38,
         margin: 0,
         marginTop: 0,
         marginBottom: 0
       }, opts || {});
       let moduleW = estimatePrintBarcodeModuleWidth(value);
+      if (longCode) moduleW = Math.min(moduleW, 1.15);
       let ok = false;
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 20; i++) {
         ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: moduleW }));
         if (!ok) return false;
         let bw = 0;
         try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
-        if (!bw || bw <= maxW + 0.8) {
-          constrainPrintBarcodeSvgToWidth(svgEl, maxW);
+        if (!bw || bw <= maxW + 0.5) {
+          constrainPrintBarcodeSvgToWidth(svgEl, maxW, inLabel && longCode);
           return true;
         }
-        const next = moduleW * (maxW / bw) * 0.97;
+        const next = moduleW * (maxW / bw) * 0.94;
         if (next < minModule) {
           ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
-          constrainPrintBarcodeSvgToWidth(svgEl, maxW);
+          constrainPrintBarcodeSvgToWidth(svgEl, maxW, true);
           return ok;
         }
         moduleW = next;
       }
-      constrainPrintBarcodeSvgToWidth(svgEl, maxW);
+      constrainPrintBarcodeSvgToWidth(svgEl, maxW, true);
       return ok;
     }
     function fitPrintBarcodeText(el, code) {
@@ -8533,9 +8557,11 @@ def home() -> HTMLResponse:
       el.textContent = display;
       const n = display.length;
       let px = 9.5;
-      if (n > 16) px = 8.5;
-      if (n > 22) px = 7.5;
-      if (n > 28) px = 6.8;
+      if (n > 14) px = 8;
+      if (n > 18) px = 7;
+      if (n > 22) px = 6.2;
+      if (n > 28) px = 5.4;
+      if (n > 34) px = 4.8;
       el.style.fontSize = px + 'px';
     }
     function getPrintQty() {
