@@ -4738,7 +4738,8 @@ def upsert_location_rows_delta_from_api(
             if not pid:
                 continue
             item_name = str(r.get("item_name") or "")
-            barcode = str(r.get("barcode") or "").strip()
+            # باركود للطباعة: لا strip — المسافات الداخلية تبقى كما من حساباتي
+            barcode = str(r.get("barcode") or "").replace("\r", "").replace("\n", "")
             location = clean_shelf_location(r.get("location"))
             company = str(r.get("company") or "")
             original_number = str(r.get("original_number") or "")
@@ -4776,8 +4777,8 @@ def upsert_location_rows_delta_from_api(
                         notes = str(ex.get("notes") or "")
                     if not item_name:
                         item_name = str(ex.get("item_name") or "")
-                    if not barcode:
-                        barcode = str(ex.get("barcode") or "").strip()
+                    if not barcode or not any(ch.isalnum() for ch in barcode):
+                        barcode = str(ex.get("barcode") or "").replace("\r", "").replace("\n", "")
             nb = location_row_normalized_barcode_value(barcode, unit_barcodes)
             nt = location_row_normalized_text_value(item_name, company, brand, notes, original_number)
             new_fp = _location_api_row_fingerprint(
@@ -4897,7 +4898,7 @@ def upsert_location_rows_delta_from_api(
                 if not pid:
                     continue
                 item_name = str(r.get("item_name") or "")
-                barcode = str(r.get("barcode") or "").strip()
+                barcode = str(r.get("barcode") or "").replace("\r", "").replace("\n", "")
                 location = clean_shelf_location(r.get("location"))
                 company = str(r.get("company") or "")
                 original_number = str(r.get("original_number") or "")
