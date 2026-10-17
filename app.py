@@ -6987,7 +6987,7 @@ def home() -> HTMLResponse:
         height: 25mm;
         max-height: 25mm;
         box-sizing: border-box;
-        padding: 0.6mm 1.2mm 0.4mm;
+        padding: 0.35mm 1mm 0.25mm;
         margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
@@ -7005,11 +7005,11 @@ def home() -> HTMLResponse:
         flex: 0 0 auto;
         width: 100%;
         max-width: 100%;
-        max-height: 7.5mm;
-        font-size: 14px;
+        max-height: 9mm;
+        font-size: 17px;
         font-weight: 900;
         margin: 0;
-        line-height: 1.1;
+        line-height: 1.05;
         overflow: hidden !important;
         word-break: break-word;
         overflow-wrap: anywhere;
@@ -7022,11 +7022,11 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: flex-start;
         align-items: center;
-        gap: 3.5mm;
-        font-size: 8px;
+        gap: 3mm;
+        font-size: 7.5px;
         font-weight: 800;
-        margin: 0.3mm 0 0.2mm;
-        max-height: 3mm;
+        margin: 0.15mm 0 0;
+        max-height: 2.4mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
@@ -7044,25 +7044,27 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-wrap {
         flex: 1 1 auto;
         min-height: 0;
+        margin-top: auto;
         overflow: hidden !important;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0;
+        gap: 0.15mm;
+        padding-top: 0.4mm;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
         max-width: 100% !important;
-        max-height: 12mm !important;
+        max-height: 13.2mm !important;
         width: auto !important;
-        height: 12mm !important;
+        height: 13.2mm !important;
         overflow: hidden;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 8px;
+        font-size: 9.5px;
         font-weight: 800;
         letter-spacing: .02em;
         margin: 0;
@@ -7097,27 +7099,35 @@ def home() -> HTMLResponse:
       height: 25mm;
       max-height: 25mm;
       box-sizing: border-box;
-      padding: 0.6mm 1.2mm 0.4mm;
+      padding: 0.35mm 1mm 0.25mm;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
     }
     .print-label-sheet.print-measure .pl-name {
-      max-height: 7.5mm;
+      max-height: 9mm;
       overflow: hidden;
       font-weight: 900;
-      line-height: 1.1;
+      line-height: 1.05;
       width: 100%;
     }
     .print-label-sheet.print-measure .pl-meta {
       display: flex;
       direction: ltr;
       justify-content: flex-start;
-      gap: 3.5mm;
-      max-height: 3mm;
+      gap: 3mm;
+      max-height: 2.4mm;
       overflow: hidden;
       white-space: nowrap;
+    }
+    .print-label-sheet.print-measure .pl-bc-wrap {
+      flex: 1 1 auto;
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -7423,9 +7433,9 @@ def home() -> HTMLResponse:
           </div>
         </div>
         <div class="print-unit-fields" style="margin-top:12px;">
-          <label class="field-label" for="printQtyInput">الكمية (واحدة لليسار واليمين)</label>
+          <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
           <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كمية واحدة مشتركة · 1 = يسار فقط · 2 = يسار+يمين بنفس الورقة</p>
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
           الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان منفصلان.
@@ -8234,12 +8244,13 @@ def home() -> HTMLResponse:
     }
     function updatePrintQtyHint() {
       const qty = getPrintQty();
-      const pages = Math.ceil(qty / 2);
+      // كل «كمية» = ورقة كاملة بلزقتين معاً (يسار + يمين)
+      const pages = qty;
       const hint = document.getElementById('printQtyHint');
       if (hint) {
         hint.textContent = qty === 1
-          ? '1 حبة = ورقة واحدة (يسار فقط، اليمين فاضي)'
-          : `${qty} حبة = ${pages} ورقة · كل ورقة لزيقان (يسار + يمين)`;
+          ? 'ورقة واحدة = لزق يسار + لزق يمين معاً'
+          : `${qty} ورقات · كل ورقة لزقتين معاً (يسار + يمين)`;
       }
       return { qty, pages };
     }
@@ -8264,11 +8275,11 @@ def home() -> HTMLResponse:
       });
     }
     function updatePrintDualPreviewSlots() {
-      const { qty } = updatePrintQtyHint();
+      updatePrintQtyHint();
       const left = document.getElementById('printPreviewLeft');
       const right = document.getElementById('printPreviewRight');
-      if (left) left.classList.toggle('empty-slot', qty < 1);
-      if (right) right.classList.toggle('empty-slot', qty < 2);
+      if (left) left.classList.remove('empty-slot');
+      if (right) right.classList.remove('empty-slot');
       refreshPrintNamePreview();
     }
     function clearPrintSidePreview(side) {
@@ -8544,9 +8555,9 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 15;
-      const minPx = 6.5;
-      // جرّب سطر واحد بحجم كبير أولاً (يكبر للاسم القصير)
+      const maxPx = 19;
+      const minPx = 8;
+      // جرّب سطر واحد بحجم كبير أولاً (يكبر للاسم القصير) — بدون خروج من اللزقة
       el.style.display = 'block';
       el.style.whiteSpace = 'nowrap';
       el.style.overflow = 'hidden';
@@ -8555,7 +8566,7 @@ def home() -> HTMLResponse:
       let size = maxPx;
       el.style.fontSize = size + 'px';
       while (size > minPx && el.scrollWidth > el.clientWidth + 0.5) {
-        size -= 0.4;
+        size -= 0.35;
         el.style.fontSize = size + 'px';
       }
       // إذا ما زال طويل — سطرين مع تصغير ديناميكي حسب عرض العمود
@@ -8568,7 +8579,7 @@ def home() -> HTMLResponse:
         el.style.webkitLineClamp = '2';
         el.style.lineClamp = '2';
         while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
-          size -= 0.4;
+          size -= 0.35;
           el.style.fontSize = size + 'px';
         }
       }
@@ -8594,12 +8605,12 @@ def home() -> HTMLResponse:
         label.querySelector('.pl-orig').textContent = data.original || '—';
         label.querySelector('.pl-loc').textContent = data.location || '—';
         label.querySelector('.pl-bc-text').textContent = data.barcode || '';
-        // باركود أعرض/أطول ضمن عرض الملصق (~57mm)
+        // باركود أعرض/أطول ضمن عرض الملصق (~57mm) — منخفض للأسفل
         const codeLen = Math.max(6, String(data.barcode || '').length);
-        const moduleW = Math.max(0.85, Math.min(2.1, 57 / (codeLen * 11)));
+        const moduleW = Math.max(1.0, Math.min(2.4, 57 / (codeLen * 10.5)));
         renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
           format: 'CODE128',
-          height: 42,
+          height: 50,
           width: moduleW,
           margin: 0,
           marginTop: 0,
@@ -8610,33 +8621,27 @@ def home() -> HTMLResponse:
     }
     async function printBarcodeLabels() {
       const { qty, pages } = updatePrintQtyHint();
-      const needLeft = qty >= 1;
-      const needRight = qty >= 2;
-      if (needLeft && !printSides.left.item && !(printSides.left.rows && printSides.left.rows.length)) {
+      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length)) {
         const ok = await resolvePrintItemFromLocal('left', true);
         if (!ok) {
           setPrintFetchStatus('جهّز صنف اليسار أولاً.');
           return;
         }
       }
-      if (needRight && !printSides.right.item && !(printSides.right.rows && printSides.right.rows.length)) {
-        const ok = await resolvePrintItemFromLocal('right', true);
-        if (!ok) {
-          setPrintFetchStatus('جهّز صنف اليمين أولاً (أو ضع الكمية = 1 لليسار فقط).');
-          return;
-        }
+      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length)) {
+        await resolvePrintItemFromLocal('right', false);
       }
-      const payloadLeft = needLeft ? buildPrintPayloadForSide('left') : null;
-      const payloadRight = needRight ? buildPrintPayloadForSide('right') : null;
-      if (needLeft && (!payloadLeft || payloadLeft.error === 'no-barcode')) {
+      let payloadLeft = buildPrintPayloadForSide('left');
+      let payloadRight = buildPrintPayloadForSide('right');
+      if (!payloadLeft || payloadLeft.error === 'no-barcode') {
         setPrintFetchStatus('لا يوجد باركود لصنف اليسار.', 'left');
         setPrintFetchStatus('لا يوجد باركود لصنف اليسار.');
         return;
       }
-      if (needRight && (!payloadRight || payloadRight.error === 'no-barcode')) {
-        setPrintFetchStatus('لا يوجد باركود لصنف اليمين.', 'right');
-        setPrintFetchStatus('لا يوجد باركود لصنف اليمين.');
-        return;
+      // دائماً لزقتين معاً — إن اليمين فاضي نكرّر اليسار حتى ما تطلع ورقة بنصف واحد
+      if (!payloadRight || payloadRight.error === 'no-barcode') {
+        payloadRight = Object.assign({}, payloadLeft);
+        setPrintFetchStatus('اليمين فاضي — تُطبع نفس صنف اليسار على الجهتين.', 'right');
       }
       try {
         await ensureJsBarcodeLib();
@@ -8653,31 +8658,24 @@ def home() -> HTMLResponse:
       }
       sheet.className = 'print-label-sheet print-measure';
       sheet.innerHTML = '';
-      // كمية مشتركة · كل جهة صنف مستقل · الأوراق = ceil(qty/2)
+      // كل ورقة = لزق يسار + لزق يمين معاً · الكمية = عدد الأوراق
       for (let page = 0; page < pages; page++) {
         const rowEl = document.createElement('div');
         rowEl.className = 'print-label-row';
-        const stickersBefore = page * 2;
-        const leftOn = stickersBefore < qty;
-        const rightOn = (stickersBefore + 1) < qty;
-        const left = buildPrintLabelEl(leftOn ? payloadLeft : { empty: true });
-        const right = buildPrintLabelEl(rightOn ? payloadRight : { empty: true });
+        const left = buildPrintLabelEl(payloadLeft);
+        const right = buildPrintLabelEl(payloadRight);
         rowEl.appendChild(left);
         rowEl.appendChild(right);
         sheet.appendChild(rowEl);
-        if (leftOn) {
-          fitPrintNameDynamic(left.querySelector('.pl-name'));
-          fitPrintMetaLeft(left.querySelector('.pl-meta'));
-        }
-        if (rightOn) {
-          fitPrintNameDynamic(right.querySelector('.pl-name'));
-          fitPrintMetaLeft(right.querySelector('.pl-meta'));
-        }
+        fitPrintNameDynamic(left.querySelector('.pl-name'));
+        fitPrintMetaLeft(left.querySelector('.pl-meta'));
+        fitPrintNameDynamic(right.querySelector('.pl-name'));
+        fitPrintMetaLeft(right.querySelector('.pl-meta'));
       }
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${qty} حبة = ${pages} ورقة · Code128 · «${RONGTA_PRINTER_NAME}» · 120×25 مم · مقياس 100%`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 120×25 مم`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       printJobTitleRestore = document.title;
