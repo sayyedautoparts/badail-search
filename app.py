@@ -8470,7 +8470,7 @@ def home() -> HTMLResponse:
     }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      // CODE128B: أرقام+حروف+فراغات كما هي (مناسب للباركود الطويل بمسافات)
+      // CODE128 قياسي للطباعة — الفراغات تُرمَّز كما هي
       const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) {
         svgEl.innerHTML = '';
@@ -8478,7 +8478,7 @@ def home() -> HTMLResponse:
       }
       try {
         const conf = Object.assign({
-          format: 'CODE128B',
+          format: 'CODE128',
           displayValue: false,
           margin: 0,
           width: 2,
@@ -8486,16 +8486,14 @@ def home() -> HTMLResponse:
           background: '#ffffff',
           lineColor: '#000000'
         }, opts || {});
-        // لا تسمح لأي opts بتغيير الصيغة عن CODE128B للطباعة/المعاينة
-        conf.format = 'CODE128B';
+        conf.format = 'CODE128';
         conf.displayValue = false;
         JsBarcode(svgEl, value, conf);
         return true;
       } catch (_) {
-        // احتياطي: CODE128 تلقائي إن فشل B
         try {
           const conf2 = Object.assign({
-            format: 'CODE128',
+            format: 'CODE128B',
             displayValue: false,
             margin: 0,
             width: 2,
@@ -8503,7 +8501,7 @@ def home() -> HTMLResponse:
             background: '#ffffff',
             lineColor: '#000000'
           }, opts || {});
-          conf2.format = 'CODE128';
+          conf2.format = 'CODE128B';
           conf2.displayValue = false;
           JsBarcode(svgEl, value, conf2);
           return true;
@@ -8526,7 +8524,7 @@ def home() -> HTMLResponse:
           : null;
         if (!svgEl) return false;
         const okPrev = renderPrintBarcodeSvg(svgEl, value, Object.assign({
-          format: 'CODE128B',
+          format: 'CODE128',
           height: (opts && opts.height) || 40,
           width: 2,
           margin: 10,
@@ -8542,95 +8540,90 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— طباعة لزقة Rongta 203dpi ——
-      // سماكة معتدلة (~3 نقاط): مقروءة بدون ما تثقل الخط زيادة
+      // —— نمط خط باركود للطباعة الحرارية (Rongta 203dpi) ——
+      // CODE128 مع الفراغات · وحدة قياس ثابتة بالنقاط (مش تمديد CSS) · يمين=يسار
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const usableMm = 54;
       const heightMm = 11.6;
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(72, Math.round(heightMm * dotsPerMm));
-      const quietTries = [8, 6, 5];
+      const heightDots = Math.max(70, Math.round(heightMm * dotsPerMm));
+      // نمط قياسي: عمود ≈ 0.33مم (3 نقاط) · quiet zone ≈ 10 وحدات
+      const TARGET_MODULE_DOTS = 3;
+      const MIN_MODULE_DOTS = 2;
+      const quietTries = [10, 8, 6];
 
-      let best = null;
-      for (let i = 0; i < quietTries.length; i++) {
-        const quietMods = quietTries[i];
+      function probeUnits(quietMods) {
         const probe = document.createElement('canvas');
-        try {
-          JsBarcode(probe, value, {
-            format: 'CODE128B',
-            width: 1,
-            height: 10,
-            margin: 0,
-            marginLeft: quietMods,
-            marginRight: quietMods,
-            marginTop: 0,
-            marginBottom: 0,
-            displayValue: false,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-        } catch (_) {
+        const formats = ['CODE128', 'CODE128B'];
+        for (let fi = 0; fi < formats.length; fi++) {
           try {
             JsBarcode(probe, value, {
-              format: 'CODE128',
+              format: formats[fi],
               width: 1,
-              height: 10,
+              height: 8,
               margin: 0,
               marginLeft: quietMods,
               marginRight: quietMods,
               marginTop: 0,
               marginBottom: 0,
-              displayValue: false
+              displayValue: false,
+              background: '#ffffff',
+              lineColor: '#000000'
             });
-          } catch (__) { continue; }
+            return { units: probe.width || 0, format: formats[fi] };
+          } catch (_) {}
         }
-        const units = probe.width || 0;
-        if (!units) continue;
-        // وسط: 3 نقاط عادة (مش 4–5 الثقيلة)
-        let moduleDots = Math.floor(usableDots / units);
-        if (moduleDots < 3) {
+        return null;
+      }
+
+      let best = null;
+      for (let i = 0; i < quietTries.length; i++) {
+        const quietMods = quietTries[i];
+        const probed = probeUnits(quietMods);
+        if (!probed || !probed.units) continue;
+        let moduleDots = TARGET_MODULE_DOTS;
+        // إن ما دخل اللزقة بالنمط القياسي: قلّل الـ quiet ثم الوحدة لـ 2 نقاط
+        if (probed.units * moduleDots > usableDots) {
           if (i < quietTries.length - 1) continue;
-          moduleDots = 3;
+          moduleDots = Math.max(
+            MIN_MODULE_DOTS,
+            Math.floor(usableDots / probed.units)
+          );
         }
-        if (moduleDots > 3) moduleDots = 3;
-        if (units * moduleDots > usableDots + 2) {
-          const fit = Math.floor(usableDots / units);
-          moduleDots = Math.max(2, fit);
-        }
-        best = { quietMods, moduleDots, units };
-        if (moduleDots >= 3 && units * moduleDots <= usableDots) break;
+        best = {
+          quietMods,
+          moduleDots,
+          units: probed.units,
+          format: probed.format
+        };
+        if (probed.units * moduleDots <= usableDots) break;
       }
       if (!best) return false;
 
       const canvas = document.createElement('canvas');
-      const fmtList = ['CODE128B', 'CODE128'];
-      let drawn = false;
-      for (let fi = 0; fi < fmtList.length; fi++) {
-        try {
-          JsBarcode(canvas, value, {
-            format: fmtList[fi],
-            width: best.moduleDots,
-            height: heightDots,
-            margin: 0,
-            marginLeft: best.quietMods * best.moduleDots,
-            marginRight: best.quietMods * best.moduleDots,
-            marginTop: 0,
-            marginBottom: 0,
-            displayValue: false,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-          drawn = true;
-          break;
-        } catch (_) {}
+      try {
+        JsBarcode(canvas, value, {
+          format: best.format,
+          width: best.moduleDots,
+          height: heightDots,
+          margin: 0,
+          marginLeft: best.quietMods * best.moduleDots,
+          marginRight: best.quietMods * best.moduleDots,
+          marginTop: 0,
+          marginBottom: 0,
+          displayValue: false,
+          background: '#ffffff',
+          lineColor: '#000000'
+        });
+      } catch (_) {
+        return false;
       }
-      if (!drawn || !canvas.width) return false;
+      if (!canvas.width) return false;
 
-      const printWmm = canvas.width / dotsPerMm;
+      // اطبع بنمط النقاط كما هو — بدون ضغط أفقي يغيّر شكل الخط
+      const widthMm = canvas.width / dotsPerMm;
       const printHmm = canvas.height / dotsPerMm;
-      // اطبع بالحجم الطبيعي للنقاط — بدون تصغير إضافي يخفّف الخط (يسار=يمين)
-      const widthMm = printWmm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = value;
