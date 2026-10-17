@@ -6935,9 +6935,9 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* Rongta RP4xx — ورقة واحدة = لزيقان يمين/يسار 120×25 مم */
+      /* Rongta RP4xx — ورقة واحدة = لزيقان يمين/يسار 120×30 مم (+5مم عن 25) */
       @page {
-        size: 120mm 25mm;
+        size: 120mm 30mm;
         margin: 0;
       }
       html, body {
@@ -6966,8 +6966,8 @@ def home() -> HTMLResponse:
         flex-direction: row;
         direction: ltr;
         width: 120mm;
-        height: 25mm;
-        max-height: 25mm;
+        height: 30mm;
+        max-height: 30mm;
         box-sizing: border-box;
         margin: 0;
         padding: 0;
@@ -6984,10 +6984,10 @@ def home() -> HTMLResponse:
       .print-label {
         width: 60mm;
         max-width: 60mm;
-        height: 25mm;
-        max-height: 25mm;
+        height: 30mm;
+        max-height: 30mm;
         box-sizing: border-box;
-        padding: 0.35mm 1mm 0.25mm;
+        padding: 0.5mm 0.8mm 0.35mm;
         margin: 0;
         text-align: center;
         font-family: Tahoma, Arial, sans-serif;
@@ -7005,12 +7005,13 @@ def home() -> HTMLResponse:
         flex: 0 0 auto;
         width: 100%;
         max-width: 100%;
-        max-height: 9mm;
+        max-height: 11mm;
         font-size: 17px;
         font-weight: 900;
         margin: 0;
-        line-height: 1.05;
+        line-height: 1.08;
         overflow: hidden !important;
+        white-space: normal !important;
         word-break: break-word;
         overflow-wrap: anywhere;
         text-align: center;
@@ -7020,16 +7021,17 @@ def home() -> HTMLResponse:
         display: flex;
         flex-direction: row;
         direction: ltr;
-        justify-content: flex-start;
+        justify-content: center;
         align-items: center;
-        gap: 3mm;
-        font-size: 7.5px;
+        gap: 2.5mm;
+        font-size: 8px;
         font-weight: 800;
-        margin: 0.15mm 0 0;
-        max-height: 2.4mm;
+        margin: 0.35mm auto 0;
+        max-height: 2.8mm;
         overflow: hidden !important;
         white-space: nowrap;
         width: 100%;
+        text-align: center;
       }
       .print-label .pl-meta span {
         flex: 0 1 auto;
@@ -7038,7 +7040,7 @@ def home() -> HTMLResponse:
         overflow: hidden !important;
         text-overflow: ellipsis;
         white-space: nowrap;
-        text-align: left;
+        text-align: center;
         direction: ltr;
       }
       .print-label .pl-bc-wrap {
@@ -7050,21 +7052,23 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
-        gap: 0.15mm;
-        padding-top: 0.4mm;
+        gap: 0.2mm;
+        padding-top: 1.2mm;
+        padding-bottom: 0.15mm;
+        width: 100%;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
-        max-width: 100% !important;
-        max-height: 13.2mm !important;
-        width: auto !important;
-        height: 13.2mm !important;
+        max-width: 98% !important;
+        width: 98% !important;
+        max-height: 14.5mm !important;
+        height: 14.5mm !important;
         overflow: hidden;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
         max-width: 100%;
-        font-size: 9.5px;
+        font-size: 10px;
         font-weight: 800;
         letter-spacing: .02em;
         margin: 0;
@@ -7091,35 +7095,39 @@ def home() -> HTMLResponse:
       display: flex;
       direction: ltr;
       width: 120mm;
-      height: 25mm;
+      height: 30mm;
     }
     .print-label-sheet.print-measure .print-label {
       width: 60mm;
       max-width: 60mm;
-      height: 25mm;
-      max-height: 25mm;
+      height: 30mm;
+      max-height: 30mm;
       box-sizing: border-box;
-      padding: 0.35mm 1mm 0.25mm;
+      padding: 0.5mm 0.8mm 0.35mm;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
     }
     .print-label-sheet.print-measure .pl-name {
-      max-height: 9mm;
+      max-height: 11mm;
       overflow: hidden;
       font-weight: 900;
-      line-height: 1.05;
+      line-height: 1.08;
       width: 100%;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     .print-label-sheet.print-measure .pl-meta {
       display: flex;
       direction: ltr;
-      justify-content: flex-start;
-      gap: 3mm;
-      max-height: 2.4mm;
+      justify-content: center;
+      gap: 2.5mm;
+      max-height: 2.8mm;
       overflow: hidden;
       white-space: nowrap;
+      width: 100%;
     }
     .print-label-sheet.print-measure .pl-bc-wrap {
       flex: 1 1 auto;
@@ -7128,6 +7136,8 @@ def home() -> HTMLResponse:
       flex-direction: column;
       align-items: center;
       justify-content: flex-end;
+      width: 100%;
+      padding-top: 1.2mm;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -7438,7 +7448,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×25 مم = لزيقان منفصلان.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 120×30 مم = لزيقان منفصلان.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -8347,13 +8357,20 @@ def home() -> HTMLResponse:
         });
         sel.onchange = () => updatePrintBarcodePreview(s);
       }
-      if (wrap) wrap.style.display = originals.length > 1 ? 'block' : 'none';
+      // اختيار الرقم الأصلي يظهر دائماً بكل لزقة (يسار/يمين) بعد الجلب
+      if (wrap) wrap.style.display = st.rows.length ? 'block' : 'none';
       if (!st.rows.length) {
         st.item = null;
         const card = document.getElementById('printPreview' + cap);
         if (card) card.style.display = 'none';
         setPrintFetchStatus(message || 'غير موجود في قاعدة المواقع', s);
         return false;
+      }
+      if (sel && !originals.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '— بدون أصلي —';
+        sel.appendChild(opt);
       }
       st.item = pickPrintRowForOriginal(st.rows, originals[0] || '');
       setPrintFetchStatus(message || `تم تجهيز الصنف · ${st.rows.length}`, s);
@@ -8555,39 +8572,30 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const maxPx = 19;
+      const maxPx = 18;
       const minPx = 8;
-      // جرّب سطر واحد بحجم كبير أولاً (يكبر للاسم القصير) — بدون خروج من اللزقة
-      el.style.display = 'block';
-      el.style.whiteSpace = 'nowrap';
+      // دائماً wrap text (سطرين) مع تكبير أقصى بدون خروج من اللزقة
+      el.style.display = '-webkit-box';
+      el.style.webkitBoxOrient = 'vertical';
+      el.style.webkitLineClamp = '2';
+      el.style.lineClamp = '2';
+      el.style.whiteSpace = 'normal';
+      el.style.wordBreak = 'break-word';
+      el.style.overflowWrap = 'anywhere';
       el.style.overflow = 'hidden';
-      el.style.webkitLineClamp = 'unset';
-      el.style.lineClamp = 'unset';
+      el.style.textAlign = 'center';
       let size = maxPx;
       el.style.fontSize = size + 'px';
-      while (size > minPx && el.scrollWidth > el.clientWidth + 0.5) {
+      while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
         size -= 0.35;
         el.style.fontSize = size + 'px';
-      }
-      // إذا ما زال طويل — سطرين مع تصغير ديناميكي حسب عرض العمود
-      if (el.scrollWidth > el.clientWidth + 0.5) {
-        el.style.whiteSpace = 'normal';
-        el.style.wordBreak = 'break-word';
-        el.style.overflowWrap = 'anywhere';
-        el.style.display = '-webkit-box';
-        el.style.webkitBoxOrient = 'vertical';
-        el.style.webkitLineClamp = '2';
-        el.style.lineClamp = '2';
-        while (size > minPx && el.scrollHeight > el.clientHeight + 0.5) {
-          size -= 0.35;
-          el.style.fontSize = size + 'px';
-        }
       }
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
       let size = 9;
       el.style.fontSize = size + 'px';
+      el.style.justifyContent = 'center';
       while (size > 6 && el.scrollWidth > el.clientWidth + 0.5) {
         size -= 0.4;
         el.style.fontSize = size + 'px';
@@ -8605,12 +8613,12 @@ def home() -> HTMLResponse:
         label.querySelector('.pl-orig').textContent = data.original || '—';
         label.querySelector('.pl-loc').textContent = data.location || '—';
         label.querySelector('.pl-bc-text').textContent = data.barcode || '';
-        // باركود أعرض/أطول ضمن عرض الملصق (~57mm) — منخفض للأسفل
+        // باركود أعرض ضمن عرض الملصق (~58mm) — مثبت للأسفل
         const codeLen = Math.max(6, String(data.barcode || '').length);
-        const moduleW = Math.max(1.0, Math.min(2.4, 57 / (codeLen * 10.5)));
+        const moduleW = Math.max(1.15, Math.min(2.7, 58 / (codeLen * 9.5)));
         renderPrintBarcodeSvg(label.querySelector('.pl-bc'), data.barcode, {
           format: 'CODE128',
-          height: 50,
+          height: 54,
           width: moduleW,
           margin: 0,
           marginTop: 0,
@@ -8675,7 +8683,7 @@ def home() -> HTMLResponse:
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 120×25 مم`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 120×30 مم`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       printJobTitleRestore = document.title;
