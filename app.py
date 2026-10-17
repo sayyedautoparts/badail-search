@@ -6966,6 +6966,7 @@ def home() -> HTMLResponse:
         display: flex;
         flex-direction: row;
         direction: ltr;
+        justify-content: flex-start;
         width: 120mm;
         height: 30mm;
         max-height: 30mm;
@@ -6983,8 +6984,9 @@ def home() -> HTMLResponse:
         break-after: auto !important;
       }
       .print-label {
-        width: 60mm;
-        max-width: 60mm;
+        /* كل لزقة 59مم + فراغ 1مم من جهة الوسط لكل جهة = 120مم */
+        width: 59mm;
+        max-width: 59mm;
         height: 30mm;
         max-height: 30mm;
         box-sizing: border-box;
@@ -6998,6 +7000,14 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: stretch;
         justify-content: flex-start;
+      }
+      .print-label-row .print-label:first-child {
+        /* لزق اليسار — تصغير 1مم من جهة آخر/وسط الورقة */
+        margin-right: 1mm;
+      }
+      .print-label-row .print-label:last-child {
+        /* لزق اليمين — تصغير 1مم من جهة أول/وسط الورقة */
+        margin-left: 1mm;
       }
       .print-label.print-label-empty {
         visibility: hidden;
@@ -7098,12 +7108,13 @@ def home() -> HTMLResponse:
     .print-label-sheet.print-measure .print-label-row {
       display: flex;
       direction: ltr;
+      justify-content: flex-start;
       width: 120mm;
       height: 30mm;
     }
     .print-label-sheet.print-measure .print-label {
-      width: 60mm;
-      max-width: 60mm;
+      width: 59mm;
+      max-width: 59mm;
       height: 30mm;
       max-height: 30mm;
       box-sizing: border-box;
@@ -7112,6 +7123,12 @@ def home() -> HTMLResponse:
       display: flex;
       flex-direction: column;
       font-family: Tahoma, Arial, sans-serif;
+    }
+    .print-label-sheet.print-measure .print-label-row .print-label:first-child {
+      margin-right: 1mm;
+    }
+    .print-label-sheet.print-measure .print-label-row .print-label:last-child {
+      margin-left: 1mm;
     }
     .print-label-sheet.print-measure .pl-name {
       flex: 1 1 auto;
@@ -8278,9 +8295,24 @@ def home() -> HTMLResponse:
       const el = document.getElementById('printFetchStatus');
       if (el) el.textContent = msg || '';
     }
+    function normalizePrintBarcodeEncodeValue(code) {
+      // مسافات طويلة مثل «93490D4220        IL26» تدمج الأعمدة عند التصغير — الشفرة بدون مسافات تبقى مقروءة
+      let s = lightSanitizeBarcodeValue(code);
+      if (!s) return '';
+      try { s = translateDigitsLatinJs(s); } catch (_) {}
+      s = String(s).replace(/[\s\u00A0\u2000-\u200B\u202F\u205F\u3000]+/g, '');
+      s = s.replace(/[^A-Za-z0-9\-._]/g, '');
+      return s;
+    }
+    function formatPrintBarcodeDisplayText(code) {
+      // النص تحت الباركود: اضغط المسافات المتكررة لفراغ واحد فقط (للقراءة)
+      const s = lightSanitizeBarcodeValue(code);
+      if (!s) return '';
+      return s.replace(/[\s\u00A0]+/g, ' ').trim();
+    }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      const value = String(code || '').trim();
+      const value = normalizePrintBarcodeEncodeValue(code);
       if (!value) {
         svgEl.innerHTML = '';
         return false;
@@ -8306,19 +8338,19 @@ def home() -> HTMLResponse:
       // Code128 تقريباً ~11 وحدة/حرف + ~35 للبداية/النهاية/التحقق
       const n = Math.max(1, String(code || '').length);
       const estModules = n * 11 + 35;
-      const targetPx = 208; // ≈ عرض اللزقة الداخلي (~55mm)
-      // حد أدنى مقروء للماسح؛ حد أعلى للباركود القصير
-      return Math.max(0.72, Math.min(2.35, targetPx / estModules));
+      const targetPx = 200; // ≈ عرض اللزقة 59مم بعد الهوامش
+      // حد أدنى أعلى قليلاً حتى لا تندمج الأعمدة عند المسح
+      return Math.max(0.9, Math.min(2.35, targetPx / estModules));
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
-      const value = String(code || '').trim();
+      const value = normalizePrintBarcodeEncodeValue(code);
       if (!value) return false;
       svgEl.style.transform = '';
       const wrap = svgEl.parentElement;
-      const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 208);
+      const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 200);
       let moduleW = estimatePrintBarcodeModuleWidth(value);
-      const minModule = 0.68; // تحتها الماسح غالباً يفشل — بعدها نستخدم scale موحّد
+      const minModule = 0.85; // تحتها الأعمدة تندمج ويفشل الماسح
       const base = Object.assign({
         format: 'CODE128',
         height: 38,
@@ -8336,21 +8368,11 @@ def home() -> HTMLResponse:
           svgEl.style.transform = '';
           return true;
         }
-        const next = moduleW * (maxW / bw) * 0.97;
+        const next = moduleW * (maxW / bw) * 0.98;
         if (next < minModule) {
+          // لا نصغّر تحت الحد المقروء — نرسم بالحد الأدنى بدون scale يدمّر الأعمدة
           ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
-          try {
-            const bb = svgEl.getBBox().width;
-            if (bb > maxW + 0.5) {
-              // تصغير موحّد (بدون تمطيط عرضي فقط) حتى يبقى مقروءاً داخل الورقة
-              const scale = Math.max(0.55, maxW / bb);
-              svgEl.style.transform = 'scale(' + scale.toFixed(4) + ')';
-            } else {
-              svgEl.style.transform = '';
-            }
-          } catch (_) {
-            svgEl.style.transform = '';
-          }
+          svgEl.style.transform = '';
           return ok;
         }
         moduleW = next;
@@ -8359,11 +8381,13 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      const n = String(code || '').length;
+      const display = formatPrintBarcodeDisplayText(code);
+      el.textContent = display || String(code || '');
+      const n = display.length || String(code || '').length;
       let px = 9.5;
-      if (n > 18) px = 8.5;
-      if (n > 24) px = 7.5;
-      if (n > 32) px = 6.5;
+      if (n > 16) px = 8.5;
+      if (n > 22) px = 7.5;
+      if (n > 28) px = 6.8;
       el.style.fontSize = px + 'px';
     }
     function getPrintQty() {
