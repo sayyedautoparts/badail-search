@@ -12,6 +12,11 @@ on:
     # دفعة بعد انتهاء الصمت مباشرة
     - cron: "5 3 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Force sync even if still within min interval (1=yes)"
+        required: false
+        default: "0"
 
 concurrency:
   group: hesabate-catalog-sync
@@ -26,6 +31,8 @@ jobs:
         env:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_INPUT: ${{ github.event.inputs.force || '0' }}
         run: |
           set -euo pipefail
           if [ -z "${APP_URL:-}" ]; then
@@ -33,6 +40,9 @@ jobs:
             exit 1
           fi
           URL="${APP_URL%/}/hesabate/cron_sync"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${FORCE_INPUT}" = "1" ]; then
+            URL="${URL}?force=1"
+          fi
           HDR=(-H "Accept: application/json" -H "Cache-Control: no-cache")
           if [ -n "${CRON_SECRET:-}" ]; then
             HDR+=(-H "Authorization: Bearer ${CRON_SECRET}")

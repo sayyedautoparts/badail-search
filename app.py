@@ -13426,6 +13426,8 @@ def hesabate_cron_sync(request: Request) -> dict:
             raise HTTPException(status_code=401, detail="Unauthorized cron")
     allowed, schedule_meta = hesabate_auto_sync_allowed_now()
     interval_min = max(1, int(HESABATE_SYNC_MIN_INTERVAL_SEC // 60))
+    force_q = str(request.query_params.get("force") or "").strip().lower()
+    force_catchup = force_q in ("1", "true", "yes")
     if not allowed:
         touch_hesabate_cron_ping(reason="quiet_hours_palestine")
         return {
@@ -13445,7 +13447,7 @@ def hesabate_cron_sync(request: Request) -> dict:
         }
     # المجدول قد يطرق كل ~30د — نفرض الفاصل الأدنى بين مزامنة فعلية
     age_sec = _hesabate_last_sync_age_sec()
-    if age_sec < HESABATE_SYNC_MIN_INTERVAL_SEC:
+    if (not force_catchup) and age_sec < HESABATE_SYNC_MIN_INTERVAL_SEC:
         touch_hesabate_cron_ping(reason="fresh")
         return {
             "ok": True,
