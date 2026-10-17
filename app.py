@@ -6904,6 +6904,20 @@ def home() -> HTMLResponse:
       border: 1px dashed #9ec9ae;
       background: #fff;
       text-align: center;
+      overflow: hidden;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    .print-side-preview svg {
+      display: block;
+      max-width: 100%;
+      width: auto;
+      height: auto;
+      max-height: 56px;
+      margin: 0 auto;
+    }
+    .print-side-preview svg.print-bc-fit {
+      width: 100%;
     }
     .print-side-unit[data-side="right"] .print-side-preview { border-color: #9bb8d9; }
     .print-side-preview .pv-row {
@@ -7069,16 +7083,20 @@ def home() -> HTMLResponse:
         padding: 0;
         margin: 0;
         width: 100%;
+        max-width: 100%;
       }
       .print-label .pl-bc-wrap svg {
         display: block;
-        /* لا تمديد قسري — يحافظ على نسب الأعمدة لمقروئية الماسح */
+        /* العرض يُضبط من JS (viewBox) ليدخل اللزقة حتى مع باركود طويل */
         max-width: 100% !important;
-        width: auto !important;
+        width: auto;
         max-height: 10.5mm !important;
         height: 10.5mm !important;
-        overflow: visible;
+        overflow: hidden;
         transform-origin: center bottom;
+      }
+      .print-label .pl-bc-wrap svg.print-bc-fit {
+        width: 100% !important;
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
@@ -7161,15 +7179,31 @@ def home() -> HTMLResponse:
       align-items: center;
       justify-content: flex-end;
       width: 100%;
+      max-width: 100%;
       margin: 0;
       padding: 0;
+      overflow: hidden;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg {
       max-width: 100%;
       width: auto;
       max-height: 10.5mm;
       height: 10.5mm;
+      overflow: hidden;
       transform-origin: center bottom;
+    }
+    .print-label-sheet.print-measure .pl-bc-wrap svg.print-bc-fit {
+      width: 100%;
+    }
+    /* جدول المواقع خارج لوحته — لا يظهر في طباعة/رئيسي/قياسات/قشطان */
+    body.tab-print #locationsTableWrap,
+    body.tab-print #wipersTableWrap,
+    body.tab-print #resultsTable,
+    body.tab-main #locationsTableWrap,
+    body.tab-size #locationsTableWrap,
+    body.tab-wiper #locationsTableWrap,
+    body.tab-print #names {
+      display: none !important;
     }
     .sync-box {
       margin: 0 0 12px;
@@ -7687,6 +7721,14 @@ def home() -> HTMLResponse:
       el.style.display = msg ? 'block' : 'none';
     }
 
+    function setBodySearchTabClass(tab) {
+      try {
+        ['tab-main', 'tab-size', 'tab-wiper', 'tab-location', 'tab-print'].forEach((c) => {
+          document.body.classList.remove(c);
+        });
+        document.body.classList.add('tab-' + (tab || 'main'));
+      } catch (_) {}
+    }
     function setSearchTab(tab) {
       if (tab === 'size') activeSearchTab = 'size';
       else if (tab === 'wiper') activeSearchTab = 'wiper';
@@ -7694,6 +7736,7 @@ def home() -> HTMLResponse:
       else if (tab === 'print') activeSearchTab = 'print';
       else activeSearchTab = 'main';
       localStorage.setItem('activeSearchTab', activeSearchTab);
+      setBodySearchTabClass(activeSearchTab);
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
@@ -7729,6 +7772,9 @@ def home() -> HTMLResponse:
         if (locTable) locTable.style.display = 'none';
         setStats('');
         return;
+      }
+      if (activeSearchTab !== 'location') {
+        try { clearLocationTable(null); } catch (_) {}
       }
       try {
         searchNow('auto');
@@ -7951,6 +7997,12 @@ def home() -> HTMLResponse:
     function renderLocationRowsNow(rawRows, statsText) {
       const locWrap = document.getElementById('locationsTableWrap');
       const locTable = document.getElementById('locationsTable');
+      // لا تعرض جدول المواقع خارج تبويب «موقع» (مثل طباعة الباركود)
+      if (activeSearchTab !== 'location') {
+        if (locWrap) locWrap.style.display = 'none';
+        if (locTable) locTable.style.display = 'none';
+        return 0;
+      }
       const seenKeys = new Set();
       const safeRows = [];
       (Array.isArray(rawRows) ? rawRows : []).forEach((r) => {
@@ -8390,18 +8442,61 @@ def home() -> HTMLResponse:
     function estimatePrintBarcodeModuleWidth(code) {
       const n = Math.max(1, String(code || '').length);
       const estModules = n * 11 + 35;
-      const targetPx = 200;
-      return Math.max(0.85, Math.min(2.35, targetPx / estModules));
+      // عرض لزقة ≈ 57مم صافٍ (~216px عند 96dpi)
+      const targetPx = 210;
+      return Math.max(0.7, Math.min(2.2, targetPx / estModules));
+    }
+    function printBarcodeMaxWidthPx(svgEl) {
+      const wrap = svgEl && svgEl.parentElement;
+      let w = 0;
+      try {
+        if (wrap) {
+          w = wrap.clientWidth || (wrap.getBoundingClientRect && wrap.getBoundingClientRect().width) || 0;
+        }
+      } catch (_) { w = 0; }
+      // 59مم لزقة − حواف ≈ 57مم → ~216px
+      const fallback = Math.round(57 * 96 / 25.4);
+      return Math.max(100, (w > 20 ? w - 2 : fallback));
+    }
+    function constrainPrintBarcodeSvgToWidth(svgEl, maxW) {
+      if (!svgEl || !(maxW > 0)) return;
+      let bw = 0;
+      let bh = 0;
+      try {
+        const box = svgEl.getBBox();
+        bw = box.width;
+        bh = box.height;
+      } catch (_) {
+        bw = Number(svgEl.getAttribute('width')) || svgEl.clientWidth || 0;
+        bh = Number(svgEl.getAttribute('height')) || svgEl.clientHeight || 38;
+      }
+      svgEl.style.transform = '';
+      svgEl.style.maxWidth = '100%';
+      if (!bw || bw <= maxW + 0.5) {
+        // قصير: لا تمدّد لملء العرض (يضر بالمسح)
+        svgEl.style.width = 'auto';
+        svgEl.classList.remove('print-bc-fit');
+        svgEl.removeAttribute('preserveAspectRatio');
+        return;
+      }
+      // طويل: اضغط أفقياً فقط ليدخل عرض اللزقة
+      const h = bh || 38;
+      svgEl.setAttribute('viewBox', `0 0 ${bw} ${h}`);
+      svgEl.setAttribute('preserveAspectRatio', 'none');
+      svgEl.setAttribute('width', String(maxW));
+      svgEl.setAttribute('height', String(h));
+      svgEl.classList.add('print-bc-fit');
+      svgEl.style.width = '100%';
+      svgEl.style.height = '';
     }
     function fitPrintBarcodeDynamic(svgEl, code, opts) {
       if (!svgEl) return false;
-      // اطبع كما هو — لا ضغط فراغات أبداً؛ فقط صغّر عرض العمود ليدخل اللزقة
+      // اطبع كما هو — لا ضغط فراغات؛ صغّر عرض العمود ثم اقفل العرض داخل اللزقة
       const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) return false;
       svgEl.style.transform = '';
-      const wrap = svgEl.parentElement;
-      const maxW = Math.max(120, (wrap && wrap.clientWidth) ? wrap.clientWidth - 2 : 200);
-      const minModule = 0.82;
+      const maxW = printBarcodeMaxWidthPx(svgEl);
+      const minModule = 0.62;
       const base = Object.assign({
         format: 'CODE128',
         height: 38,
@@ -8411,23 +8506,24 @@ def home() -> HTMLResponse:
       }, opts || {});
       let moduleW = estimatePrintBarcodeModuleWidth(value);
       let ok = false;
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 18; i++) {
         ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: moduleW }));
         if (!ok) return false;
         let bw = 0;
         try { bw = svgEl.getBBox().width; } catch (_) { bw = svgEl.clientWidth || 0; }
         if (!bw || bw <= maxW + 0.8) {
-          svgEl.style.transform = '';
+          constrainPrintBarcodeSvgToWidth(svgEl, maxW);
           return true;
         }
-        const next = moduleW * (maxW / bw) * 0.98;
+        const next = moduleW * (maxW / bw) * 0.97;
         if (next < minModule) {
           ok = renderPrintBarcodeSvg(svgEl, value, Object.assign({}, base, { width: minModule }));
-          svgEl.style.transform = '';
+          constrainPrintBarcodeSvgToWidth(svgEl, maxW);
           return ok;
         }
         moduleW = next;
       }
+      constrainPrintBarcodeSvgToWidth(svgEl, maxW);
       return ok;
     }
     function fitPrintBarcodeText(el, code) {
@@ -11695,6 +11791,7 @@ def home() -> HTMLResponse:
       activeSearchTab = (savedTab === 'size' || savedTab === 'wiper' || savedTab === 'location' || savedTab === 'print')
         ? savedTab
         : 'main';
+      setBodySearchTabClass(activeSearchTab);
       document.getElementById('tabMainBtn').classList.toggle('active', activeSearchTab === 'main');
       document.getElementById('tabSizeBtn').classList.toggle('active', activeSearchTab === 'size');
       document.getElementById('tabWiperBtn').classList.toggle('active', activeSearchTab === 'wiper');
@@ -11723,6 +11820,8 @@ def home() -> HTMLResponse:
       if (activeSearchTab === 'location') {
         ensureQrLib().catch(() => {});
         startHesabateLocationPoller();
+      } else {
+        try { clearLocationTable(null); } catch (_) {}
       }
       if (activeSearchTab === 'print') {
         ensureJsBarcodeLib().catch(() => {});
