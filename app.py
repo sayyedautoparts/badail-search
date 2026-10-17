@@ -8454,6 +8454,22 @@ def home() -> HTMLResponse:
         el.style.fontSize = maxPx + 'px';
       });
     }
+    function applyHesabateUsageFromResponse(live, message) {
+      // حدّث عداد الطلبات في خانة «موقع» بعد أي طلب حساباتي (بما فيه طباعة الباركود)
+      if (!live) return;
+      try {
+        if (live.usage) {
+          renderHesabateUsage(live.usage, message || live.message || '', {
+            last_sync_at: live.last_sync_at || (live.usage && live.usage.last_location_sync_at) || '',
+            last_error: live.ok === false ? (live.message || live.last_error || '') : (live.last_error || '')
+          });
+          return;
+        }
+        if (Number(live.request_count || 0) > 0) {
+          refreshHesabateStatus();
+        }
+      } catch (_) {}
+    }
     async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
       const res = await fetch('/hesabate/lookup', {
         method: 'POST',
@@ -8470,6 +8486,7 @@ def home() -> HTMLResponse:
       });
       const live = await readJsonSafe(res);
       if (!res.ok) throw new Error((live && live.detail) || `hesabate-lookup-${res.status}`);
+      applyHesabateUsageFromResponse(live);
       return live;
     }
     function currentLocationQueryKey(barcode, text) {
@@ -9405,7 +9422,7 @@ def home() -> HTMLResponse:
           }
           return;
         }
-        if (live.usage) renderHesabateUsage(live.usage, live.message || '');
+        applyHesabateUsageFromResponse(live, live.message || '');
         applyHesabateSearchVersion(live);
         if (isMissingFromHesabate(live) || (!apiRows.length && live.not_found)) {
           if (localRows.length) {
@@ -9446,6 +9463,7 @@ def home() -> HTMLResponse:
         } else {
           applyPrintLookupRows(s, [], hint);
         }
+        try { refreshHesabateStatus(); } catch (_) {}
       } finally {
         if (btn) btn.disabled = false;
       }
