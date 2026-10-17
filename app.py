@@ -7910,9 +7910,9 @@ def home() -> HTMLResponse:
     let locationSearchGen = 0;
     let locationLiveRefreshBusy = false;
     const locationLiveRefreshByKey = new Map();
-    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد الحالة في تبويب المواقع
-    // طلب مزامنة من الواجهة كل 4 دقائق — السيرفر يفرض الفاصل (ولا يكرّر بلا داعٍ)
-    const HESABATE_CLIENT_ENSURE_MS = 4 * 60 * 1000;
+    const HESABATE_CLIENT_POLL_MS = 90000; // ~90ث — تحديث عداد الحالة في تبويب المواقع فقط (بدون مزامنة)
+    // نفس فاصل السيرفر (~ساعة ونص): لا نسأل قبل ما يحين موعد التحديث
+    let HESABATE_CLIENT_ENSURE_MS = 90 * 60 * 1000;
     function isCompleteBarcodeQuery(bc) {
       const compact = String(bc || '').replace(/[\\s\\-]/g, '');
       return compact.length >= 8 && /[0-9A-Za-z]/.test(compact);
@@ -7941,14 +7941,28 @@ def home() -> HTMLResponse:
       }
     }
     function startHesabateAutoEnsure() {
-      // مزامنة تلقائية طالما الصفحة مفتوحة — تكمل GitHub لما التطبيق مغلق
+      // مزامنة تلقائية بنفس فاصل السيرفر (~ساعة ونص) — مش كل كم دقيقة
       stopHesabateAutoEnsure();
       const tick = () => {
         ensureHesabateLocationSyncQuiet(false).catch(() => {});
       };
-      // أول طلب بعد ثوانٍ من الإقلاع (لا يجمّد الواجهة)
-      setTimeout(tick, 8000);
-      hesabateGlobalEnsureTimer = setInterval(tick, HESABATE_CLIENT_ENSURE_MS);
+      // اقرأ الفاصل من السيرفر إن وُجد، ثم اسأل بعد ذلك الفاصل (ومرّة عند الإقلاع إن كانت قديمة)
+      (async () => {
+        try {
+          const res = await fetch('/hesabate/status', { cache: 'no-store' });
+          const data = await readJsonSafe(res);
+          const sec = Number((data && data.usage && data.usage.sync_min_interval_sec) || data.sync_min_interval_sec || 0);
+          if (sec >= 60) HESABATE_CLIENT_ENSURE_MS = Math.max(60, sec) * 1000;
+          const age = Number(data && data.age_sec);
+          // إن فات الموعد — زامِن مرّة بعد الإقلاع؛ غير هيك انتظر الفاصل كامل
+          if (!(Number.isFinite(age) && age < sec)) {
+            setTimeout(tick, 8000);
+          }
+        } catch (_) {
+          setTimeout(tick, 8000);
+        }
+        hesabateGlobalEnsureTimer = setInterval(tick, HESABATE_CLIENT_ENSURE_MS);
+      })();
     }
     async function ensureHesabateLocationSyncQuiet(force) {
       if (hesabateEnsureInflight) return null;
@@ -13119,6 +13133,7 @@ def hesabate_status() -> dict:
     usage["product_cache_rows"] = str(cache_n)
     usage["product_cache_at"] = app_kv_get("hesabate_product_cache_at", "")
     last_err = app_kv_get("hesabate_last_error", "")
+    age_sec = int(_hesabate_last_sync_age_sec())
     return {
         "configured": hesabate_configured(),
         "usage": usage,
@@ -13127,6 +13142,7 @@ def hesabate_status() -> dict:
         "last_sync_at": app_kv_get("hesabate_last_sync_at", ""),
         "last_error": last_err,
         "sync_min_interval_sec": HESABATE_SYNC_MIN_INTERVAL_SEC,
+        "age_sec": age_sec,
         "auto_sync_count": usage.get("auto_sync_count", 0),
         "auto_sync_last_at": usage.get("auto_sync_last_at", ""),
         "catalog_mode": "full_download_compare",
