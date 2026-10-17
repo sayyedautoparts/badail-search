@@ -7039,7 +7039,7 @@ def home() -> HTMLResponse:
         max-width: 100%;
         /* خط أوضح للطباعة الحرارية (عربي + إنجليزي) */
         font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
-        font-size: 32px;
+        font-size: 42px;
         font-weight: 900;
         margin: 0;
         padding: 0;
@@ -8550,8 +8550,8 @@ def home() -> HTMLResponse:
       // —— باركود أصغر (ارتفاع+عرض) + أعمدة bold · اسم الصنف يأخذ المساحة ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      // أصغر ارتفاعاً وعرضاً ليفسح كل المساحة فوق الأصلي للاسم
-      const usableMm = 44;
+      // عرض أكبر ~10% عن السابق (44→48.5) مع إبقاء الارتفاع مضغوط للاسم
+      const usableMm = 48.5;
       const heightMm = 6.8;
       const usableDots = Math.floor(usableMm * dotsPerMm);
       const heightDots = Math.max(42, Math.round(heightMm * dotsPerMm));
@@ -9039,9 +9039,9 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      // املأ كل المساحة فوق رقم الأصلي بأقصى خط واضح
-      const maxPx = 48;
-      const minPx = 14;
+      // أكبر بـ ~30% عن السابق (48→62)
+      const maxPx = 62;
+      const minPx = 18;
       el.style.display = 'block';
       el.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
       el.style.fontWeight = '900';
