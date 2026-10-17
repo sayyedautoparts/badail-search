@@ -10024,29 +10024,35 @@ def home() -> HTMLResponse:
       }
       return label;
     }
+    function isPrintPayloadReady(p) {
+      return !!(p && !p.error && p.barcode && /[A-Za-z0-9]/.test(String(p.barcode)));
+    }
     async function printBarcodeLabels() {
       const { qty, pages } = updatePrintQtyHint();
-      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length)) {
-        const ok = await resolvePrintItemFromLocal('left', true);
-        if (!ok) {
-          setPrintFetchStatus('جهّز صنف اليسار أولاً.');
-          return;
-        }
+      // حاول تجهيز أي جهة فيها نص بحث — بدون إجبار الطرفين
+      const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
+      const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
+      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length) && leftQ) {
+        await resolvePrintItemFromLocal('left', false);
       }
-      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length)) {
+      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length) && rightQ) {
         await resolvePrintItemFromLocal('right', false);
       }
       let payloadLeft = buildPrintPayloadForSide('left');
       let payloadRight = buildPrintPayloadForSide('right');
-      if (!payloadLeft || payloadLeft.error === 'no-barcode') {
-        setPrintFetchStatus('لا يوجد باركود لصنف اليسار.', 'left');
-        setPrintFetchStatus('لا يوجد باركود لصنف اليسار.');
+      const leftOk = isPrintPayloadReady(payloadLeft);
+      const rightOk = isPrintPayloadReady(payloadRight);
+      if (!leftOk && !rightOk) {
+        setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.');
         return;
       }
-      // دائماً لزقتين معاً — إن اليمين فاضي نكرّر اليسار حتى ما تطلع ورقة بنصف واحد
-      if (!payloadRight || payloadRight.error === 'no-barcode') {
+      // طرف ناقص: انسخ الجاهز على الجهتين حتى تطلع الورقة كاملة
+      if (leftOk && !rightOk) {
         payloadRight = Object.assign({}, payloadLeft);
-        setPrintFetchStatus('اليمين فاضي — تُطبع نفس صنف اليسار على الجهتين.', 'right');
+        setPrintFetchStatus('اليمين ناقص — تُطبع نفس صنف اليسار على الجهتين.', 'right');
+      } else if (rightOk && !leftOk) {
+        payloadLeft = Object.assign({}, payloadRight);
+        setPrintFetchStatus('اليسار ناقص — تُطبع نفس صنف اليمين على الجهتين.', 'left');
       }
       try {
         await ensureJsBarcodeLib();
