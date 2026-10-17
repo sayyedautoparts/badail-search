@@ -7779,7 +7779,7 @@ def home() -> HTMLResponse:
 
         <div class="print-unit-fields" style="margin-top:12px;">
           <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
-          <input id="printQtyInput" type="number" min="1" max="200" value="1" inputmode="numeric" oninput="updatePrintDualPreviewSlots()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+          <input id="printQtyInput" type="text" inputmode="numeric" pattern="[0-9]*" lang="en" dir="ltr" autocomplete="off" value="1" placeholder="1" style="font-variant-numeric:lining-nums;font-feature-settings:'tnum';text-align:left;" onfocus="this.select()" onmouseup="event.preventDefault()" oninput="onPrintQtyInputChange()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
@@ -8946,8 +8946,41 @@ def home() -> HTMLResponse:
       fitTextIntoBox(el, hint, 4.5);
       el.style.fontWeight = '900';
     }
+    function toEnglishDigits(raw) {
+      return String(raw == null ? '' : raw)
+        .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+        .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+    }
+    function normalizePrintQtyValue(raw) {
+      const digits = toEnglishDigits(raw).replace(/[^\d]/g, '');
+      if (!digits) return '';
+      const n = parseInt(digits, 10);
+      if (!Number.isFinite(n)) return '';
+      return String(Math.max(1, Math.min(200, n)));
+    }
+    function onPrintQtyInputChange() {
+      const el = document.getElementById('printQtyInput');
+      if (!el) return;
+      const cur = String(el.value || '');
+      const norm = normalizePrintQtyValue(cur);
+      // اكتب دائماً أرقاماً إنجليزية 0-9
+      if (norm !== cur) {
+        const start = el.selectionStart;
+        el.value = norm;
+        try {
+          if (typeof start === 'number') {
+            const pos = Math.min(norm.length, start);
+            el.setSelectionRange(pos, pos);
+          }
+        } catch (_) {}
+      }
+      updatePrintDualPreviewSlots();
+      scheduleSavePrintFormState();
+    }
     function getPrintQty() {
-      const qtyRaw = Number((document.getElementById('printQtyInput') || {}).value || 1);
+      const el = document.getElementById('printQtyInput');
+      const norm = normalizePrintQtyValue(el ? el.value : '1');
+      const qtyRaw = Number(norm || 1);
       return Math.max(1, Math.min(200, Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : 1));
     }
     function updatePrintQtyHint() {
@@ -8955,10 +8988,11 @@ def home() -> HTMLResponse:
       // كل «كمية» = ورقة كاملة بلزقتين معاً (يسار + يمين)
       const pages = qty;
       const hint = document.getElementById('printQtyHint');
+      const qtyEn = String(qty);
       if (hint) {
         hint.textContent = qty === 1
           ? 'ورقة واحدة = لزق يسار + لزق يمين معاً'
-          : `${qty} ورقات · كل ورقة لزقتين معاً (يسار + يمين)`;
+          : (qtyEn + ' ورقات · كل ورقة لزقتين معاً (يسار + يمين)');
       }
       return { qty, pages };
     }
@@ -9021,7 +9055,7 @@ def home() -> HTMLResponse:
       try {
         const qtyEl = document.getElementById('printQtyInput');
         if (qtyEl && data.qty != null && String(data.qty).trim()) {
-          qtyEl.value = String(data.qty);
+          qtyEl.value = normalizePrintQtyValue(data.qty) || '1';
         }
         for (const side of ['left', 'right']) {
           const st = data[side] || {};
@@ -12873,8 +12907,24 @@ def home() -> HTMLResponse:
       }
       const printQtyInput = document.getElementById('printQtyInput');
       if (printQtyInput) {
-        printQtyInput.addEventListener('input', () => scheduleSavePrintFormState());
-        printQtyInput.addEventListener('change', () => scheduleSavePrintFormState());
+        printQtyInput.addEventListener('focus', function () {
+          const el = this;
+          setTimeout(function () { try { el.select(); } catch (_) {} }, 0);
+        });
+        printQtyInput.addEventListener('mouseup', function (e) {
+          // أول كبسة تحدد الرقم كامل بدون ما يلغى التحديد
+          e.preventDefault();
+        });
+        printQtyInput.addEventListener('change', () => {
+          const el = document.getElementById('printQtyInput');
+          if (el) {
+            const n = normalizePrintQtyValue(el.value);
+            el.value = n || '1';
+          }
+          onPrintQtyInputChange();
+        });
+        // تأكيد القيمة إنجليزية عند الإقلاع
+        printQtyInput.value = normalizePrintQtyValue(printQtyInput.value) || '1';
       }
       // استرجاع آخر طباعة/قيم مكتوبة بعد تحديث الصفحة
       restorePrintFormState().catch(() => {});
