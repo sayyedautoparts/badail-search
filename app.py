@@ -8530,16 +8530,16 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— طباعة لزقة Rongta 203dpi: صورة نقطية حادة للماسح ——
-      // أعمدة أثقل (≥ 3 نقاط ≈ 0.37مم) عشان الماسح يقرا أسرع
+      // —— طباعة لزقة Rongta 203dpi ——
+      // ارتفاع أقل ~20%، وأعمدة أثقل/أوضح داخل اللزقة للمسح السريع
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
-      const usableMm = 57;
-      const heightMm = 14.5;
+      const usableMm = 56;
+      const heightMm = 11.6; // كان ~14.5 → أصغر 20%
       const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(90, Math.round(heightMm * dotsPerMm));
-      // ضيّق الـ quiet شوي لإفساح سماكة الأعمدة
-      const quietTries = [8, 6, 5];
+      const heightDots = Math.max(72, Math.round(heightMm * dotsPerMm));
+      // quiet أصغر شوي عشان الأعمدة تطلع أخمل وتدخل اللزقة
+      const quietTries = [7, 5, 4];
 
       let best = null;
       for (let i = 0; i < quietTries.length; i++) {
@@ -8576,20 +8576,21 @@ def home() -> HTMLResponse:
         }
         const units = probe.width || 0;
         if (!units) continue;
-        // فضّل 3–4 نقاط/عمود (أثقل وأسرع للماسح)
+        // أعمدة خميلة: فضّل 4–5 نقاط (~0.5–0.62مم)
         let moduleDots = Math.floor(usableDots / units);
-        if (moduleDots < 3) {
+        if (moduleDots < 4) {
           if (i < quietTries.length - 1) continue;
-          moduleDots = 3; // لا تنزل تحت 3 إلا للضرورة القصوى لاحقاً
+          moduleDots = 4;
         }
-        if (moduleDots > 4) moduleDots = 4;
-        // إن ما زال ما يدخل بـ 3 نقاط، جرّب 2 كحد أخير
-        if (units * moduleDots > usableDots + 2 && moduleDots > 2) {
+        if (moduleDots > 5) moduleDots = 5;
+        // إن ما دخل اللزقة بـ 4 نقاط — انزل تدريجياً لـ 3 ثم 2
+        if (units * moduleDots > usableDots + 2) {
           const fit = Math.floor(usableDots / units);
-          moduleDots = Math.max(2, fit);
+          moduleDots = Math.max(3, fit);
+          if (units * moduleDots > usableDots + 2) moduleDots = Math.max(2, fit);
         }
         best = { quietMods, moduleDots, units };
-        if (moduleDots >= 3 && units * moduleDots <= usableDots) break;
+        if (moduleDots >= 4 && units * moduleDots <= usableDots) break;
       }
       if (!best) return false;
 
