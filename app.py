@@ -7251,7 +7251,7 @@ def home() -> HTMLResponse:
       height: 30mm;
       max-height: 30mm;
       box-sizing: border-box;
-      padding: 0.4mm 0.7mm 0.25mm;
+      padding: 0;
       margin: 0;
       position: relative;
       display: block;
@@ -7337,14 +7337,13 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* ورقة اللزقتين: 106×31 مم
-         هوامش 0.5مم · فجوة وسط 5مم · كل لزقة 50×30 مم · محتوى اليمين بإزاحة +2 مم */
+      /* الحجم الافتراضي؛ يُحدَّث ديناميكياً من GUI عبر #printDynGeomStyle */
       @page {
-        size: 106mm 31mm;
+        size: 100mm 30mm;
         margin: 0;
       }
       html, body {
-        width: 106mm !important;
+        width: 100mm !important;
         height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
@@ -7358,7 +7357,7 @@ def home() -> HTMLResponse:
       .print-label-sheet {
         display: block !important;
         position: static !important;
-        width: 106mm;
+        width: 100%;
         margin: 0;
         padding: 0;
         background: #fff;
@@ -7369,13 +7368,13 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: flex-start;
         align-items: flex-start;
-        width: 106mm;
-        height: 31mm;
-        max-height: 31mm;
+        width: 100mm;
+        height: 30mm;
+        max-height: 30mm;
         box-sizing: border-box;
         margin: 0;
-        padding: 0.5mm;
-        gap: 5mm;
+        padding: 0;
+        gap: 0;
         page-break-after: always;
         break-after: page;
         page-break-inside: avoid;
@@ -7392,7 +7391,7 @@ def home() -> HTMLResponse:
         height: 30mm;
         max-height: 30mm;
         box-sizing: border-box;
-        padding: 0.4mm 0.7mm 0.25mm;
+        padding: 0;
         margin: 0;
         text-align: center;
         font-family: "Segoe UI", Arial, Tahoma, sans-serif;
@@ -7406,7 +7405,7 @@ def home() -> HTMLResponse:
       .print-label-row .print-label:last-child,
       .print-label.print-label-right {
         margin: 0;
-        padding: 0.4mm 0.7mm 0.25mm;
+        padding: 0;
       }
       .print-label.print-label-empty {
         visibility: hidden;
@@ -7500,10 +7499,10 @@ def home() -> HTMLResponse:
       direction: ltr;
       justify-content: flex-start;
       align-items: flex-start;
-      width: 106mm;
-      height: 31mm;
-      padding: 0.5mm;
-      gap: 5mm;
+      width: 100mm;
+      height: 30mm;
+      padding: 0;
+      gap: 0;
       box-sizing: border-box;
     }
     .print-label-sheet.print-measure .print-label {
@@ -7512,7 +7511,7 @@ def home() -> HTMLResponse:
       height: 30mm;
       max-height: 30mm;
       box-sizing: border-box;
-      padding: 0.4mm 0.7mm 0.25mm;
+      padding: 0;
       margin: 0;
       overflow: hidden;
       position: relative;
@@ -7524,7 +7523,7 @@ def home() -> HTMLResponse:
     .print-label-sheet.print-measure .print-label-row .print-label:last-child,
     .print-label-sheet.print-measure .print-label.print-label-right {
       margin: 0;
-      padding: 0.4mm 0.7mm 0.25mm;
+      padding: 0;
     }
     .print-label-sheet.print-measure .pl-name,
     .print-label-sheet.print-measure .pl-orig,
@@ -8108,11 +8107,9 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              الورقة <strong>106×31 مم</strong> · كل لزقة <strong>50×30 مم</strong> · هامش <strong>0.5 مم</strong> · فجوة <strong>5 مم</strong> · القياسات الافتراضية من <strong>GUI المعتمد</strong> (اليسار واليمين مستقلين مع إزاحة اليمين).
-              <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
-              <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
-              اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
-              تقدر تسحب وتكبّر الخانات <strong>برا حدود اللزقة</strong> — ولما تكبّر خانة (مثل الاسم) <strong>بتكبر اللزقة تلقائياً</strong> معها للطباعة.
+              الحجم فقط: كل لزقة <strong>50×30 مم</strong> (بتكبر مع GUI) · الورقة = لزقتين متلاصقتين بدون هامش/فجوة إجبارية.
+              المواضع والإزاحات كلها منك بالـ GUI — البرنامج ما بفرض بداية ولا نهاية.
+              اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -8199,7 +8196,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 106×31 مم · كل لزقة 50×30 مم · فجوة 5 مم · محتوى اليمين +2 مم · هوامش 0.5 مم.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · لزقتين متلاصقتين · الحجم من GUI · بدون هامش إجباري.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -10010,21 +10007,21 @@ def home() -> HTMLResponse:
       return { name, original, location, barcode };
     }
     const PRINT_SHEET_MM = {
-      sheetW: 106,
-      sheetH: 31,
-      margin: 0.5,
-      gap: 5,
+      // نحدد الحجم فقط — بدون هامش/فجوة/إزاحة إجبارية (المواضع كلها من GUI)
+      sheetW: 100,
+      sheetH: 30,
+      margin: 0,
+      gap: 0,
       labelW: 50,
       labelH: 30,
-      padY: 0.5,
-      contentH: 29.0,
-      // إزاحة اليمين مدمجة داخل PRINT_LAYOUT_DEFAULTS_RIGHT (قياسات GUI المعتمدة)
+      padY: 0,
+      contentH: 30,
       rightContentShiftXmm: 0
     };
     // مقياس GUI أكبر ليتناسب مع لزقة 50×30 مم
     const PRINT_DESIGNER_PX_PER_MM = 5.6;
-    const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 1.4;
-    const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH - 0.65;
+    const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW;
+    const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH;
     // قياسات معتمدة من GUI المستخدم (2026-10-18)
     const PRINT_LAYOUT_DEFAULTS_LEFT = {
       namePx: 30,
@@ -10111,20 +10108,18 @@ def home() -> HTMLResponse:
       return { w: maxR, h: maxB };
     }
     function getPrintGeometryMm() {
-      // حجم اللزقة/الورقة يتبع أكبر ما وصله محتوى الـ GUI (يسار أو يمين)
+      // الحجم فقط من مدى عناصر GUI — بدون هامش/إزاحة إجبارية من الحواف
       const base = PRINT_SHEET_MM;
       const eL = extentPrintLayoutMm(getPrintLayoutSettings('left'));
       const eR = extentPrintLayoutMm(getPrintLayoutSettings('right'));
-      const padX = 1.2;
-      const padY = 0.85;
-      let labelW = Math.max(base.labelW, eL.w + padX, eR.w + padX);
-      let labelH = Math.max(base.labelH, eL.h + padY, eR.h + padY);
-      labelW = Math.round(Math.min(72, Math.max(40, labelW)) * 10) / 10;
-      labelH = Math.round(Math.min(55, Math.max(25, labelH)) * 10) / 10;
-      const margin = base.margin;
-      const gap = base.gap;
-      const sheetW = Math.round((margin * 2 + labelW * 2 + gap) * 10) / 10;
-      const sheetH = Math.round((margin * 2 + labelH) * 10) / 10;
+      let labelW = Math.max(base.labelW, eL.w, eR.w);
+      let labelH = Math.max(base.labelH, eL.h, eR.h);
+      labelW = Math.round(Math.min(80, Math.max(30, labelW)) * 10) / 10;
+      labelH = Math.round(Math.min(60, Math.max(20, labelH)) * 10) / 10;
+      const margin = 0;
+      const gap = 0;
+      const sheetW = Math.round((labelW * 2) * 10) / 10;
+      const sheetH = labelH;
       return {
         labelW: labelW,
         labelH: labelH,
@@ -10132,8 +10127,8 @@ def home() -> HTMLResponse:
         sheetH: sheetH,
         margin: margin,
         gap: gap,
-        contentW: Math.max(12, labelW - 1.4),
-        contentH: Math.max(12, labelH - 0.65)
+        contentW: labelW,
+        contentH: labelH
       };
     }
     function applyPrintGeometryCss(geo) {
@@ -10148,19 +10143,21 @@ def home() -> HTMLResponse:
         '.print-label-mock-host{width:' + g.labelW + 'mm;height:' + g.labelH + 'mm;'
         + 'margin-bottom:calc(' + g.labelH + 'mm * (var(--mock-scale) - 1) + 8px);}'
         + '.print-label-mock-host .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
-        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}'
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;}'
         + '@media print{'
         + '@page{size:' + g.sheetW + 'mm ' + g.sheetH + 'mm;margin:0;}'
         + 'html,body{width:' + g.sheetW + 'mm !important;}'
         + '.print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;max-height:' + g.sheetH + 'mm;'
-        + 'gap:' + g.gap + 'mm;padding:' + g.margin + 'mm;}'
-        + '.print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
-        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}'
+        + 'gap:0;padding:0;margin:0;}'
+        + '.print-label,.print-label.print-label-left,.print-label.print-label-right,'
+        + '.print-label-row .print-label:first-child,.print-label-row .print-label:last-child{'
+        + 'width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}'
         + '}'
         + '.print-label-sheet.print-measure .print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;'
-        + 'gap:' + g.gap + 'mm;padding:' + g.margin + 'mm;}'
+        + 'gap:0;padding:0;margin:0;}'
         + '.print-label-sheet.print-measure .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
-        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}';
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}';
       return g;
     }
     function syncPrintGeometryUi() {
@@ -10181,11 +10178,11 @@ def home() -> HTMLResponse:
         }
         const row = board.querySelector('.print-designer-row');
         if (row) {
-          row.style.left = (padPx + g.margin * ppm) + 'px';
-          row.style.top = (padPx + g.margin * ppm) + 'px';
-          row.style.width = ((g.sheetW - g.margin * 2) * ppm) + 'px';
+          row.style.left = padPx + 'px';
+          row.style.top = padPx + 'px';
+          row.style.width = (g.sheetW * ppm) + 'px';
           row.style.height = (g.labelH * ppm) + 'px';
-          row.style.gap = (g.gap * ppm) + 'px';
+          row.style.gap = '0px';
         }
         board.querySelectorAll('.print-designer-label').forEach((label) => {
           label.style.width = (g.labelW * ppm) + 'px';
@@ -10673,19 +10670,16 @@ def home() -> HTMLResponse:
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
       const ppm = PRINT_DESIGNER_PX_PER_MM;
-      const padTop = 0.4 * ppm;
+      // أصل الإحداثيات = زاوية اللزقة (0,0) بدون padding/إزاحة إجبارية
       board.querySelectorAll('.print-designer-label').forEach((labelEl) => {
         const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
         const s = getPrintLayoutSettings(side);
-        const padX = 0.7 * ppm;
-        const rawShift = Number(PRINT_SHEET_MM.rightContentShiftXmm);
-        const xShift = (side === 'right' && Number.isFinite(rawShift)) ? rawShift : 0;
         ['name', 'orig', 'loc', 'bc'].forEach((zone) => {
           const zEl = labelEl.querySelector('.pdg-zone[data-zone="' + zone + '"]');
           if (!zEl) return;
           const b = printZoneBox(s, zone);
-          zEl.style.left = (padX + (b.x + xShift) * ppm) + 'px';
-          zEl.style.top = (padTop + b.y * ppm) + 'px';
+          zEl.style.left = (b.x * ppm) + 'px';
+          zEl.style.top = (b.y * ppm) + 'px';
           zEl.style.width = (b.w * ppm) + 'px';
           zEl.style.height = (b.h * ppm) + 'px';
         });
@@ -10761,11 +10755,11 @@ def home() -> HTMLResponse:
       board.appendChild(sheetFrame);
       const row = document.createElement('div');
       row.className = 'print-designer-row';
-      row.style.left = (padPx + geo.margin * ppm) + 'px';
-      row.style.top = (padPx + geo.margin * ppm) + 'px';
-      row.style.width = ((geo.sheetW - geo.margin * 2) * ppm) + 'px';
+      row.style.left = padPx + 'px';
+      row.style.top = padPx + 'px';
+      row.style.width = (geo.sheetW * ppm) + 'px';
       row.style.height = (geo.labelH * ppm) + 'px';
-      row.style.gap = (geo.gap * ppm) + 'px';
+      row.style.gap = '0px';
       row.appendChild(buildPrintDesignerLabelEl('left'));
       row.appendChild(buildPrintDesignerLabelEl('right'));
       board.appendChild(row);
@@ -10803,9 +10797,6 @@ def home() -> HTMLResponse:
         || 'left'
       );
       const s = getPrintLayoutSettings(side);
-      // إزاحة إضافية لليمين إن وُجدت (0 = الإزاحة مدمجة بقياسات اليمين المعتمدة)
-      const rawShift = Number(PRINT_SHEET_MM.rightContentShiftXmm);
-      const xShift = (side === 'right' && Number.isFinite(rawShift)) ? rawShift : 0;
       const nameEl = label.querySelector('.pl-name');
       const metaEl = label.querySelector('.pl-meta');
       const origEl = label.querySelector('.pl-orig');
@@ -10817,41 +10808,25 @@ def home() -> HTMLResponse:
         nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
         nameEl.style.fontWeight = '900';
         nameEl.dataset.maxNamePx = String(s.namePx);
-        applyPrintBoxStyle(nameEl, { x: s.nameXmm + xShift, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
+        applyPrintBoxStyle(nameEl, { x: s.nameXmm, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
       }
       if (origEl) {
         origEl.style.fontSize = s.originalPx + 'px';
         origEl.style.fontWeight = '800';
-        applyPrintBoxStyle(origEl, { x: s.origXmm + xShift, y: s.origYmm, w: s.origWmm, h: s.origHmm });
+        applyPrintBoxStyle(origEl, { x: s.origXmm, y: s.origYmm, w: s.origWmm, h: s.origHmm });
       }
       if (locEl) {
         locEl.style.fontSize = s.locationPx + 'px';
         locEl.style.fontWeight = '800';
-        applyPrintBoxStyle(locEl, { x: s.locXmm + xShift, y: s.locYmm, w: s.locWmm, h: s.locHmm });
+        applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        // باركود طويل: لا تضيّق عرض منطقة bc تحت حد عملي (كان يفشل غالباً على لزقة اليسار)
-        const contentW = (typeof getPrintGeometryMm === 'function')
-          ? getPrintGeometryMm().contentW
-          : (PRINT_CONTENT_W_MM || 48.6);
-        const minBcW = Math.min(contentW, 40);
-        let bcW = Number(s.bcWmm) || minBcW;
-        let bcX = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0) + xShift;
-        if (bcW < minBcW) {
-          bcW = Math.min(contentW, Math.max(bcW, minBcW));
-        }
-        const maxX = contentW;
-        if (bcX + bcW > maxX) {
-          bcW = Math.max(minBcW, maxX - bcX);
-        }
-        if (bcX + bcW > maxX) {
-          bcX = Math.max(0, maxX - bcW);
-        }
+        // المواضع كما في GUI حرفياً — بدون قص/إزاحة إجبارية من الحواف
         applyPrintBoxStyle(wrap, {
-          x: bcX,
-          y: s.bcYmm + (s.bcShiftYmm || 0),
-          w: bcW,
-          h: s.bcHmm
+          x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
+          y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
+          w: Number(s.bcWmm) || 16,
+          h: Number(s.bcHmm) || 8
         });
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
@@ -10998,7 +10973,7 @@ def home() -> HTMLResponse:
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 106×31 مم`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · حجم من GUI`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       try { savePrintFormState(); } catch (_) {}
