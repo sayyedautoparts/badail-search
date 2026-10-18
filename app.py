@@ -9446,11 +9446,9 @@ def home() -> HTMLResponse:
       if (moduleDots < 1) moduleDots = 1;
       if (moduleDots > 3) moduleDots = 3;
 
-      // ارتفاع الأعمدة: قصير=أوضح · طويل=أقل إذا احتاج يتسع
-      let barHmm = 10;
+      // خط الباركود نفسه = 8مم · للطويل جداً يصغر أكثر إذا لزم
+      let barHmm = 8;
       if (moduleDots <= 1) barHmm = 6;
-      else if (moduleDots === 2) barHmm = 8;
-      else barHmm = 10;
       const heightDots = Math.max(36, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
@@ -10412,7 +10410,7 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v7 = ارتفاع باركود 8مم + خط الرقم 8
+        // v7 = خط الرقم تحت الباركود 8 · ارتفاع الأعمدة يتصغّر للطويل عند الحاجة
         if (ver < 7) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
