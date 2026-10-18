@@ -8119,6 +8119,7 @@ def home() -> HTMLResponse:
               <button type="button" class="btn-secondary" onclick="copyPrintLayoutSide('left','right')">نسخ يسار → يمين</button>
               <button type="button" class="btn-secondary" onclick="copyPrintLayoutSide('right','left')">نسخ يمين → يسار</button>
               <button type="button" class="btn-secondary" onclick="refreshPrintDesignerBoard()">تحديث من الأصناف الحالية</button>
+              <button type="button" class="btn-secondary" onclick="uploadPrintLayoutPrefsToServer(true)">اعتماد قياسات GUI على السيرفر</button>
               <div id="printDesignerReadout">—</div>
             </div>
             <div class="print-designer-scroll">
@@ -10210,7 +10211,43 @@ def home() -> HTMLResponse:
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS)
       };
       try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
+      try { scheduleUploadPrintLayoutPrefs(); } catch (_) {}
       return b;
+    }
+    let _printLayoutUploadTimer = null;
+    async function uploadPrintLayoutPrefsToServer(showStatus) {
+      let b = null;
+      try { b = getPrintLayoutBundle(); } catch (_) { b = null; }
+      if (!b || !b.left || !b.right) return false;
+      try {
+        const res = await fetch('/print_layout_prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(b)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (showStatus) {
+          const el = document.getElementById('printDesignerReadout');
+          if (el) {
+            el.textContent = (data && data.ok)
+              ? ('تم اعتماد قياسات GUI على السيرفر · ' + (data.updated_at || ''))
+              : 'فشل رفع القياسات';
+          }
+        }
+        return !!(data && data.ok);
+      } catch (_) {
+        if (showStatus) {
+          const el = document.getElementById('printDesignerReadout');
+          if (el) el.textContent = 'فشل رفع القياسات';
+        }
+        return false;
+      }
+    }
+    function scheduleUploadPrintLayoutPrefs() {
+      if (_printLayoutUploadTimer) clearTimeout(_printLayoutUploadTimer);
+      _printLayoutUploadTimer = setTimeout(() => {
+        uploadPrintLayoutPrefsToServer(false);
+      }, 700);
     }
     function getPrintLayoutSettings(side) {
       const b = getPrintLayoutBundle();
@@ -13600,6 +13637,12 @@ def home() -> HTMLResponse:
       if (activeSearchTab === 'print') {
         ensureJsBarcodeLib().catch(() => {});
       }
+      // ارفع قياسات GUI الحالية من المتصفح للسيرفر (عشان نصير نعتمدها كافتراضي)
+      try {
+        if (localStorage.getItem('printLayoutSettings')) {
+          setTimeout(() => { uploadPrintLayoutPrefsToServer(false); }, 1200);
+        }
+      } catch (_) {}
       refreshHesabateStatus();
 
       const printQueryLeft = document.getElementById('printQueryLeft');
@@ -15320,3 +15363,39 @@ self.addEventListener('fetch', (event) => {{
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "app_version": APP_VERSION, "db_backend": DB_BACKEND}
+
+
+@app.get("/print_layout_prefs")
+def get_print_layout_prefs() -> dict:
+    """قياسات GUI المحفوظة من المتصفح (لمزامنة الافتراضي مع تعديلات المستخدم)."""
+    raw = app_kv_get("print_layout_prefs_json", "")
+    if not raw:
+        return {"ok": True, "layout": None, "updated_at": ""}
+    try:
+        layout = json.loads(raw)
+    except Exception:
+        return {"ok": False, "layout": None, "updated_at": app_kv_get("print_layout_prefs_at", "")}
+    return {
+        "ok": True,
+        "layout": layout,
+        "updated_at": app_kv_get("print_layout_prefs_at", ""),
+    }
+
+
+@app.post("/print_layout_prefs")
+async def set_print_layout_prefs(payload: dict) -> dict:
+    """حفظ قياسات اليسار/اليمين كما عدّلها المستخدم في GUI."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    left = payload.get("left")
+    right = payload.get("right")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        raise HTTPException(status_code=400, detail="left/right required")
+    body = {
+        "version": int(payload.get("version") or 3),
+        "left": left,
+        "right": right,
+    }
+    app_kv_set("print_layout_prefs_json", json.dumps(body, ensure_ascii=False))
+    app_kv_set("print_layout_prefs_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    return {"ok": True, "updated_at": app_kv_get("print_layout_prefs_at", "")}
