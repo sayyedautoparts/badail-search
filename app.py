@@ -7208,7 +7208,7 @@ def home() -> HTMLResponse:
     .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
     .print-side-unit .field-label { margin-top: 8px; }
     .print-side-unit .field-label:first-of-type { margin-top: 0; }
-    /* معاينة شكل الليبل كما سيُطبع (50×25 مم) داخل كل جهة */
+    /* معاينة شكل الليبل كما سيُطبع (50×26 مم) داخل كل جهة */
     .print-side-preview {
       display: none;
       margin-top: 10px;
@@ -7230,10 +7230,10 @@ def home() -> HTMLResponse:
       color: #5b667a;
     }
     .print-label-mock-host {
-      /* قياسات الورقة: لزقة 50×25 مم (تُحدَّث ديناميكياً من PRINT_SHEET_MM) */
-      --mock-scale: 2.15;
+      /* قياسات اللزقة 50×26 مم داخل حامل 105×28 */
+      --mock-scale: 2.0;
       --print-label-w: 50mm;
-      --print-label-h: 25mm;
+      --print-label-h: 26mm;
       width: var(--print-label-w);
       height: var(--print-label-h);
       max-width: none;
@@ -7358,13 +7358,13 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* كل لزقة 50×25 مم · فجوة 3 مم · ورقة 103×25 مم */
+      /* حامل الليبل 105×28 مم · هامش 1 مم · لزقتان 50×26 · فجوة 3 مم */
       @page {
-        size: 103mm 25mm;
+        size: 105mm 28mm;
         margin: 0;
       }
       html, body {
-        width: 103mm !important;
+        width: 105mm !important;
         height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
@@ -7389,12 +7389,12 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: flex-start;
         align-items: flex-start;
-        width: 103mm;
-        height: 25mm;
-        max-height: 25mm;
+        width: 105mm;
+        height: 28mm;
+        max-height: 28mm;
         box-sizing: border-box;
         margin: 0;
-        padding: 0;
+        padding: 1mm;
         gap: 3mm;
         page-break-after: always;
         break-after: page;
@@ -7409,8 +7409,8 @@ def home() -> HTMLResponse:
       .print-label {
         width: 50mm;
         max-width: 50mm;
-        height: 25mm;
-        max-height: 25mm;
+        height: 26mm;
+        max-height: 26mm;
         box-sizing: border-box;
         padding: 0;
         margin: 0;
@@ -7550,17 +7550,17 @@ def home() -> HTMLResponse:
       direction: ltr;
       justify-content: flex-start;
       align-items: flex-start;
-      width: 103mm;
-      height: 25mm;
-      padding: 0;
+      width: 105mm;
+      height: 28mm;
+      padding: 1mm;
       gap: 3mm;
       box-sizing: border-box;
     }
     .print-label-sheet.print-measure .print-label {
       width: 50mm;
       max-width: 50mm;
-      height: 25mm;
-      max-height: 25mm;
+      height: 26mm;
+      max-height: 26mm;
       box-sizing: border-box;
       padding: 0;
       margin: 0;
@@ -8168,8 +8168,9 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              لزقة <strong>50×25 مم</strong> · فجوة <strong>3 مم</strong> · هامش <strong>1 مم</strong> يمين/يسار ·
-              اسم <strong>9 مم</strong> · أصلي+موقع <strong>2 مم</strong> · باركود <strong>14 مم</strong>.
+              حامل الليبل <strong>105×28 مم</strong> · هامش <strong>1 مم</strong> من كل الجهات ·
+              لزقة <strong>50×26 مم</strong> · فجوة <strong>3 مم</strong> ·
+              اسم <strong>9 مم</strong> · أصلي+موقع <strong>2 مم</strong> · باركود <strong>15 مم</strong>.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -8212,7 +8213,7 @@ def home() -> HTMLResponse:
               <select id="printOriginalSelectLeft"></select>
             </div>
             <div id="printPreviewLeft" class="print-side-preview" style="display:none;">
-              <p class="print-label-mock-caption">معاينة يسار — لزقة 50×25 مم (ورقة 103×25)</p>
+              <p class="print-label-mock-caption">معاينة يسار — لزقة 50×26 مم (حامل 105×28)</p>
               <div id="printLabelMockLeft" class="print-label-mock-host"></div>
               <div class="pv-compat" aria-hidden="true">
                 <span id="printPvOriginalLeft"></span>
@@ -8237,7 +8238,7 @@ def home() -> HTMLResponse:
               <select id="printOriginalSelectRight"></select>
             </div>
             <div id="printPreviewRight" class="print-side-preview" style="display:none;">
-              <p class="print-label-mock-caption">معاينة يمين — لزقة 50×25 مم (ورقة 103×25)</p>
+              <p class="print-label-mock-caption">معاينة يمين — لزقة 50×26 مم (حامل 105×28)</p>
               <div id="printLabelMockRight" class="print-label-mock-host"></div>
               <div class="pv-compat" aria-hidden="true">
                 <span id="printPvOriginalRight"></span>
@@ -8256,7 +8257,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · لزقة 50×25 مم · فجوة 3 مم · ورقة 103×25 مم.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · حامل 105×28 مم · هامش 1 مم · لزقة 50×26 مم · فجوة 3 مم.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -10057,18 +10058,20 @@ def home() -> HTMLResponse:
       return { name, original, location, barcode };
     }
     const PRINT_SHEET_MM = {
-      // كل لزقة 5×2.5 سم · فجوة 3 مم بين اليسار واليمين · المواضع من GUI
-      sheetW: 103, // 50 + 3 + 50
-      sheetH: 25,
-      margin: 0,
+      // الليبل الحامل (يمسك اللزقتين): 105×28 مم
+      // هامش 1 مم من كل الجهات بين الحامل واللزقة
+      // لزقتان 50×26 · فجوة 3 مم · (1+50+3+50+1 = 105) · (1+26+1 = 28)
+      sheetW: 105,
+      sheetH: 28,
+      margin: 1,
       gap: 3,
       labelW: 50,
-      labelH: 25,
+      labelH: 26,
       padY: 0,
-      contentH: 25,
+      contentH: 26,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود — منطقة الباركود 48×14 مم داخل لزقة 50×25 */
+    /** إعدادات الباركود — داخل لزقة 50×26 مع هامش محتوى 1 مم */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
@@ -10110,22 +10113,20 @@ def home() -> HTMLResponse:
         availableMm: availW, warning: ''
       };
     }
-    // مقياس شاشة أوضح للزقة 50×25 مم (GUI + سحب)
-    const PRINT_DESIGNER_PX_PER_MM = 7.2;
+    // مقياس شاشة — حامل 105×28 مم
+    const PRINT_DESIGNER_PX_PER_MM = 6.5;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH;
     /*
-     * قياسات ثابتة لكل لزقة 50×25 مم · فجوة الورقة 3 مم:
-     * - هامش يسار/يمين 1 مم → عرض المحتوى 48 مم
-     * - اسم الصنف: 9 مم من فوق
-     * - الرقم الأصلي + الموقع: 2 مم
-     * - الباقي باركود: 14 مم
+     * حامل الليبل 105×28 مم · هامش 1 مم من كل الجهات
+     * كل لزقة 50×26 مم · فجوة 3 مم
+     * داخل اللزقة: هامش محتوى 1 مم يمين/يسار · اسم 9 مم · أصلي+موقع 2 مم · باركود الباقي (15 مم)
      */
     const PRINT_ZONE_INSET_MM = 1;
     const PRINT_ZONE_NAME_H_MM = 9;
     const PRINT_ZONE_META_H_MM = 2;
     const PRINT_ZONE_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 2 * PRINT_ZONE_INSET_MM; // 48
-    const PRINT_ZONE_BC_H_MM = PRINT_SHEET_MM.labelH - PRINT_ZONE_NAME_H_MM - PRINT_ZONE_META_H_MM; // 14
+    const PRINT_ZONE_BC_H_MM = PRINT_SHEET_MM.labelH - PRINT_ZONE_NAME_H_MM - PRINT_ZONE_META_H_MM; // 15
     const PRINT_ZONE_META_W_MM = PRINT_ZONE_CONTENT_W_MM / 2; // 24 + 24
     function buildFixedPrintLayoutSide(fontTweaks) {
       const f = fontTweaks || {};
@@ -10169,7 +10170,7 @@ def home() -> HTMLResponse:
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 8,
+        version: 9,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10195,13 +10196,13 @@ def home() -> HTMLResponse:
       return { w: maxR, h: maxB };
     }
     function getPrintGeometryMm() {
-      // حجم ثابت: لزقة 50×25 مم · فجوة 3 مم بين اليسار واليمين
+      // حامل 105×28 · هامش 1 مم · لزقتان 50×26 · فجوة 3 مم
       const labelW = PRINT_SHEET_MM.labelW;
       const labelH = PRINT_SHEET_MM.labelH;
       const gap = PRINT_SHEET_MM.gap;
-      const margin = 0;
-      const sheetW = labelW * 2 + gap;
-      const sheetH = labelH;
+      const margin = PRINT_SHEET_MM.margin;
+      const sheetW = PRINT_SHEET_MM.sheetW;
+      const sheetH = PRINT_SHEET_MM.sheetH;
       return {
         labelW: labelW,
         labelH: labelH,
@@ -10221,11 +10222,12 @@ def home() -> HTMLResponse:
         st.id = 'printDynGeomStyle';
         document.head.appendChild(st);
       }
-      // Preview + GUI + طباعة من نفس قياسات الورقة (50×25 · فجوة 3 · ورقة 103×25)
+      // حامل 105×28 · هامش 1 · لزقة 50×26 · فجوة 3
+      const m = (g.margin != null) ? g.margin : 1;
       st.textContent =
         ':root{--print-label-w:' + g.labelW + 'mm;--print-label-h:' + g.labelH + 'mm;'
         + '--print-sheet-w:' + g.sheetW + 'mm;--print-sheet-h:' + g.sheetH + 'mm;'
-        + '--print-gap:' + g.gap + 'mm;}'
+        + '--print-gap:' + g.gap + 'mm;--print-margin:' + m + 'mm;}'
         + '.print-label-mock-host{--print-label-w:' + g.labelW + 'mm;--print-label-h:' + g.labelH + 'mm;'
         + 'width:' + g.labelW + 'mm;height:' + g.labelH + 'mm;'
         + 'margin-bottom:calc(' + g.labelH + 'mm * (var(--mock-scale) - 1) + 8px);}'
@@ -10236,14 +10238,14 @@ def home() -> HTMLResponse:
         + '@page{size:' + g.sheetW + 'mm ' + g.sheetH + 'mm;margin:0;}'
         + 'html,body{width:' + g.sheetW + 'mm !important;}'
         + '.print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;max-height:' + g.sheetH + 'mm;'
-        + 'gap:' + g.gap + 'mm;padding:0;margin:0;}'
+        + 'gap:' + g.gap + 'mm;padding:' + m + 'mm;margin:0;box-sizing:border-box;}'
         + '.print-label,.print-label.print-label-left,.print-label.print-label-right,'
         + '.print-label-row .print-label:first-child,.print-label-row .print-label:last-child{'
         + 'width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
         + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}'
         + '}'
         + '.print-label-sheet.print-measure .print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;'
-        + 'gap:' + g.gap + 'mm;padding:0;margin:0;}'
+        + 'gap:' + g.gap + 'mm;padding:' + m + 'mm;margin:0;box-sizing:border-box;}'
         + '.print-label-sheet.print-measure .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
         + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}';
       return g;
@@ -10266,9 +10268,10 @@ def home() -> HTMLResponse:
         }
         const row = board.querySelector('.print-designer-row');
         if (row) {
-          row.style.left = padPx + 'px';
-          row.style.top = padPx + 'px';
-          row.style.width = (g.sheetW * ppm) + 'px';
+          const mPx = ((g.margin != null) ? g.margin : 1) * ppm;
+          row.style.left = (padPx + mPx) + 'px';
+          row.style.top = (padPx + mPx) + 'px';
+          row.style.width = ((g.labelW * 2 + g.gap) * ppm) + 'px';
           row.style.height = (g.labelH * ppm) + 'px';
           row.style.gap = (g.gap * ppm) + 'px';
         }
@@ -10410,15 +10413,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v8 = لزقة 50×25: اسم 9مم · أصلي+موقع 2مم · باركود 14مم · هامش 1مم
-        if (ver < 8) {
+        // v9 = حامل 105×28 · هامش 1مم · لزقة 50×26 · اسم 9 · ميتا 2 · باركود 15
+        if (ver < 9) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 8,
+            version: 9,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10430,7 +10433,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 8,
+        version: 9,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10561,7 +10564,7 @@ def home() -> HTMLResponse:
         renderPrintSideLabelMock('right');
       } catch (_) {}
       const el = document.getElementById('printDesignerReadout');
-      if (el) el.textContent = 'قياسات ثابتة: اسم 9مم · أصلي+موقع 2مم · باركود 14مم · هامش 1مم';
+      if (el) el.textContent = 'حامل 105×28 · هامش 1مم · لزقة 50×26 · اسم 9 · ميتا 2 · باركود 15';
     }
     function fitTextIntoBox(el, maxPx, minPx) {
       if (!el) return minPx;
@@ -10845,9 +10848,10 @@ def home() -> HTMLResponse:
       board.appendChild(sheetFrame);
       const row = document.createElement('div');
       row.className = 'print-designer-row';
-      row.style.left = padPx + 'px';
-      row.style.top = padPx + 'px';
-      row.style.width = (geo.sheetW * ppm) + 'px';
+      const mPx = ((geo.margin != null) ? geo.margin : 1) * ppm;
+      row.style.left = (padPx + mPx) + 'px';
+      row.style.top = (padPx + mPx) + 'px';
+      row.style.width = ((geo.labelW * 2 + geo.gap) * ppm) + 'px';
       row.style.height = (geo.labelH * ppm) + 'px';
       row.style.gap = (geo.gap * ppm) + 'px';
       row.appendChild(buildPrintDesignerLabelEl('left'));
