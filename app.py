@@ -9354,8 +9354,7 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— NiceLabel-style auto-fit · حراري 203dpi ——
-      // باركود قصير = وحدات أعرض. طويل = تصغير موحّد لحد العرض مع بقاءه مقرؤ/شغال.
+      // —— NiceLabel-style: خط الباركود ثابت حجم 10 · للطويل نضيّق العرض فقط ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
@@ -9372,12 +9371,12 @@ def home() -> HTMLResponse:
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
       const usableMm = Math.max(22, Math.min(contentWmm - 0.15, Math.max(boxWmm - 0.15, contentWmm - 0.15)));
       const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.2);
-      const textReserveMm = 2.8;
-      const targetBarHmm = Math.max(6.2, Math.min(12.5, boxHmm - textReserveMm));
-      // حد أدنى لأسلوب NiceLabel: أصغر من العادي بس لسا يُمسح
-      const MIN_SCAN_HMM = 5.6;
+      // رقم تحت الباركود خط 10 ≈ 2.9 مم · ارتفاع أعمدة الباركود ثابت ~10 مم (ما يتصغّر مع الطويل)
+      const textReserveMm = 2.9;
+      const BAR_LINE_HMM = 10;
+      const barHmm = Math.min(BAR_LINE_HMM, Math.max(7.2, boxHmm - textReserveMm));
       const usableDots = Math.max(140, Math.floor(usableMm * dotsPerMm));
-      const heightDots = Math.max(48, Math.round(targetBarHmm * dotsPerMm));
+      const heightDots = Math.max(56, Math.round(barHmm * dotsPerMm));
 
       function probe(encodeVal, quietMods) {
         const probeCanvas = document.createElement('canvas');
@@ -9403,7 +9402,7 @@ def home() -> HTMLResponse:
         return null;
       }
 
-      // اختر أكبر سماكة وحدة تدخل بالعرض (مثل Auto size في NiceLabel)
+      // أكبر سماكة وحدة تدخل بالعرض — الطويل: وحدات أضيق، الارتفاع يبقى خط 10
       let best = null;
       for (let ci = 0; ci < encodeList.length; ci++) {
         const enc = encodeList[ci];
@@ -9413,7 +9412,6 @@ def home() -> HTMLResponse:
           let moduleDots = Math.floor(usableDots / probed.units);
           if (moduleDots < 1) moduleDots = 1;
           if (moduleDots > 3) moduleDots = 3;
-          // إن ما دخل حتى بوحدة 1 — ارسم بوحدة 1 ثم صغّر العرض لاحقاً بشكل موحّد
           const total = probed.units * moduleDots;
           const fits = total <= usableDots;
           const overflow = Math.max(0, total - usableDots);
@@ -9454,25 +9452,10 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // قياس طبيعي بالنقاط → مم، ثم Auto-fit موحّد (العرض والارتفاع معاً) مثل NiceLabel
+      // العرض فقط يتضيّق للطويل — ارتفاع خط الباركود يبقى 10 (ثابت)
       const natWmm = canvas.width / dotsPerMm;
-      const natHmm = canvas.height / dotsPerMm;
-      let scale = 1;
-      if (natWmm > usableMm) scale = usableMm / natWmm;
-      let widthMm = natWmm * scale;
-      let drawHmm = natHmm * scale;
-      // لا تخلّي الأعمدة أقصر من حد المسح — لو الطويل صغر زيادة، ثبّت ارتفاع أدنى مقرؤ
-      if (drawHmm < MIN_SCAN_HMM) {
-        drawHmm = Math.min(targetBarHmm, MIN_SCAN_HMM);
-        widthMm = Math.min(usableMm, natWmm * (drawHmm / natHmm));
-      }
-      if (drawHmm > targetBarHmm) {
-        const hs = targetBarHmm / drawHmm;
-        drawHmm = targetBarHmm;
-        widthMm = Math.min(usableMm, widthMm * hs);
-      }
-      widthMm = Math.min(usableMm, Math.max(12, widthMm));
-      drawHmm = Math.max(MIN_SCAN_HMM, Math.min(targetBarHmm, drawHmm));
+      let widthMm = Math.min(usableMm, natWmm);
+      const drawHmm = barHmm;
 
       const img = document.createElement('img');
       img.className = 'pl-bc';
@@ -9495,7 +9478,7 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // النص تحت الباركود: خط 10 — إن طال الرقم نصغّر الكتابة فقط (مو أعمدة الباركود)
+      // خط الرقم تحت الباركود = 10 دائماً — حتى لو الباركود الطويل ضيّقنا عرضه
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
@@ -9504,11 +9487,13 @@ def home() -> HTMLResponse:
       el.style.color = '#000';
       el.style.lineHeight = '1';
       el.style.flex = '0 0 auto';
-      el.style.minHeight = '2.8mm';
+      el.style.minHeight = '2.9mm';
+      el.style.height = '2.9mm';
+      el.style.overflow = 'hidden';
+      el.style.textOverflow = 'clip';
       const n = display.length;
       el.style.letterSpacing = n > 28 ? '0' : (n > 20 ? '0.02em' : '0.05em');
       el.style.fontSize = '10px';
-      fitTextIntoBox(el, 10, 7);
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -10585,7 +10570,7 @@ def home() -> HTMLResponse:
         bcText.textContent = bc || '—';
         bcText.style.fontWeight = '900';
         bcText.style.letterSpacing = '0.04em';
-        fitTextIntoBox(bcText, layout.bcTextPx, 6.5);
+        bcText.style.fontSize = '10px';
       }
     }
     function deriveMaxFontsFromZones(layout) {
