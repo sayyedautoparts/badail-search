@@ -7630,19 +7630,28 @@ def home() -> HTMLResponse:
     .print-designer-scroll {
       overflow: auto;
       max-width: 100%;
-      padding: 12px 10px 18px;
-      min-height: 180px;
+      padding: 28px 24px 40px;
+      min-height: 220px;
     }
     .print-designer-sheet {
       position: relative;
       box-sizing: border-box;
-      background: #dfe6f1;
-      border: 1px dashed #8fa0b8;
+      background: #cfd8e6;
+      border: none;
       border-radius: 6px;
       margin: 0 auto;
       direction: ltr;
       user-select: none;
       touch-action: none;
+      overflow: visible; /* السماح بسحب الخانات خارج حدود اللزقة */
+    }
+    .print-designer-sheet-frame {
+      position: absolute;
+      box-sizing: border-box;
+      background: #dfe6f1;
+      border: 1px dashed #8fa0b8;
+      border-radius: 4px;
+      pointer-events: none;
     }
     .print-designer-row {
       position: absolute;
@@ -7650,6 +7659,7 @@ def home() -> HTMLResponse:
       display: flex;
       flex-direction: row;
       direction: ltr;
+      overflow: visible;
     }
     .print-designer-label {
       position: relative;
@@ -8102,6 +8112,7 @@ def home() -> HTMLResponse:
               <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
               <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
+              تقدر تسحب وتكبّر الخانات <strong>برا حدود اللزقة</strong> عشان تحط القياسات اللي بدك ياها.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -10078,16 +10089,17 @@ def home() -> HTMLResponse:
       return out;
     }
     function clampPrintBox(box, minW, minH) {
-      const cw = PRINT_CONTENT_W_MM;
-      const ch = PRINT_CONTENT_H_MM;
-      let w = clampPrintNum(box.w, minW, cw, minW);
-      let h = clampPrintNum(box.h, minH, ch, minH);
-      let x = clampPrintNum(box.x, 0, cw - minW, 0);
-      let y = clampPrintNum(box.y, 0, ch - minH, 0);
-      if (x + w > cw) x = Math.max(0, cw - w);
-      if (y + h > ch) y = Math.max(0, ch - h);
-      if (x + w > cw) w = Math.max(minW, cw - x);
-      if (y + h > ch) h = Math.max(minH, ch - y);
+      // حرّك/كبّر خارج حدود اللزقة — ما منحبس العناصر جوّا الشاشة
+      const MAX_W = 90;
+      const MAX_H = 60;
+      const MIN_X = -45;
+      const MAX_X = 90;
+      const MIN_Y = -45;
+      const MAX_Y = 60;
+      let w = clampPrintNum(box.w, minW, MAX_W, minW);
+      let h = clampPrintNum(box.h, minH, MAX_H, minH);
+      let x = clampPrintNum(box.x, MIN_X, MAX_X, 0);
+      let y = clampPrintNum(box.y, MIN_Y, MAX_Y, 0);
       return {
         x: Math.round(x * 100) / 100,
         y: Math.round(y * 100) / 100,
@@ -10122,8 +10134,8 @@ def home() -> HTMLResponse:
       out.metaHeightMm = Math.max(out.origHmm, out.locHmm);
       out.bcHeightMm = out.bcHmm;
       out.origWidthPct = clampPrintNum((out.origWmm / Math.max(0.1, out.origWmm + out.locWmm)) * 100, 25, 75, 50);
-      out.bcShiftXmm = clampPrintNum(out.bcShiftXmm, -6, 6, 0);
-      out.bcShiftYmm = clampPrintNum(out.bcShiftYmm, -5, 5, 0);
+      out.bcShiftXmm = clampPrintNum(out.bcShiftXmm, -30, 30, 0);
+      out.bcShiftYmm = clampPrintNum(out.bcShiftYmm, -30, 30, 0);
       return out;
     }
     function coercePrintLayoutSide(o) {
@@ -10133,24 +10145,24 @@ def home() -> HTMLResponse:
         originalPx: clampPrintNum(raw.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(raw.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
         bcTextPx: clampPrintNum(raw.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
-        nameXmm: clampPrintNum(raw.nameXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.nameXmm),
-        nameYmm: clampPrintNum(raw.nameYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.nameYmm),
-        nameWmm: clampPrintNum(raw.nameWmm, 8, 50, PRINT_LAYOUT_DEFAULTS.nameWmm),
-        nameHmm: clampPrintNum(raw.nameHmm, 3, 30, PRINT_LAYOUT_DEFAULTS.nameHmm),
-        origXmm: clampPrintNum(raw.origXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.origXmm),
-        origYmm: clampPrintNum(raw.origYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.origYmm),
-        origWmm: clampPrintNum(raw.origWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.origWmm),
-        origHmm: clampPrintNum(raw.origHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.origHmm),
-        locXmm: clampPrintNum(raw.locXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.locXmm),
-        locYmm: clampPrintNum(raw.locYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.locYmm),
-        locWmm: clampPrintNum(raw.locWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.locWmm),
-        locHmm: clampPrintNum(raw.locHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.locHmm),
-        bcXmm: clampPrintNum(raw.bcXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.bcXmm),
-        bcYmm: clampPrintNum(raw.bcYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.bcYmm),
-        bcWmm: clampPrintNum(raw.bcWmm, 12, 50, PRINT_LAYOUT_DEFAULTS.bcWmm),
-        bcHmm: clampPrintNum(raw.bcHmm, 4, 22, PRINT_LAYOUT_DEFAULTS.bcHmm),
-        bcShiftXmm: clampPrintNum(raw.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
-        bcShiftYmm: clampPrintNum(raw.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+        nameXmm: clampPrintNum(raw.nameXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.nameXmm),
+        nameYmm: clampPrintNum(raw.nameYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.nameYmm),
+        nameWmm: clampPrintNum(raw.nameWmm, 8, 90, PRINT_LAYOUT_DEFAULTS.nameWmm),
+        nameHmm: clampPrintNum(raw.nameHmm, 3, 60, PRINT_LAYOUT_DEFAULTS.nameHmm),
+        origXmm: clampPrintNum(raw.origXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.origXmm),
+        origYmm: clampPrintNum(raw.origYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.origYmm),
+        origWmm: clampPrintNum(raw.origWmm, 4, 90, PRINT_LAYOUT_DEFAULTS.origWmm),
+        origHmm: clampPrintNum(raw.origHmm, 1.5, 40, PRINT_LAYOUT_DEFAULTS.origHmm),
+        locXmm: clampPrintNum(raw.locXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.locXmm),
+        locYmm: clampPrintNum(raw.locYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.locYmm),
+        locWmm: clampPrintNum(raw.locWmm, 4, 90, PRINT_LAYOUT_DEFAULTS.locWmm),
+        locHmm: clampPrintNum(raw.locHmm, 1.5, 40, PRINT_LAYOUT_DEFAULTS.locHmm),
+        bcXmm: clampPrintNum(raw.bcXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.bcXmm),
+        bcYmm: clampPrintNum(raw.bcYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.bcYmm),
+        bcWmm: clampPrintNum(raw.bcWmm, 8, 90, PRINT_LAYOUT_DEFAULTS.bcWmm),
+        bcHmm: clampPrintNum(raw.bcHmm, 4, 60, PRINT_LAYOUT_DEFAULTS.bcHmm),
+        bcShiftXmm: clampPrintNum(raw.bcShiftXmm, -30, 30, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
+        bcShiftYmm: clampPrintNum(raw.bcShiftYmm, -30, 30, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
       };
       return normalizePrintLayoutBoxes(base);
     }
@@ -10541,15 +10553,26 @@ def home() -> HTMLResponse:
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
       const ppm = PRINT_DESIGNER_PX_PER_MM;
+      // مساحة إضافية حول الورقة عشان تشوف وتسحب العناصر برا حدود اللزقة
+      const padMm = 14;
       const sheetW = PRINT_SHEET_MM.sheetW * ppm;
       const sheetH = PRINT_SHEET_MM.sheetH * ppm;
-      board.style.width = sheetW + 'px';
-      board.style.height = sheetH + 'px';
+      const padPx = padMm * ppm;
+      board.style.width = (sheetW + padPx * 2) + 'px';
+      board.style.height = (sheetH + padPx * 2) + 'px';
       board.innerHTML = '';
+      // إطار يوضح حدود الورقة الفعلية
+      const sheetFrame = document.createElement('div');
+      sheetFrame.className = 'print-designer-sheet-frame';
+      sheetFrame.style.left = padPx + 'px';
+      sheetFrame.style.top = padPx + 'px';
+      sheetFrame.style.width = sheetW + 'px';
+      sheetFrame.style.height = sheetH + 'px';
+      board.appendChild(sheetFrame);
       const row = document.createElement('div');
       row.className = 'print-designer-row';
-      row.style.left = (PRINT_SHEET_MM.margin * ppm) + 'px';
-      row.style.top = (PRINT_SHEET_MM.margin * ppm) + 'px';
+      row.style.left = (padPx + PRINT_SHEET_MM.margin * ppm) + 'px';
+      row.style.top = (padPx + PRINT_SHEET_MM.margin * ppm) + 'px';
       row.style.width = ((PRINT_SHEET_MM.sheetW - PRINT_SHEET_MM.margin * 2) * ppm) + 'px';
       row.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
       row.style.gap = (PRINT_SHEET_MM.gap * ppm) + 'px';
