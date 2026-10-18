@@ -17,9 +17,10 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
   exit 1
 }
 
+# نافذة مخفية — بدون شاشة بايثون زرقاء
 $action = New-ScheduledTaskAction `
   -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Runner`"" `
+  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" `
   -WorkingDirectory $Root
 
 $trigger = New-ScheduledTaskTrigger -Daily -At 9:00am
@@ -43,7 +44,7 @@ try {
     -Force | Out-Null
 } catch {
   $tr = "09:00"
-  schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /ST $tr /F /RL LIMITED | Out-Null
+  schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /ST $tr /F /RL LIMITED | Out-Null
   if ($LASTEXITCODE -ne 0) { throw }
 }
 

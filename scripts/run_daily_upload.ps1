@@ -35,11 +35,24 @@ function Find-RealPython {
   foreach ($base in @($lad, $pf, $pf86)) {
     if (-not $base) { continue }
     foreach ($p in @(
+      (Join-Path $base "Programs\Python\Python314\python.exe"),
+      (Join-Path $base "Programs\Python\Python313\python.exe"),
       (Join-Path $base "Programs\Python\Python312\python.exe"),
       (Join-Path $base "Programs\Python\Python311\python.exe"),
-      (Join-Path $base "Programs\Python\Python310\python.exe")
+      (Join-Path $base "Programs\Python\Python310\python.exe"),
+      (Join-Path $base "Python\pythoncore-3.14-64\python.exe"),
+      (Join-Path $base "Python\pythoncore-3.13-64\python.exe"),
+      (Join-Path $base "Python\pythoncore-3.12-64\python.exe")
     )) {
       if (Test-Path -LiteralPath $p) { $candidates += $p }
+    }
+    # تثبيتات Python من python.org / Store تحت Local\Python\pythoncore-*
+    $pyRoot = Join-Path $base "Python"
+    if (Test-Path -LiteralPath $pyRoot) {
+      Get-ChildItem -LiteralPath $pyRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $exe = Join-Path $_.FullName "python.exe"
+        if (Test-Path -LiteralPath $exe) { $candidates += $exe }
+      }
     }
   }
   foreach ($src in $candidates) {
@@ -56,11 +69,23 @@ if (-not $python) {
   throw "Python not found. Run: اضغط هنا - نفّذ كل شيء.bat  (downloads portable Python automatically)"
 }
 
-Write-Host "Using Python: $python"
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$runnerLog = Join-Path $LogDir ("runner_{0}.log" -f $stamp)
+"$(Get-Date -Format 'HH:mm:ss') Using Python: $python" | Out-File -FilePath $runnerLog -Encoding utf8
 Set-Location -LiteralPath $Root
-if ([IO.Path]::GetFileNameWithoutExtension($python) -ieq "py") {
-  & $python -3 $Py @args
-} else {
-  & $python $Py @args
+# لا تمرّر stderr عبر Tee-Object — تحذيرات بايثون كانت تُسقط السكربت بسبب ErrorActionPreference=Stop
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  if ([IO.Path]::GetFileNameWithoutExtension($python) -ieq "py") {
+    & $python -3 $Py @args
+  } else {
+    & $python $Py @args
+  }
+  $code = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $prevEap
 }
-exit $LASTEXITCODE
+if ($null -eq $code) { $code = 0 }
+"$(Get-Date -Format 'HH:mm:ss') exit=$code" | Out-File -FilePath $runnerLog -Append -Encoding utf8
+exit $code

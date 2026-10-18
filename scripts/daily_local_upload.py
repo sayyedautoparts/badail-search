@@ -91,9 +91,10 @@ def _host_allowed(log) -> bool:
             log(f"مسموح بالرفع على هذا الجهاز (طابق: {tok})")
             return True
     log(
-        "تخطي الرفع: هذا الجهاز غير مسموح في BADAIL_UPLOAD_HOSTS="
+        "تخطي الرفع بدون رفع أي ملف: هذا الجهاز غير مسموح في BADAIL_UPLOAD_HOSTS="
         + raw
         + f" | الحالي={hay}"
+        + " — أضف اسم الجهاز أو المستخدم إلى BADAIL_UPLOAD_HOSTS في daily_upload.local.env"
     )
     return False
 
