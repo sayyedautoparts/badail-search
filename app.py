@@ -9446,10 +9446,11 @@ def home() -> HTMLResponse:
       if (moduleDots < 1) moduleDots = 1;
       if (moduleDots > 3) moduleDots = 3;
 
-      // خط الباركود نفسه = 8مم · للطويل جداً يصغر أكثر إذا لزم
-      let barHmm = 8;
-      if (moduleDots <= 1) barHmm = 6;
-      const heightDots = Math.max(36, Math.round(barHmm * dotsPerMm));
+      // خط الباركود نفسه = 10مم · للطويل جداً يصغر أكثر إذا لزم
+      let barHmm = 10;
+      if (moduleDots <= 1) barHmm = 7;
+      else if (moduleDots === 2) barHmm = 9;
+      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
@@ -10073,8 +10074,8 @@ def home() -> HTMLResponse:
       maxModuleMm: 0.5,
       minModuleDots: 2,
       maxModuleDots: 3,
-      barHMinMm: 8,
-      barHMaxMm: 8,
+      barHMinMm: 10,
+      barHMaxMm: 10,
       quietModulesEach: 10,
       textReserveMm: 2.4
     };
@@ -10917,7 +10918,7 @@ def home() -> HTMLResponse:
         const labelH = (geo && geo.labelH) || 25;
         const cfg = (typeof PRINT_BARCODE_CFG !== 'undefined') ? PRINT_BARCODE_CFG : { marginMm: 1, barHMinMm: 8, textReserveMm: 2.9 };
         const margin = Number(cfg.marginMm) || 1;
-        const needH = (Number(cfg.barHMinMm) || 8) + (Number(cfg.textReserveMm) || 2.9) + 0.5;
+        const needH = 8 + (Number(cfg.textReserveMm) || 2.4) + 0.5;
         let bw = Math.max(20, labelW - 2 * margin);
         let bh = Math.min(labelH - 0.5, Math.max(needH, Number(s.bcHmm) || needH));
         let bx = margin;
