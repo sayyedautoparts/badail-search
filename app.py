@@ -7230,12 +7230,14 @@ def home() -> HTMLResponse:
       color: #5b667a;
     }
     .print-label-mock-host {
-      /* معاينة أوضح على الشاشة للزقة 50×25 مم */
-      --mock-scale: 2.2;
-      width: 50mm;
-      height: 25mm;
+      /* قياسات الورقة: لزقة 50×25 مم (تُحدَّث ديناميكياً من PRINT_SHEET_MM) */
+      --mock-scale: 2.15;
+      --print-label-w: 50mm;
+      --print-label-h: 25mm;
+      width: var(--print-label-w);
+      height: var(--print-label-h);
       max-width: none;
-      margin: 0 auto calc(25mm * (var(--mock-scale) - 1) + 8px);
+      margin: 0 auto calc(var(--print-label-h) * (var(--mock-scale) - 1) + 8px);
       box-sizing: border-box;
       border: 1px solid #222;
       background: #fff;
@@ -7246,10 +7248,10 @@ def home() -> HTMLResponse:
       transform-origin: top center;
     }
     .print-label-mock-host .print-label {
-      width: 50mm;
-      max-width: 50mm;
-      height: 25mm;
-      max-height: 25mm;
+      width: var(--print-label-w);
+      max-width: var(--print-label-w);
+      height: var(--print-label-h);
+      max-height: var(--print-label-h);
       box-sizing: border-box;
       padding: 0;
       margin: 0;
@@ -8123,8 +8125,8 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              كل لزقة <strong>50×25 مم</strong> (5×2.5 سم) · فجوة بين اليسار واليمين <strong>3 مم</strong> · الورقة <strong>103×25 مم</strong>.
-              المواضع كلها منك بالـ GUI. اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
+              GUI = قياسات الورقة: كل لزقة <strong>50×25 مم</strong> · فجوة <strong>3 مم</strong> · الورقة <strong>103×25 مم</strong> · رقم الباركود خط <strong>10</strong>.
+              اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -8167,7 +8169,7 @@ def home() -> HTMLResponse:
               <select id="printOriginalSelectLeft"></select>
             </div>
             <div id="printPreviewLeft" class="print-side-preview" style="display:none;">
-              <p class="print-label-mock-caption">شكل الليبل — يسار (كما سيُطبع)</p>
+              <p class="print-label-mock-caption">معاينة يسار — لزقة 50×25 مم (ورقة 103×25)</p>
               <div id="printLabelMockLeft" class="print-label-mock-host"></div>
               <div class="pv-compat" aria-hidden="true">
                 <span id="printPvOriginalLeft"></span>
@@ -8192,7 +8194,7 @@ def home() -> HTMLResponse:
               <select id="printOriginalSelectRight"></select>
             </div>
             <div id="printPreviewRight" class="print-side-preview" style="display:none;">
-              <p class="print-label-mock-caption">شكل الليبل — يمين (كما سيُطبع)</p>
+              <p class="print-label-mock-caption">معاينة يمين — لزقة 50×25 مم (ورقة 103×25)</p>
               <div id="printLabelMockRight" class="print-label-mock-host"></div>
               <div class="pv-compat" aria-hidden="true">
                 <span id="printPvOriginalRight"></span>
@@ -9367,13 +9369,14 @@ def home() -> HTMLResponse:
           ? PRINT_CONTENT_W_MM
           : 48.6);
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
-      const usableMm = Math.max(16, Math.min(contentWmm, boxWmm - 0.2));
+      // عرض اللزقة كاملة للأعمدة — ما نصغّر الباركود الطويل زيادة عن اللزوم
+      const usableMm = Math.max(20, Math.min(contentWmm - 0.2, Math.max(boxWmm - 0.2, contentWmm - 0.2)));
       const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.5);
-      // مساحة أوضح للرقم تحت الباركود داخل اللزقة 25 مم
-      const textReserveMm = Math.max(2.7, Math.min(3.4, boxHmm * 0.28));
-      const heightMm = Math.max(5.5, Math.min(16, boxHmm - textReserveMm));
-      const usableDots = Math.max(100, Math.floor(usableMm * dotsPerMm));
-      const heightDots = Math.max(48, Math.round(heightMm * dotsPerMm));
+      // مساحة ثابتة للرقم (خط 10) — ارتفاع الأعمدة يبقى كاملاً حتى للباركود الطويل
+      const textReserveMm = Math.max(2.6, Math.min(3.2, boxHmm * 0.26));
+      const heightMm = Math.max(6.5, Math.min(16, boxHmm - textReserveMm));
+      const usableDots = Math.max(120, Math.floor(usableMm * dotsPerMm));
+      const heightDots = Math.max(52, Math.round(heightMm * dotsPerMm));
 
       function probe(encodeVal, quietMods) {
         const probeCanvas = document.createElement('canvas');
@@ -9402,8 +9405,8 @@ def home() -> HTMLResponse:
       let best = null;
       for (let ci = 0; ci < encodeList.length; ci++) {
         const enc = encodeList[ci];
-        for (let qi = 0; qi < 6; qi++) {
-          const quietMods = 4 - qi; // 4..-1 → نستخدم max(0,…)
+        for (let qi = 0; qi < 8; qi++) {
+          const quietMods = 4 - qi; // 4..-3 → نستخدم max(0,…)
           const q = Math.max(0, quietMods);
           const probed = probe(enc, q);
           if (!probed || !probed.units) continue;
@@ -9419,7 +9422,8 @@ def home() -> HTMLResponse:
             units: probed.units,
             total: total,
             fits: total <= usableDots,
-            score: moduleDots * 10 + q + (total <= usableDots ? 100 : 0) - enc.length * 0.01
+            // أولوية: سماكة العمود ثم الملاءمة — بدون مكافأة لتصغير الطول
+            score: moduleDots * 40 + (total <= usableDots ? 80 : 0) + q - enc.length * 0.001
           };
           if (!best || candidate.score > best.score) best = candidate;
           if (candidate.fits && candidate.moduleDots >= 2) break;
@@ -9448,19 +9452,10 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // تصغير موحّد فقط إن لزم — ممنوع تغيير نسبة العرض/الارتفاع (يكسر القراءة)
+      // العرض فقط يُقيَّد عند اللزوم — ارتفاع أعمدة الباركود يبقى كاملاً (ما نصغّر الباركود الطويل)
       let widthMm = canvas.width / dotsPerMm;
-      let drawHmm = canvas.height / dotsPerMm;
-      if (widthMm > usableMm) {
-        const s = usableMm / widthMm;
-        widthMm = usableMm;
-        drawHmm *= s;
-      }
-      if (drawHmm > heightMm) {
-        const s = heightMm / drawHmm;
-        drawHmm = heightMm;
-        widthMm *= s;
-      }
+      let drawHmm = heightMm;
+      if (widthMm > usableMm) widthMm = usableMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = best.encodeVal;
@@ -9482,24 +9477,20 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // النص تحت الباركود: كما بالمصدر (مع المسافات) — خط أوضح للطباعة الحرارية
+      // النص تحت الباركود: خط 10 — إن طال الرقم نصغّر الكتابة فقط (مو أعمدة الباركود)
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
       el.style.fontFamily = 'Consolas, "Courier New", "Segoe UI", monospace';
       el.style.fontWeight = '900';
       el.style.color = '#000';
-      el.style.letterSpacing = '0.05em';
       el.style.lineHeight = '1';
       el.style.flex = '0 0 auto';
       el.style.minHeight = '2.8mm';
-      const side = (typeof printLayoutSideFromEl === 'function') ? printLayoutSideFromEl(el) : 'left';
-      const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings(side) : null;
-      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 10;
-      // حجم ثابت 10px كما طلب المستخدم — نصغّر فقط لو الرقم أطول من العرض
-      const hint = Math.min(10, maxPx);
-      el.style.fontSize = hint + 'px';
-      fitTextIntoBox(el, hint, Math.min(10, hint));
+      const n = display.length;
+      el.style.letterSpacing = n > 28 ? '0' : (n > 20 ? '0.02em' : '0.05em');
+      el.style.fontSize = '10px';
+      fitTextIntoBox(el, 10, 7);
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -9699,6 +9690,7 @@ def home() -> HTMLResponse:
       }
       card.style.display = 'block';
       host.innerHTML = '';
+      try { applyPrintGeometryCss(getPrintGeometryMm()); } catch (_) {}
       const label = buildPrintLabelEl(payload, s);
       host.appendChild(label);
       const paint = () => {
@@ -10153,11 +10145,17 @@ def home() -> HTMLResponse:
         st.id = 'printDynGeomStyle';
         document.head.appendChild(st);
       }
+      // Preview + GUI + طباعة من نفس قياسات الورقة (50×25 · فجوة 3 · ورقة 103×25)
       st.textContent =
-        '.print-label-mock-host{width:' + g.labelW + 'mm;height:' + g.labelH + 'mm;'
+        ':root{--print-label-w:' + g.labelW + 'mm;--print-label-h:' + g.labelH + 'mm;'
+        + '--print-sheet-w:' + g.sheetW + 'mm;--print-sheet-h:' + g.sheetH + 'mm;'
+        + '--print-gap:' + g.gap + 'mm;}'
+        + '.print-label-mock-host{--print-label-w:' + g.labelW + 'mm;--print-label-h:' + g.labelH + 'mm;'
+        + 'width:' + g.labelW + 'mm;height:' + g.labelH + 'mm;'
         + 'margin-bottom:calc(' + g.labelH + 'mm * (var(--mock-scale) - 1) + 8px);}'
         + '.print-label-mock-host .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
         + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;}'
+        + '.print-designer-row{gap:' + (g.gap * PRINT_DESIGNER_PX_PER_MM) + 'px;}'
         + '@media print{'
         + '@page{size:' + g.sheetW + 'mm ' + g.sheetH + 'mm;margin:0;}'
         + 'html,body{width:' + g.sheetW + 'mm !important;}'
