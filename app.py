@@ -8112,7 +8112,7 @@ def home() -> HTMLResponse:
               <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
               <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
-              تقدر تسحب وتكبّر الخانات <strong>برا حدود اللزقة</strong> عشان تحط القياسات اللي بدك ياها.
+              تقدر تسحب وتكبّر الخانات <strong>برا حدود اللزقة</strong> — ولما تكبّر خانة (مثل الاسم) <strong>بتكبر اللزقة تلقائياً</strong> معها للطباعة.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -9349,9 +9349,11 @@ def home() -> HTMLResponse:
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
         : { bcHmm: 13.8, bcWmm: 48.6, bcHeightMm: 13.8 };
-      const contentWmm = (typeof PRINT_CONTENT_W_MM === 'number' && PRINT_CONTENT_W_MM > 0)
-        ? PRINT_CONTENT_W_MM
-        : 48.6;
+      const contentWmm = (typeof getPrintGeometryMm === 'function')
+        ? getPrintGeometryMm().contentW
+        : ((typeof PRINT_CONTENT_W_MM === 'number' && PRINT_CONTENT_W_MM > 0)
+          ? PRINT_CONTENT_W_MM
+          : 48.6);
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
       const usableMm = Math.max(16, Math.min(contentWmm, boxWmm - 0.2));
       const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 13.8);
@@ -10088,6 +10090,110 @@ def home() -> HTMLResponse:
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
     }
+    function extentPrintLayoutMm(layout) {
+      const s = layout || {};
+      let maxR = 0;
+      let maxB = 0;
+      const zones = [
+        ['nameXmm', 'nameYmm', 'nameWmm', 'nameHmm'],
+        ['origXmm', 'origYmm', 'origWmm', 'origHmm'],
+        ['locXmm', 'locYmm', 'locWmm', 'locHmm'],
+        ['bcXmm', 'bcYmm', 'bcWmm', 'bcHmm']
+      ];
+      for (let i = 0; i < zones.length; i++) {
+        const x = Number(s[zones[i][0]]);
+        const y = Number(s[zones[i][1]]);
+        const w = Number(s[zones[i][2]]);
+        const h = Number(s[zones[i][3]]);
+        if (Number.isFinite(x) && Number.isFinite(w)) maxR = Math.max(maxR, x + w);
+        if (Number.isFinite(y) && Number.isFinite(h)) maxB = Math.max(maxB, y + h);
+      }
+      return { w: maxR, h: maxB };
+    }
+    function getPrintGeometryMm() {
+      // حجم اللزقة/الورقة يتبع أكبر ما وصله محتوى الـ GUI (يسار أو يمين)
+      const base = PRINT_SHEET_MM;
+      const eL = extentPrintLayoutMm(getPrintLayoutSettings('left'));
+      const eR = extentPrintLayoutMm(getPrintLayoutSettings('right'));
+      const padX = 1.2;
+      const padY = 0.85;
+      let labelW = Math.max(base.labelW, eL.w + padX, eR.w + padX);
+      let labelH = Math.max(base.labelH, eL.h + padY, eR.h + padY);
+      labelW = Math.round(Math.min(72, Math.max(40, labelW)) * 10) / 10;
+      labelH = Math.round(Math.min(55, Math.max(25, labelH)) * 10) / 10;
+      const margin = base.margin;
+      const gap = base.gap;
+      const sheetW = Math.round((margin * 2 + labelW * 2 + gap) * 10) / 10;
+      const sheetH = Math.round((margin * 2 + labelH) * 10) / 10;
+      return {
+        labelW: labelW,
+        labelH: labelH,
+        sheetW: sheetW,
+        sheetH: sheetH,
+        margin: margin,
+        gap: gap,
+        contentW: Math.max(12, labelW - 1.4),
+        contentH: Math.max(12, labelH - 0.65)
+      };
+    }
+    function applyPrintGeometryCss(geo) {
+      const g = geo || getPrintGeometryMm();
+      let st = document.getElementById('printDynGeomStyle');
+      if (!st) {
+        st = document.createElement('style');
+        st.id = 'printDynGeomStyle';
+        document.head.appendChild(st);
+      }
+      st.textContent =
+        '.print-label-mock-host{width:' + g.labelW + 'mm;height:' + g.labelH + 'mm;'
+        + 'margin-bottom:calc(' + g.labelH + 'mm * (var(--mock-scale) - 1) + 8px);}'
+        + '.print-label-mock-host .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}'
+        + '@media print{'
+        + '@page{size:' + g.sheetW + 'mm ' + g.sheetH + 'mm;margin:0;}'
+        + 'html,body{width:' + g.sheetW + 'mm !important;}'
+        + '.print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;max-height:' + g.sheetH + 'mm;'
+        + 'gap:' + g.gap + 'mm;padding:' + g.margin + 'mm;}'
+        + '.print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}'
+        + '}'
+        + '.print-label-sheet.print-measure .print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;'
+        + 'gap:' + g.gap + 'mm;padding:' + g.margin + 'mm;}'
+        + '.print-label-sheet.print-measure .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
+        + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;}';
+      return g;
+    }
+    function syncPrintGeometryUi() {
+      const g = applyPrintGeometryCss();
+      const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const board = document.getElementById('printDesignerBoard');
+      if (board) {
+        const padMm = 14;
+        const padPx = padMm * ppm;
+        board.style.width = (g.sheetW * ppm + padPx * 2) + 'px';
+        board.style.height = (g.sheetH * ppm + padPx * 2) + 'px';
+        const frame = board.querySelector('.print-designer-sheet-frame');
+        if (frame) {
+          frame.style.left = padPx + 'px';
+          frame.style.top = padPx + 'px';
+          frame.style.width = (g.sheetW * ppm) + 'px';
+          frame.style.height = (g.sheetH * ppm) + 'px';
+        }
+        const row = board.querySelector('.print-designer-row');
+        if (row) {
+          row.style.left = (padPx + g.margin * ppm) + 'px';
+          row.style.top = (padPx + g.margin * ppm) + 'px';
+          row.style.width = ((g.sheetW - g.margin * 2) * ppm) + 'px';
+          row.style.height = (g.labelH * ppm) + 'px';
+          row.style.gap = (g.gap * ppm) + 'px';
+        }
+        board.querySelectorAll('.print-designer-label').forEach((label) => {
+          label.style.width = (g.labelW * ppm) + 'px';
+          label.style.height = (g.labelH * ppm) + 'px';
+        });
+      }
+      return g;
+    }
     const PRINT_ZONE_MIN = {
       name: { w: 12, h: 4 },
       orig: { w: 6, h: 1.8 },
@@ -10319,8 +10425,13 @@ def home() -> HTMLResponse:
     function updatePrintDesignerReadout(side, s) {
       const el = document.getElementById('printDesignerReadout');
       if (!el) return;
+      const geo = (typeof getPrintGeometryMm === 'function') ? getPrintGeometryMm() : null;
+      const geoTxt = geo
+        ? (' · اللزقة ' + geo.labelW.toFixed(1) + '×' + geo.labelH.toFixed(1)
+          + ' مم · الورقة ' + geo.sheetW.toFixed(1) + '×' + geo.sheetH.toFixed(1) + ' مم')
+        : '';
       if (!side) {
-        el.textContent = 'اليسار واليمين مستقلين — اسحب عناصر أي لزقة لوحدها';
+        el.textContent = 'اليسار واليمين مستقلين — كبّر خانة فتكبر اللزقة معها' + geoTxt;
         return;
       }
       const st = s || getPrintLayoutSettings(side);
@@ -10331,7 +10442,8 @@ def home() -> HTMLResponse:
         + 'أصلي @' + st.origXmm.toFixed(1) + ',' + st.origYmm.toFixed(1) + ' · '
         + 'موقع @' + st.locXmm.toFixed(1) + ',' + st.locYmm.toFixed(1) + ' · '
         + 'باركود @' + st.bcXmm.toFixed(1) + ',' + st.bcYmm.toFixed(1)
-        + ' (' + st.bcWmm.toFixed(1) + '×' + st.bcHmm.toFixed(1) + 'مم)';
+        + ' (' + st.bcWmm.toFixed(1) + '×' + st.bcHmm.toFixed(1) + 'مم)'
+        + geoTxt;
     }
     function syncPrintLayoutSettingsUi(side) {
       const st = getPrintLayoutSettings(side || 'left');
@@ -10448,11 +10560,12 @@ def home() -> HTMLResponse:
       }
     }
     function deriveMaxFontsFromZones(layout) {
+      // الخط يتبع ارتفاع الخانة — كبّرت الاسم بالـ GUI → الاسم يكبر باللزقة
       return {
-        namePx: clampPrintNum(Math.round(layout.nameHmm * 3.15), 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
-        originalPx: clampPrintNum(Math.round(layout.origHmm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
-        locationPx: clampPrintNum(Math.round(layout.locHmm * 2.85), 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: clampPrintNum(Math.round(layout.bcHmm * 0.78), 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx)
+        namePx: clampPrintNum(Math.round(layout.nameHmm * 3.35), 14, 64, PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: clampPrintNum(Math.round(layout.origHmm * 2.95), 6, 22, PRINT_LAYOUT_DEFAULTS.originalPx),
+        locationPx: clampPrintNum(Math.round(layout.locHmm * 2.95), 6, 20, PRINT_LAYOUT_DEFAULTS.locationPx),
+        bcTextPx: clampPrintNum(Math.round(layout.bcHmm * 0.82), 4.5, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx)
       };
     }
     let printDesignerDrag = null;
@@ -10493,6 +10606,8 @@ def home() -> HTMLResponse:
       const saved = savePrintLayoutSettings(side, s);
       syncPrintLayoutSettingsUi(side);
       paintPrintDesignerZones(side);
+      // وسّع إطار اللزقة فوراً مع تكبير الخانة
+      try { syncPrintGeometryUi(); } catch (_) {}
       updatePrintDesignerReadout(side, saved);
     }
     function endDesignerDrag() {
@@ -10508,9 +10623,11 @@ def home() -> HTMLResponse:
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
       } catch (_) {}
+      try { syncPrintGeometryUi(); } catch (_) {}
       refreshPrintDesignerBoard();
       try {
-        renderPrintSideLabelMock(side);
+        renderPrintSideLabelMock('left');
+        renderPrintSideLabelMock('right');
       } catch (_) {}
     }
     function startDesignerZoneInteract(side, zone, mode, ev, resizeDir) {
@@ -10578,12 +10695,13 @@ def home() -> HTMLResponse:
     }
     function buildPrintDesignerLabelEl(side) {
       const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const geo = getPrintGeometryMm();
       const sKey = printSideKey(side);
       const label = document.createElement('div');
       label.className = 'print-designer-label';
       label.setAttribute('data-side', sKey);
-      label.style.width = (PRINT_SHEET_MM.labelW * ppm) + 'px';
-      label.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
+      label.style.width = (geo.labelW * ppm) + 'px';
+      label.style.height = (geo.labelH * ppm) + 'px';
       const zones = [
         { key: 'name', title: 'اسم الصنف' },
         { key: 'orig', title: 'الرقم الأصلي' },
@@ -10623,10 +10741,12 @@ def home() -> HTMLResponse:
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
       const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const geo = getPrintGeometryMm();
+      applyPrintGeometryCss(geo);
       // مساحة إضافية حول الورقة عشان تشوف وتسحب العناصر برا حدود اللزقة
       const padMm = 14;
-      const sheetW = PRINT_SHEET_MM.sheetW * ppm;
-      const sheetH = PRINT_SHEET_MM.sheetH * ppm;
+      const sheetW = geo.sheetW * ppm;
+      const sheetH = geo.sheetH * ppm;
       const padPx = padMm * ppm;
       board.style.width = (sheetW + padPx * 2) + 'px';
       board.style.height = (sheetH + padPx * 2) + 'px';
@@ -10641,11 +10761,11 @@ def home() -> HTMLResponse:
       board.appendChild(sheetFrame);
       const row = document.createElement('div');
       row.className = 'print-designer-row';
-      row.style.left = (padPx + PRINT_SHEET_MM.margin * ppm) + 'px';
-      row.style.top = (padPx + PRINT_SHEET_MM.margin * ppm) + 'px';
-      row.style.width = ((PRINT_SHEET_MM.sheetW - PRINT_SHEET_MM.margin * 2) * ppm) + 'px';
-      row.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
-      row.style.gap = (PRINT_SHEET_MM.gap * ppm) + 'px';
+      row.style.left = (padPx + geo.margin * ppm) + 'px';
+      row.style.top = (padPx + geo.margin * ppm) + 'px';
+      row.style.width = ((geo.sheetW - geo.margin * 2) * ppm) + 'px';
+      row.style.height = (geo.labelH * ppm) + 'px';
+      row.style.gap = (geo.gap * ppm) + 'px';
       row.appendChild(buildPrintDesignerLabelEl('left'));
       row.appendChild(buildPrintDesignerLabelEl('right'));
       board.appendChild(row);
@@ -10711,13 +10831,16 @@ def home() -> HTMLResponse:
       }
       if (wrap) {
         // باركود طويل: لا تضيّق عرض منطقة bc تحت حد عملي (كان يفشل غالباً على لزقة اليسار)
-        const minBcW = Math.min(PRINT_CONTENT_W_MM || 48.6, 40);
+        const contentW = (typeof getPrintGeometryMm === 'function')
+          ? getPrintGeometryMm().contentW
+          : (PRINT_CONTENT_W_MM || 48.6);
+        const minBcW = Math.min(contentW, 40);
         let bcW = Number(s.bcWmm) || minBcW;
         let bcX = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0) + xShift;
         if (bcW < minBcW) {
-          bcW = Math.min(PRINT_CONTENT_W_MM || 48.6, Math.max(bcW, minBcW));
+          bcW = Math.min(contentW, Math.max(bcW, minBcW));
         }
-        const maxX = (PRINT_CONTENT_W_MM || 48.6);
+        const maxX = contentW;
         if (bcX + bcW > maxX) {
           bcW = Math.max(minBcW, maxX - bcX);
         }
@@ -10836,6 +10959,8 @@ def home() -> HTMLResponse:
         setPrintFetchStatus('تعذر تحميل مكتبة الباركود.');
         return;
       }
+      // طبّق حجم اللزقة/الورقة حسب قياسات GUI الحالية قبل الرسم
+      try { applyPrintGeometryCss(getPrintGeometryMm()); } catch (_) {}
       let sheet = document.getElementById('printLabelSheet');
       if (!sheet) {
         sheet = document.createElement('div');
