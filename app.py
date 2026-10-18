@@ -7208,7 +7208,7 @@ def home() -> HTMLResponse:
     .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
     .print-side-unit .field-label { margin-top: 8px; }
     .print-side-unit .field-label:first-of-type { margin-top: 0; }
-    /* معاينة شكل الليبل كما سيُطبع (50×30 مم) داخل كل جهة */
+    /* معاينة شكل الليبل كما سيُطبع (50×25 مم) داخل كل جهة */
     .print-side-preview {
       display: none;
       margin-top: 10px;
@@ -7230,12 +7230,12 @@ def home() -> HTMLResponse:
       color: #5b667a;
     }
     .print-label-mock-host {
-      /* معاينة أكبر على الشاشة بنسبة ثابتة مع اللزقة 50×30 مم */
+      /* معاينة أكبر على الشاشة بنسبة ثابتة مع اللزقة 50×25 مم */
       --mock-scale: 1.55;
       width: 50mm;
-      height: 30mm;
+      height: 25mm;
       max-width: none;
-      margin: 0 auto calc(30mm * (var(--mock-scale) - 1) + 8px);
+      margin: 0 auto calc(25mm * (var(--mock-scale) - 1) + 8px);
       box-sizing: border-box;
       border: 1px solid #222;
       background: #fff;
@@ -7248,8 +7248,8 @@ def home() -> HTMLResponse:
     .print-label-mock-host .print-label {
       width: 50mm;
       max-width: 50mm;
-      height: 30mm;
-      max-height: 30mm;
+      height: 25mm;
+      max-height: 25mm;
       box-sizing: border-box;
       padding: 0;
       margin: 0;
@@ -7337,13 +7337,13 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* الحجم الافتراضي؛ يُحدَّث ديناميكياً من GUI عبر #printDynGeomStyle */
+      /* كل لزقة 50×25 مم · فجوة 3 مم · ورقة 103×25 مم */
       @page {
-        size: 100mm 30mm;
+        size: 103mm 25mm;
         margin: 0;
       }
       html, body {
-        width: 100mm !important;
+        width: 103mm !important;
         height: auto !important;
         margin: 0 !important;
         padding: 0 !important;
@@ -7368,13 +7368,13 @@ def home() -> HTMLResponse:
         direction: ltr;
         justify-content: flex-start;
         align-items: flex-start;
-        width: 100mm;
-        height: 30mm;
-        max-height: 30mm;
+        width: 103mm;
+        height: 25mm;
+        max-height: 25mm;
         box-sizing: border-box;
         margin: 0;
         padding: 0;
-        gap: 0;
+        gap: 3mm;
         page-break-after: always;
         break-after: page;
         page-break-inside: avoid;
@@ -7388,8 +7388,8 @@ def home() -> HTMLResponse:
       .print-label {
         width: 50mm;
         max-width: 50mm;
-        height: 30mm;
-        max-height: 30mm;
+        height: 25mm;
+        max-height: 25mm;
         box-sizing: border-box;
         padding: 0;
         margin: 0;
@@ -7499,17 +7499,17 @@ def home() -> HTMLResponse:
       direction: ltr;
       justify-content: flex-start;
       align-items: flex-start;
-      width: 100mm;
-      height: 30mm;
+      width: 103mm;
+      height: 25mm;
       padding: 0;
-      gap: 0;
+      gap: 3mm;
       box-sizing: border-box;
     }
     .print-label-sheet.print-measure .print-label {
       width: 50mm;
       max-width: 50mm;
-      height: 30mm;
-      max-height: 30mm;
+      height: 25mm;
+      max-height: 25mm;
       box-sizing: border-box;
       padding: 0;
       margin: 0;
@@ -8107,9 +8107,8 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              الحجم فقط: كل لزقة <strong>50×30 مم</strong> (بتكبر مع GUI) · الورقة = لزقتين متلاصقتين بدون هامش/فجوة إجبارية.
-              المواضع والإزاحات كلها منك بالـ GUI — البرنامج ما بفرض بداية ولا نهاية.
-              اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
+              كل لزقة <strong>50×25 مم</strong> (5×2.5 سم) · فجوة بين اليسار واليمين <strong>3 مم</strong> · الورقة <strong>103×25 مم</strong>.
+              المواضع كلها منك بالـ GUI. اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -8196,7 +8195,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · لزقتين متلاصقتين · الحجم من GUI · بدون هامش إجباري.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · لزقة 50×25 مم · فجوة 3 مم · ورقة 103×25 مم.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -10007,18 +10006,17 @@ def home() -> HTMLResponse:
       return { name, original, location, barcode };
     }
     const PRINT_SHEET_MM = {
-      // نحدد الحجم فقط — بدون هامش/فجوة/إزاحة إجبارية (المواضع كلها من GUI)
-      sheetW: 100,
-      sheetH: 30,
+      // كل لزقة 5×2.5 سم · فجوة 3 مم بين اليسار واليمين · المواضع من GUI
+      sheetW: 103, // 50 + 3 + 50
+      sheetH: 25,
       margin: 0,
-      gap: 0,
+      gap: 3,
       labelW: 50,
-      labelH: 30,
+      labelH: 25,
       padY: 0,
-      contentH: 30,
+      contentH: 25,
       rightContentShiftXmm: 0
     };
-    // مقياس GUI أكبر ليتناسب مع لزقة 50×30 مم
     const PRINT_DESIGNER_PX_PER_MM = 5.6;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH;
@@ -10108,17 +10106,12 @@ def home() -> HTMLResponse:
       return { w: maxR, h: maxB };
     }
     function getPrintGeometryMm() {
-      // الحجم فقط من مدى عناصر GUI — بدون هامش/إزاحة إجبارية من الحواف
-      const base = PRINT_SHEET_MM;
-      const eL = extentPrintLayoutMm(getPrintLayoutSettings('left'));
-      const eR = extentPrintLayoutMm(getPrintLayoutSettings('right'));
-      let labelW = Math.max(base.labelW, eL.w, eR.w);
-      let labelH = Math.max(base.labelH, eL.h, eR.h);
-      labelW = Math.round(Math.min(80, Math.max(30, labelW)) * 10) / 10;
-      labelH = Math.round(Math.min(60, Math.max(20, labelH)) * 10) / 10;
+      // حجم ثابت: لزقة 50×25 مم · فجوة 3 مم بين اليسار واليمين
+      const labelW = PRINT_SHEET_MM.labelW;
+      const labelH = PRINT_SHEET_MM.labelH;
+      const gap = PRINT_SHEET_MM.gap;
       const margin = 0;
-      const gap = 0;
-      const sheetW = Math.round((labelW * 2) * 10) / 10;
+      const sheetW = labelW * 2 + gap;
       const sheetH = labelH;
       return {
         labelW: labelW,
@@ -10148,14 +10141,14 @@ def home() -> HTMLResponse:
         + '@page{size:' + g.sheetW + 'mm ' + g.sheetH + 'mm;margin:0;}'
         + 'html,body{width:' + g.sheetW + 'mm !important;}'
         + '.print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;max-height:' + g.sheetH + 'mm;'
-        + 'gap:0;padding:0;margin:0;}'
+        + 'gap:' + g.gap + 'mm;padding:0;margin:0;}'
         + '.print-label,.print-label.print-label-left,.print-label.print-label-right,'
         + '.print-label-row .print-label:first-child,.print-label-row .print-label:last-child{'
         + 'width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
         + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}'
         + '}'
         + '.print-label-sheet.print-measure .print-label-row{width:' + g.sheetW + 'mm;height:' + g.sheetH + 'mm;'
-        + 'gap:0;padding:0;margin:0;}'
+        + 'gap:' + g.gap + 'mm;padding:0;margin:0;}'
         + '.print-label-sheet.print-measure .print-label{width:' + g.labelW + 'mm;max-width:' + g.labelW + 'mm;'
         + 'height:' + g.labelH + 'mm;max-height:' + g.labelH + 'mm;padding:0;margin:0;}';
       return g;
@@ -10182,7 +10175,7 @@ def home() -> HTMLResponse:
           row.style.top = padPx + 'px';
           row.style.width = (g.sheetW * ppm) + 'px';
           row.style.height = (g.labelH * ppm) + 'px';
-          row.style.gap = '0px';
+          row.style.gap = (g.gap * ppm) + 'px';
         }
         board.querySelectorAll('.print-designer-label').forEach((label) => {
           label.style.width = (g.labelW * ppm) + 'px';
@@ -10759,7 +10752,7 @@ def home() -> HTMLResponse:
       row.style.top = padPx + 'px';
       row.style.width = (geo.sheetW * ppm) + 'px';
       row.style.height = (geo.labelH * ppm) + 'px';
-      row.style.gap = '0px';
+      row.style.gap = (geo.gap * ppm) + 'px';
       row.appendChild(buildPrintDesignerLabelEl('left'));
       row.appendChild(buildPrintDesignerLabelEl('right'));
       board.appendChild(row);
