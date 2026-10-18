@@ -9354,7 +9354,8 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— باركود حراري 203dpi: ارسم بالنقاط الصحيحة واعرض بدون تشويه object-fit ——
+      // —— NiceLabel-style auto-fit · حراري 203dpi ——
+      // باركود قصير = وحدات أعرض. طويل = تصغير موحّد لحد العرض مع بقاءه مقرؤ/شغال.
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
@@ -9362,21 +9363,21 @@ def home() -> HTMLResponse:
         : 'left';
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
-        : { bcHmm: 13.8, bcWmm: 48.6, bcHeightMm: 13.8 };
+        : { bcHmm: 11.2, bcWmm: 50, bcHeightMm: 11.2 };
       const contentWmm = (typeof getPrintGeometryMm === 'function')
         ? getPrintGeometryMm().contentW
         : ((typeof PRINT_CONTENT_W_MM === 'number' && PRINT_CONTENT_W_MM > 0)
           ? PRINT_CONTENT_W_MM
-          : 48.6);
+          : 50);
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
-      // عرض اللزقة كاملة للأعمدة — ما نصغّر الباركود الطويل زيادة عن اللزوم
-      const usableMm = Math.max(20, Math.min(contentWmm - 0.2, Math.max(boxWmm - 0.2, contentWmm - 0.2)));
-      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.5);
-      // مساحة ثابتة للرقم (خط 10) — ارتفاع الأعمدة يبقى كاملاً حتى للباركود الطويل
-      const textReserveMm = Math.max(2.6, Math.min(3.2, boxHmm * 0.26));
-      const heightMm = Math.max(6.5, Math.min(16, boxHmm - textReserveMm));
-      const usableDots = Math.max(120, Math.floor(usableMm * dotsPerMm));
-      const heightDots = Math.max(52, Math.round(heightMm * dotsPerMm));
+      const usableMm = Math.max(22, Math.min(contentWmm - 0.15, Math.max(boxWmm - 0.15, contentWmm - 0.15)));
+      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.2);
+      const textReserveMm = 2.8;
+      const targetBarHmm = Math.max(6.2, Math.min(12.5, boxHmm - textReserveMm));
+      // حد أدنى لأسلوب NiceLabel: أصغر من العادي بس لسا يُمسح
+      const MIN_SCAN_HMM = 5.6;
+      const usableDots = Math.max(140, Math.floor(usableMm * dotsPerMm));
+      const heightDots = Math.max(48, Math.round(targetBarHmm * dotsPerMm));
 
       function probe(encodeVal, quietMods) {
         const probeCanvas = document.createElement('canvas');
@@ -9402,18 +9403,20 @@ def home() -> HTMLResponse:
         return null;
       }
 
+      // اختر أكبر سماكة وحدة تدخل بالعرض (مثل Auto size في NiceLabel)
       let best = null;
       for (let ci = 0; ci < encodeList.length; ci++) {
         const enc = encodeList[ci];
-        for (let qi = 0; qi < 8; qi++) {
-          const quietMods = 4 - qi; // 4..-3 → نستخدم max(0,…)
-          const q = Math.max(0, quietMods);
+        for (let q = 4; q >= 0; q--) {
           const probed = probe(enc, q);
           if (!probed || !probed.units) continue;
           let moduleDots = Math.floor(usableDots / probed.units);
           if (moduleDots < 1) moduleDots = 1;
           if (moduleDots > 3) moduleDots = 3;
+          // إن ما دخل حتى بوحدة 1 — ارسم بوحدة 1 ثم صغّر العرض لاحقاً بشكل موحّد
           const total = probed.units * moduleDots;
+          const fits = total <= usableDots;
+          const overflow = Math.max(0, total - usableDots);
           const candidate = {
             encodeVal: enc,
             format: probed.format,
@@ -9421,9 +9424,8 @@ def home() -> HTMLResponse:
             moduleDots: moduleDots,
             units: probed.units,
             total: total,
-            fits: total <= usableDots,
-            // أولوية: سماكة العمود ثم الملاءمة — بدون مكافأة لتصغير الطول
-            score: moduleDots * 40 + (total <= usableDots ? 80 : 0) + q - enc.length * 0.001
+            fits: fits,
+            score: (fits ? 1000 : 0) + moduleDots * 50 + q * 2 - overflow * 0.02 - enc.length * 0.001
           };
           if (!best || candidate.score > best.score) best = candidate;
           if (candidate.fits && candidate.moduleDots >= 2) break;
@@ -9452,10 +9454,26 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // العرض فقط يُقيَّد عند اللزوم — ارتفاع أعمدة الباركود يبقى كاملاً (ما نصغّر الباركود الطويل)
-      let widthMm = canvas.width / dotsPerMm;
-      let drawHmm = heightMm;
-      if (widthMm > usableMm) widthMm = usableMm;
+      // قياس طبيعي بالنقاط → مم، ثم Auto-fit موحّد (العرض والارتفاع معاً) مثل NiceLabel
+      const natWmm = canvas.width / dotsPerMm;
+      const natHmm = canvas.height / dotsPerMm;
+      let scale = 1;
+      if (natWmm > usableMm) scale = usableMm / natWmm;
+      let widthMm = natWmm * scale;
+      let drawHmm = natHmm * scale;
+      // لا تخلّي الأعمدة أقصر من حد المسح — لو الطويل صغر زيادة، ثبّت ارتفاع أدنى مقرؤ
+      if (drawHmm < MIN_SCAN_HMM) {
+        drawHmm = Math.min(targetBarHmm, MIN_SCAN_HMM);
+        widthMm = Math.min(usableMm, natWmm * (drawHmm / natHmm));
+      }
+      if (drawHmm > targetBarHmm) {
+        const hs = targetBarHmm / drawHmm;
+        drawHmm = targetBarHmm;
+        widthMm = Math.min(usableMm, widthMm * hs);
+      }
+      widthMm = Math.min(usableMm, Math.max(12, widthMm));
+      drawHmm = Math.max(MIN_SCAN_HMM, Math.min(targetBarHmm, drawHmm));
+
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = best.encodeVal;
@@ -9470,7 +9488,7 @@ def home() -> HTMLResponse:
       img.style.margin = '0 auto';
       img.style.imageRendering = 'pixelated';
       img.style.flex = '0 0 auto';
-      img.style.objectFit = 'contain';
+      img.style.objectFit = 'fill';
       img.style.objectPosition = 'center center';
       targetEl.replaceWith(img);
       return true;
