@@ -9410,11 +9410,19 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // Code128: الطويل يصغّر العرض ليدخل اللزقة · الارتفاع يتصغّر إذا لزم · خط الرقم 8
+      /*
+       * أسلوب NiceLabel Code128 (حراري 203dpi):
+       * - X-dimension = عدد صحيح من نقاط الطابعة (لا كسور)
+       * - Quiet Zone ≥ 10×X من كل جهة
+       * - Auto-fit = اختر أكبر X يدخل عرض المنطقة (3→2→1)
+       * - لا Resize لصورة / لا object-fit:fill — العرض المعروض = نقاط الرسم × مم/نقطة
+       * - الارتفاع خاصية مستقلة (أعمدة فقط)؛ الرقم تحته عنصر منفصل
+       */
       const cfg = PRINT_BARCODE_CFG;
       const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
-      const QUIET = 10;
+      const QUIET = (cfg.quietModulesEach != null) ? cfg.quietModulesEach : 10;
+      const maxDots = (cfg.maxModuleDots != null) ? cfg.maxModuleDots : 3;
       const availMm = (typeof PRINT_ZONE_CONTENT_W_MM === 'number')
         ? PRINT_ZONE_CONTENT_W_MM
         : Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
@@ -9445,17 +9453,30 @@ def home() -> HTMLResponse:
       const probed = probeSymbolMods(displayCode);
       if (!probed || !probed.mods) return false;
       const totalMods = probed.mods + QUIET * 2;
-      let moduleDots = Math.floor(availDots / totalMods);
-      if (moduleDots < 1) moduleDots = 1;
-      if (moduleDots > 3) moduleDots = 3;
 
-      // ارتفاع الأعمدة داخل منطقة الباركود 14مم (ناقص سطر الرقم) · الطويل يصغّر أكثر
+      // أكبر X يدخل العرض (مثل Auto size / X dimension في NiceLabel)
+      let moduleDots = 0;
+      for (let d = maxDots; d >= 1; d--) {
+        if (totalMods * d <= availDots) {
+          moduleDots = d;
+          break;
+        }
+      }
+      let unreliable = false;
+      if (!moduleDots) {
+        // أطول من عرض المنطقة حتى بوحدة نقطة واحدة — لا نسحق الصورة
+        moduleDots = 1;
+        unreliable = true;
+      }
+
       const textReserve = (cfg.textReserveMm != null) ? cfg.textReserveMm : 2.4;
-      const zoneH = (typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 14;
-      let barHmm = Math.max(6, zoneH - textReserve);
-      if (moduleDots <= 1) barHmm = Math.min(barHmm, 8);
-      else if (moduleDots === 2) barHmm = Math.min(barHmm, 10);
-      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
+      const zoneH = (typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 15;
+      const barHMin = (cfg.barHMinMm != null) ? cfg.barHMinMm : 8;
+      const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
+      let barHmm = zoneH - textReserve;
+      if (barHmm > barHMax) barHmm = barHMax;
+      if (barHmm < barHMin) barHmm = barHMin;
+      const heightDots = Math.max(32, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
@@ -9478,39 +9499,55 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // العرض: صغّر ليتسع باللزقة · الارتفاع يتبع barHmm أعلاه
-      let wMm = canvas.width / dotsPerMm;
-      let hMm = barHmm;
-      if (wMm > availMm) {
-        wMm = availMm;
-        // إذا صغّرنا العرض كثير، خفّض الارتفاع شوي للطويل
-        if (moduleDots <= 2) hMm = Math.min(hMm, 7);
-      }
+      // عرض/ارتفاع طبيعي 1:1 مع نقاط الطابعة — ممنوع ضغط CSS
+      const wMm = canvas.width / dotsPerMm;
+      const hMm = canvas.height / dotsPerMm;
+      if (wMm > availMm + 0.05) unreliable = true;
 
+      const xMm = moduleDots / dotsPerMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = displayCode;
-      img.title = 'Code128 · H=' + hMm + 'mm · text=8px · fit ' + availMm.toFixed(1) + 'mm';
+      img.title = 'NiceLabel-style Code128 · X=' + xMm.toFixed(3)
+        + 'mm (' + moduleDots + 'dot@' + DPI + 'dpi) · H=' + hMm.toFixed(2) + 'mm';
       img.src = canvas.toDataURL('image/png');
       img.width = canvas.width;
       img.height = canvas.height;
-      img.style.width = wMm.toFixed(3) + 'mm';
-      img.style.height = hMm.toFixed(3) + 'mm';
-      img.style.maxWidth = '100%';
+      img.style.width = wMm.toFixed(4) + 'mm';
+      img.style.height = hMm.toFixed(4) + 'mm';
+      img.style.maxWidth = 'none';
+      img.style.maxHeight = 'none';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.flex = '0 0 auto';
-      img.style.objectFit = 'fill';
+      img.style.objectFit = 'none';
+      img.style.objectPosition = 'center';
       img.style.imageRendering = 'pixelated';
       targetEl.replaceWith(img);
-      if (labelEl) labelEl.dataset.bcUnreliable = '0';
-      clearPrintBarcodeWarn(wrap);
-      try {
-        setPrintFetchStatus(
-          'Code128 · خط الرقم 8 · ارتفاع أعمدة ' + hMm + 'مم · عرض ملاءَم للزقة',
-          layoutSide
+
+      if (unreliable) {
+        if (labelEl) labelEl.dataset.bcUnreliable = '1';
+        showPrintBarcodeWarn(
+          wrap,
+          'الباركود أطول من عرض المنطقة — لن يُضغط. قصّر القيمة أو وسّع المنطقة.'
         );
-      } catch (_) {}
+        try {
+          setPrintFetchStatus(
+            'تحذير: Code128 لا يتسع بـ X≥1 نقطة بدون ضغط (NiceLabel لا يعمل Resize)',
+            layoutSide
+          );
+        } catch (_) {}
+      } else {
+        if (labelEl) labelEl.dataset.bcUnreliable = '0';
+        clearPrintBarcodeWarn(wrap);
+        try {
+          setPrintFetchStatus(
+            'Code128 · X=' + moduleDots + ' نقطة (' + xMm.toFixed(3)
+              + 'مم) · H=' + hMm.toFixed(1) + 'مم · Quiet 10× · بدون ضغط',
+            layoutSide
+          );
+        } catch (_) {}
+      }
       return true;
     }
     function fitPrintBarcodeText(el, code) {
@@ -10071,34 +10108,39 @@ def home() -> HTMLResponse:
       contentH: 26,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود — داخل لزقة 50×26 مع هامش محتوى 1 مم */
+    /** إعدادات الباركود — أسلوب NiceLabel · Rongta 203dpi · لزقة 50×26 */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
       labelHmm: PRINT_SHEET_MM.labelH,
       marginMm: 1.0,
-      minModuleMm: 0.25,
-      maxModuleMm: 0.5,
-      minModuleDots: 2,
+      minModuleMm: 0.125, // 1 نقطة @203dpi (حد NiceLabel/حراري)
+      maxModuleMm: 0.375, // 3 نقاط
+      minModuleDots: 1,
       maxModuleDots: 3,
-      barHMinMm: 10,
-      barHMaxMm: 11,
+      barHMinMm: 8,
+      barHMaxMm: 12,
       quietModulesEach: 10,
       textReserveMm: 2.4
     };
     function code128ModulesCount(n) {
+      // تقدير أسوأ حالة Code128B + Quiet 10× من كل جهة
       const nn = Math.max(0, Number(n) || 0);
       return 11 * (nn + 2) + 13 + 20;
     }
     function computePrintBarcodeFit(value, opts) {
-      // تقدير أولي؛ الرسم الفعلي يعتمد وحدات JsBarcode الحقيقية
+      // تقدير X-dimension مثل NiceLabel (الرسم الفعلي يقيس JsBarcode)
       const cfg = PRINT_BARCODE_CFG;
       const lw = (opts && opts.labelWmm) || cfg.labelWmm;
       const margin = (opts && opts.marginMm != null) ? opts.marginMm : cfg.marginMm;
       const text = printBarcodeExactValue(value);
       const n = text.length;
       const modules = code128ModulesCount(n);
-      const availW = lw - 2 * margin;
+      const availW = (typeof PRINT_ZONE_CONTENT_W_MM === 'number')
+        ? PRINT_ZONE_CONTENT_W_MM
+        : (lw - 2 * margin);
+      const dotsPerMm = cfg.dpi / 25.4;
+      const availDots = Math.floor(availW * dotsPerMm);
       if (!text || !/[A-Za-z0-9]/.test(text)) {
         return {
           ok: false, mode: 'fail', value: text, n: n, modules: modules,
@@ -10106,10 +10148,24 @@ def home() -> HTMLResponse:
           availableMm: availW, warning: 'قيمة باركود غير صالحة للطباعة'
         };
       }
+      let moduleDots = 0;
+      for (let d = cfg.maxModuleDots; d >= 1; d--) {
+        if (modules * d <= availDots) { moduleDots = d; break; }
+      }
+      if (!moduleDots) {
+        return {
+          ok: false, mode: 'fail', value: text, n: n, modules: modules,
+          moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
+          availableMm: availW,
+          warning: 'أطول من عرض المنطقة حتى بوحدة نقطة واحدة — لن يُضغط كصورة'
+        };
+      }
+      const moduleMm = moduleDots / dotsPerMm;
+      const barHmm = cfg.barHMinMm;
       return {
         ok: true, mode: 'horizontal', value: text, n: n, modules: modules,
-        moduleMm: cfg.minModuleMm, moduleDots: cfg.minModuleDots,
-        barHmm: cfg.barHMinMm, symbolWmm: availW, symbolHmm: cfg.barHMinMm,
+        moduleMm: moduleMm, moduleDots: moduleDots,
+        barHmm: barHmm, symbolWmm: modules * moduleMm, symbolHmm: barHmm,
         availableMm: availW, warning: ''
       };
     }

@@ -1,6 +1,9 @@
 """
-حساب أبعاد Code128 لطباعة اللزقات (Rongta 203dpi).
-Code128 فقط — حد أدنى مفضّل وحدتان (0.25مم) للقراءة.
+حساب أبعاد Code128 بأسلوب NiceLabel لطباعة اللزقات (Rongta 203dpi).
+
+- X-dimension = عدد صحيح من نقاط الطابعة
+- Quiet Zone = 10 وحدات من كل جهة
+- Auto-fit = أكبر X يدخل العرض (بدون Resize لصورة)
 """
 
 from __future__ import annotations
@@ -11,16 +14,16 @@ from typing import Optional
 PRINT_BARCODE_CFG = {
     "dpi": 203,
     "label_w_mm": 50.0,
-    "label_h_mm": 25.0,
+    "label_h_mm": 26.0,
     "margin_mm": 1.0,
-    "min_module_mm": 0.25,
-    "max_module_mm": 0.5,
-    "min_module_dots": 2,
+    "min_module_mm": 0.125,  # 1 نقطة @203dpi
+    "max_module_mm": 0.375,  # 3 نقاط
+    "min_module_dots": 1,
     "max_module_dots": 3,
     "bar_h_min_mm": 8.0,
     "bar_h_max_mm": 12.0,
     "quiet_modules_each": 10,
-    "text_reserve_mm": 2.9,
+    "text_reserve_mm": 2.4,
 }
 
 
@@ -31,6 +34,7 @@ def barcode_text(value: Optional[str]) -> str:
 
 
 def code128_modules(n: int) -> int:
+    """أسوأ حالة Code128B + Quiet 10× يمين/يسار."""
     if n < 0:
         n = 0
     return 11 * (n + 2) + 13 + 20
@@ -70,7 +74,6 @@ def compute_barcode_fit(
     modules = code128_modules(n)
     avail = lw - 2 * margin
     dots_per_mm = float(c["dpi"]) / 25.4
-    min_dots = int(c["min_module_dots"])
     max_dots = int(c["max_module_dots"])
 
     if not text or not any(ch.isalnum() for ch in text):
@@ -79,10 +82,13 @@ def compute_barcode_fit(
         )
 
     avail_dots = int(avail * dots_per_mm)
-    module_dots = avail_dots // modules if modules else 0
-    if module_dots > max_dots:
-        module_dots = max_dots
-    if module_dots >= min_dots:
+    module_dots = 0
+    for d in range(max_dots, 0, -1):
+        if modules * d <= avail_dots:
+            module_dots = d
+            break
+
+    if module_dots >= 1:
         module_mm = module_dots / dots_per_mm
         bar_h = float(c["bar_h_min_mm"])
         return BarcodeFitResult(
@@ -100,7 +106,6 @@ def compute_barcode_fit(
             "",
         )
 
-    # لا يتسع بوحدة 2 — نبلّغ (الرسم في الواجهة قد يجرّب وحدة 1 بحذر)
     need = modules * float(c["min_module_mm"])
     return BarcodeFitResult(
         False,
@@ -114,5 +119,5 @@ def compute_barcode_fit(
         0,
         0,
         round(avail, 4),
-        f"يحتاج ≈{need:.1f} مم بوحدة قابلة للمسح على عرض اللزقة",
+        f"يحتاج ≈{need:.1f} مم بوحدة نقطة واحدة — لن يُضغط كصورة",
     )
