@@ -7287,8 +7287,8 @@ def home() -> HTMLResponse:
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: flex-end;
-      gap: 0.1mm;
+      justify-content: flex-start;
+      gap: 0.15mm;
       padding: 0 0.3mm;
     }
     .print-label-mock-host .pl-bc-wrap img.pl-bc,
@@ -7446,8 +7446,8 @@ def home() -> HTMLResponse:
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: flex-end;
-        gap: 0.1mm;
+        justify-content: flex-start;
+        gap: 0.15mm;
         padding: 0 0.3mm;
       }
       .print-label .pl-bc-wrap svg,
@@ -7554,7 +7554,8 @@ def home() -> HTMLResponse:
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: flex-start;
+      gap: 0.15mm;
       padding: 0 0.3mm;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg,
@@ -9235,7 +9236,8 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— باركود حراري 203dpi · الارتفاع من إعدادات المحرر الرسمي (حسب جهة اللزقة) ——
+      // —— باركود حراري 203dpi · لكل لزقة (يسار/يمين) إعداداتها ——
+      // الباركود الطويل + منطقة bc ضيقة كانت تُرجع فشل أو تُقصّ الأعمدة (خصوصاً اليسار بعد تعديل GUI)
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
@@ -9243,19 +9245,25 @@ def home() -> HTMLResponse:
         : 'left';
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
-        : { bcHmm: 9.1, bcWmm: 45, bcHeightMm: 9.1 };
-      const usableMm = Math.max(20, Math.min(48, Number(layoutS.bcWmm || layoutS.bcWidthMm || 45) - 1));
-      // مساحة الباركود ≈ 78% من ارتفاع منطقة bc (الباقي لنص الباركود)
+        : { bcHmm: 9.1, bcWmm: 48.6, bcHeightMm: 9.1 };
+      const contentWmm = (typeof PRINT_CONTENT_W_MM === 'number' && PRINT_CONTENT_W_MM > 0)
+        ? PRINT_CONTENT_W_MM
+        : 48.6;
+      const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
+      // استخدم عرض الصندوق الفعلي، مع حد أدنى عملي للباركود الطويل
+      const usableMm = Math.max(14, Math.min(contentWmm, boxWmm - 0.4));
+      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 9.1);
+      // احجز مساحة لنص الباركود حتى لا يقصّ flex العمود صورة الباركود بالكامل
+      const textReserveMm = Math.max(1.4, Math.min(2.4, boxHmm * 0.22));
       const heightMm = Math.max(
-        4.5,
-        Math.min(14, Number(layoutS.bcHmm || layoutS.bcHeightMm || 9) * 0.78)
+        3.2,
+        Math.min(14, boxHmm - textReserveMm, boxHmm * 0.78)
       );
-      const usableDots = Math.floor(usableMm * dotsPerMm);
-      const heightDots = Math.max(40, Math.round(heightMm * dotsPerMm));
-      // أعمدة bold واضحة على العرض الأصغر
+      const usableDots = Math.max(80, Math.floor(usableMm * dotsPerMm));
+      const heightDots = Math.max(28, Math.round(heightMm * dotsPerMm));
       const TARGET_MODULE_DOTS = 3;
-      const MIN_MODULE_DOTS = 2;
-      const quietTries = [8, 6, 5];
+      const MIN_MODULE_DOTS = 1; // الباركود الطويل يحتاج 1 نقطة/وحدة أحياناً
+      const quietTries = [6, 4, 3, 2];
 
       function probeUnits(quietMods) {
         const probe = document.createElement('canvas');
@@ -9287,12 +9295,13 @@ def home() -> HTMLResponse:
         const probed = probeUnits(quietMods);
         if (!probed || !probed.units) continue;
         let moduleDots = TARGET_MODULE_DOTS;
-        if (probed.units * moduleDots > usableDots) {
-          if (i < quietTries.length - 1) continue;
-          moduleDots = Math.max(
-            MIN_MODULE_DOTS,
-            Math.floor(usableDots / probed.units)
-          );
+        const totalUnits = probed.units; // يشمل هوامش quiet لأنها مرسومة في العرض
+        if (totalUnits * moduleDots > usableDots) {
+          moduleDots = Math.floor(usableDots / totalUnits);
+          if (moduleDots < MIN_MODULE_DOTS) {
+            if (i < quietTries.length - 1) continue;
+            moduleDots = MIN_MODULE_DOTS;
+          }
         }
         best = {
           quietMods,
@@ -9302,7 +9311,17 @@ def home() -> HTMLResponse:
         };
         if (probed.units * moduleDots <= usableDots) break;
       }
-      if (!best) return false;
+      // لا تترك اللزقة فارغة — آخر محاولة بهوامش ضيقة ووحدة 1
+      if (!best) {
+        const probed = probeUnits(2) || probeUnits(0);
+        if (!probed || !probed.units) return false;
+        best = {
+          quietMods: 2,
+          moduleDots: 1,
+          units: probed.units,
+          format: probed.format
+        };
+      }
 
       const canvas = document.createElement('canvas');
       try {
@@ -9320,11 +9339,29 @@ def home() -> HTMLResponse:
           lineColor: '#000000'
         });
       } catch (_) {
-        return false;
+        // سقوط احتياطي: SVG بعرض كامل الصندوق
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'pl-bc');
+        const ok = renderPrintBarcodeSvg(svg, value, {
+          format: 'CODE128',
+          height: Math.max(24, heightDots),
+          width: 1,
+          margin: 4,
+          displayValue: false
+        });
+        if (!ok) return false;
+        svg.style.width = '100%';
+        svg.style.height = heightMm.toFixed(2) + 'mm';
+        svg.style.maxWidth = '100%';
+        svg.style.display = 'block';
+        svg.style.margin = '0 auto';
+        targetEl.replaceWith(svg);
+        return true;
       }
       if (!canvas.width) return false;
 
-      const widthMm = Math.min(usableMm, canvas.width / dotsPerMm);
+      // اعرض دائماً داخل عرض الصندوق (حتى لو الرسم أوسع — يُضغط بنسبة)
+      const widthMm = usableMm;
       const printHmm = heightMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
@@ -9333,10 +9370,14 @@ def home() -> HTMLResponse:
       img.style.width = widthMm.toFixed(2) + 'mm';
       img.style.height = printHmm.toFixed(2) + 'mm';
       img.style.maxWidth = '100%';
+      img.style.maxHeight = printHmm.toFixed(2) + 'mm';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.imageRendering = 'pixelated';
-      img.style.flexShrink = '0';
+      img.style.flex = '1 1 auto';
+      img.style.flexShrink = '1';
+      img.style.minHeight = '0';
+      img.style.objectFit = 'fill';
       targetEl.replaceWith(img);
       return true;
     }
@@ -10430,16 +10471,26 @@ def home() -> HTMLResponse:
         applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
+        // باركود طويل: لا تضيّق عرض منطقة bc تحت حد عملي (كان يفشل غالباً على لزقة اليسار)
+        const minBcW = Math.min(PRINT_CONTENT_W_MM || 48.6, 40);
+        let bcW = Number(s.bcWmm) || minBcW;
+        let bcX = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0);
+        if (bcW < minBcW) {
+          bcW = Math.min(PRINT_CONTENT_W_MM || 48.6, Math.max(bcW, minBcW));
+          if (bcX + bcW > (PRINT_CONTENT_W_MM || 48.6)) {
+            bcX = Math.max(0, (PRINT_CONTENT_W_MM || 48.6) - bcW);
+          }
+        }
         applyPrintBoxStyle(wrap, {
-          x: s.bcXmm + (s.bcShiftXmm || 0),
+          x: bcX,
           y: s.bcYmm + (s.bcShiftYmm || 0),
-          w: s.bcWmm,
+          w: bcW,
           h: s.bcHmm
         });
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
-        wrap.style.justifyContent = 'flex-end';
+        wrap.style.justifyContent = 'flex-start';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
