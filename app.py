@@ -8127,7 +8127,7 @@ def home() -> HTMLResponse:
           <div class="print-side-unit" data-side="left">
             <p class="print-side-title">لزق اليسار</p>
             <label class="field-label" for="printQueryLeft">الباركود فقط</label>
-            <input id="printQueryLeft" placeholder="باركود اليسار (تطابق تام)" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
+            <input id="printQueryLeft" placeholder="باركود اليسار — من قاعدة المواقع" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
             <input id="printNameLeft" type="hidden" value="" data-from-fetch="1" />
             <div class="btn-row" style="margin-top:8px;">
               <button type="button" id="printFetchBtnLeft" class="btn-secondary" onclick="fetchItemForBarcodePrint('left')">جلب اليسار</button>
@@ -8152,7 +8152,7 @@ def home() -> HTMLResponse:
           <div class="print-side-unit" data-side="right">
             <p class="print-side-title">لزق اليمين</p>
             <label class="field-label" for="printQueryRight">الباركود فقط</label>
-            <input id="printQueryRight" placeholder="باركود اليمين (تطابق تام)" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
+            <input id="printQueryRight" placeholder="باركود اليمين — من قاعدة المواقع" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
             <input id="printNameRight" type="hidden" value="" data-from-fetch="1" />
             <div class="btn-row" style="margin-top:8px;">
               <button type="button" id="printFetchBtnRight" class="btn-secondary" onclick="fetchItemForBarcodePrint('right')">جلب اليمين</button>
@@ -9095,29 +9095,42 @@ def home() -> HTMLResponse:
       if (!t) return '';
       return String(t).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
     }
+    function printBarcodeMatchKeys(raw) {
+      // نفس مفاتيح بحث المواقع (مدمج + جزء أول + أصفار) — باركود فقط
+      if (typeof barcodeSearchKeysClient === 'function') {
+        const keys = barcodeSearchKeysClient(raw) || [];
+        if (keys.length) return keys;
+      }
+      const needle = printBarcodeExactNeedle(raw);
+      return needle ? [needle] : [];
+    }
     function locationRowMatchesPrintBarcode(row, rawBc) {
-      const want = printBarcodeExactNeedle(rawBc);
-      if (!want || !row) return false;
+      const wantKeys = printBarcodeMatchKeys(rawBc);
+      if (!wantKeys.length || !row) return false;
+      const wantSet = new Set(wantKeys);
       const blobs = [row.barcode, row.unit_barcodes, row.normalized_barcode];
       for (let bi = 0; bi < blobs.length; bi++) {
         const cell = String(blobs[bi] == null ? '' : blobs[bi]).trim();
         if (!cell) continue;
-        // الشكل المدمج للخانة كاملة (مسافات تنسيق حساباتي: 223112U001        HI)
-        const full = cell.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-        if (full && full === want) return true;
+        // خانة كاملة + أجزاؤها — نفس منطق فهرس المواقع
+        const cellKeys = printBarcodeMatchKeys(cell);
+        for (let ki = 0; ki < cellKeys.length; ki++) {
+          if (wantSet.has(cellKeys[ki])) return true;
+        }
         const parts = cell.split(/[\s,;|]+/).map((s) => s.trim()).filter(Boolean);
         const toks = parts.length ? parts : [cell];
         for (let i = 0; i < toks.length; i++) {
-          const alnum = String(toks[i]).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-          if (alnum && alnum === want) return true;
+          const partKeys = printBarcodeMatchKeys(toks[i]);
+          for (let pi = 0; pi < partKeys.length; pi++) {
+            if (wantSet.has(partKeys[pi])) return true;
+          }
         }
       }
       return false;
     }
     function filterRowsExactPrintBarcode(rows, rawBc) {
       const list = Array.isArray(rows) ? rows : [];
-      const want = printBarcodeExactNeedle(rawBc);
-      if (!want) return [];
+      if (!printBarcodeMatchKeys(rawBc).length) return [];
       return list.filter((r) => locationRowMatchesPrintBarcode(r, rawBc));
     }
     function splitOriginalTokens(raw) {
@@ -9773,9 +9786,10 @@ def home() -> HTMLResponse:
       const t = lightSanitizeBarcodeValue(raw);
       if (!t) return [];
       const { barcode } = splitPrintQuery(t);
-      if (!barcode || !printBarcodeExactNeedle(barcode)) return [];
-      // باركود فقط + تطابق تام على الخادم والعميل
-      const p = { q_barcode: barcode, barcode_exact: '1', limit: '40' };
+      if (!barcode || !printBarcodeMatchKeys(barcode).length) return [];
+      // نفس /search_locations تبع تبويب المواقع — بدون barcode_exact
+      // (الفلتر بعدين يبقى على حقول الباركود فقط حتى لا يطلع صنف غلط)
+      const p = { q_barcode: barcode, limit: '40' };
       let rows = await searchLocationsLocal(p);
       rows = filterRowsExactPrintBarcode(rows, barcode);
       return rankLocationRowsForPrint(rows);
@@ -9846,25 +9860,26 @@ def home() -> HTMLResponse:
           return;
         }
         const t0 = performance.now();
-        const missingMsg = 'هذا الباركود مش موجود — لازم يتطابق تماماً، وما رح ينحط صنف بديل.';
-        // 1) محلي: باركود بتطابق تام فقط
-        setPrintFetchStatus('بحث باركود تطابق تام...', s);
+        const missingMsg = 'هذا الباركود مش موجود بقاعدة المواقع ولا حساباتي.';
+        // 1) محلي أولاً — نفس بيانات تبويب المواقع
+        setPrintFetchStatus('بحث في قاعدة المواقع...', s);
         let localRows = await lookupLocalLocationsForPrint(raw);
         if (localRows.length) {
-          applyPrintLookupRows(s, localRows, 'محلي · جاري التحقق من حساباتي...', false);
+          applyPrintLookupRows(s, localRows, `من قاعدة المواقع · ${localRows.length}`, false);
         } else {
           clearPrintSidePreview(s);
         }
-        // 2) حساباتي: باركود فقط — بدون رقم صنف وبدون discover_new (يمنع أصناف عشوائية)
+        // 2) حساباتي للتحديث — بدون مسح النتيجة المحلية إن فشل
         setPrintFetchStatus(
-          localRows.length ? 'تحديث من حساباتي...' : 'غير موجود محلياً — جلب من حساباتي بالباركود فقط...',
+          localRows.length ? 'تحديث من حساباتي...' : 'غير موجود محلياً — جلب من حساباتي...',
           s
         );
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), 45000);
         let live = null;
         try {
-          live = await lookupHesabateItemOnce(barcode, '', false, ctrl.signal, true, false, true);
+          // نفس مفاتيح بحث المواقع (barcode_exact=false)
+          live = await lookupHesabateItemOnce(barcode, '', false, ctrl.signal, true, false, false);
         } finally {
           clearTimeout(to);
         }
@@ -9875,6 +9890,16 @@ def home() -> HTMLResponse:
         const uiMs = Math.round(performance.now() - t0);
         const timingLine = formatLookupTiming(live, uiMs);
         if (!live || live.ok === false) {
+          if (localRows.length) {
+            applyPrintLookupRows(
+              s,
+              localRows,
+              `من قاعدة المواقع · ${(live && live.message) || 'تعذر التحقق من حساباتي'}`
+                + (timingLine ? ` | ${timingLine}` : ''),
+              false
+            );
+            return;
+          }
           clearPrintSidePreview(s);
           applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
           return;
@@ -9882,6 +9907,15 @@ def home() -> HTMLResponse:
         applyHesabateUsageFromResponse(live, live.message || '');
         applyHesabateSearchVersion(live);
         if (!apiRows.length || isMissingFromHesabate(live) || live.not_found) {
+          if (localRows.length) {
+            applyPrintLookupRows(
+              s,
+              localRows,
+              `من قاعدة المواقع · ${localRows.length}` + (timingLine ? ` | ${timingLine}` : ''),
+              false
+            );
+            return;
+          }
           clearPrintSidePreview(s);
           applyPrintLookupRows(s, [], missingMsg + (timingLine ? ` | ${timingLine}` : ''));
           return;
@@ -9889,7 +9923,7 @@ def home() -> HTMLResponse:
         applyPrintLookupRows(
           s,
           rankLocationRowsForPrint(apiRows),
-          `${live.message || ('تم · باركود مطابق ' + needle)} | ${timingLine}`,
+          `${live.message || ('تم · باركود ' + needle)} | ${timingLine}`,
           true
         );
         scheduleSharedLocationAndPrintSync('print-fetch');
@@ -9897,6 +9931,13 @@ def home() -> HTMLResponse:
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
         else if (err && err.message) hint = String(err.message);
+        try {
+          const kept = await lookupLocalLocationsForPrint(raw);
+          if (kept.length) {
+            applyPrintLookupRows(s, kept, `من قاعدة المواقع · ${hint}`, false);
+            return;
+          }
+        } catch (_) {}
         clearPrintSidePreview(s);
         applyPrintLookupRows(s, [], hint);
         try { refreshHesabateStatus(); } catch (_) {}
