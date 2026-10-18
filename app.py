@@ -9256,9 +9256,8 @@ def home() -> HTMLResponse:
     }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      const value = printBarcodeCompactValue(code)
-        || printBarcodeScanValue(code)
-        || printBarcodeExactValue(code);
+      // القيمة كما في المصدر مع كل الفراغات — لا دمج/حذف مسافات
+      const value = printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) {
         svgEl.innerHTML = '';
         return false;
@@ -9300,15 +9299,10 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeDynamic(targetEl, code, opts) {
       if (!targetEl || typeof JsBarcode === 'undefined') return false;
+      // الترميز والنص بنفس القيمة حرفاً بحرف مع كل الفراغات (لا ضغط مسافات)
       const displayCode = printBarcodeExactValue(code);
-      // للترميز: بلا مسافات أولاً (أوضح للقارئ على Rongta)، ثم بمسافة واحدة، ثم كما هو
       const encodeList = [];
-      const c0 = printBarcodeCompactValue(code);
-      const c1 = printBarcodeScanValue(code);
-      const c2 = displayCode;
-      [c0, c1, c2].forEach((v) => {
-        if (v && /[A-Za-z0-9]/.test(v) && encodeList.indexOf(v) < 0) encodeList.push(v);
-      });
+      if (displayCode && /[A-Za-z0-9]/.test(displayCode)) encodeList.push(displayCode);
       if (!encodeList.length) return false;
       const inLabel = !!(targetEl.closest && targetEl.closest('.print-label'));
 
