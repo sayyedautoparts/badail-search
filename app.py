@@ -7208,16 +7208,16 @@ def home() -> HTMLResponse:
     .print-side-unit[data-side="right"] .print-side-title { color: #1e4a75; }
     .print-side-unit .field-label { margin-top: 8px; }
     .print-side-unit .field-label:first-of-type { margin-top: 0; }
-    /* معاينة شكل الليبل كما سيُطبع (50×25 مم) داخل كل جهة */
+    /* معاينة شكل الليبل كما سيُطبع (50×30 مم) داخل كل جهة */
     .print-side-preview {
       display: none;
       margin-top: 10px;
-      padding: 10px 8px;
+      padding: 10px 8px 16px;
       border-radius: 10px;
       border: 1px dashed #9ec9ae;
       background: #f3f6f4;
       text-align: center;
-      overflow: hidden;
+      overflow: visible;
       max-width: 100%;
       box-sizing: border-box;
     }
@@ -7230,22 +7230,26 @@ def home() -> HTMLResponse:
       color: #5b667a;
     }
     .print-label-mock-host {
+      /* معاينة أكبر على الشاشة بنسبة ثابتة مع اللزقة 50×30 مم */
+      --mock-scale: 1.55;
       width: 50mm;
-      height: 25mm;
-      max-width: 100%;
-      margin: 0 auto;
+      height: 30mm;
+      max-width: none;
+      margin: 0 auto calc(30mm * (var(--mock-scale) - 1) + 8px);
       box-sizing: border-box;
       border: 1px solid #222;
       background: #fff;
       overflow: hidden;
       position: relative;
       box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      transform: scale(var(--mock-scale));
+      transform-origin: top center;
     }
     .print-label-mock-host .print-label {
       width: 50mm;
       max-width: 50mm;
-      height: 25mm;
-      max-height: 25mm;
+      height: 30mm;
+      max-height: 30mm;
       box-sizing: border-box;
       padding: 0.4mm 0.7mm 0.25mm;
       margin: 0;
@@ -7333,10 +7337,10 @@ def home() -> HTMLResponse:
     .search-panel { display: none; }
     .search-panel.active { display: block; }
     @media print {
-      /* ورقة اللزقتين حسب المقاس الفعلي: 106×28 مم
-         هوامش 1.5مم · فجوة وسط 3مم · كل لزقة 50×25 مم */
+      /* ورقة اللزقتين: 106×31 مم
+         هوامش 0.5مم · فجوة وسط 5مم · كل لزقة 50×30 مم · محتوى اليمين بإزاحة +2 مم */
       @page {
-        size: 106mm 28mm;
+        size: 106mm 31mm;
         margin: 0;
       }
       html, body {
@@ -7366,12 +7370,12 @@ def home() -> HTMLResponse:
         justify-content: flex-start;
         align-items: flex-start;
         width: 106mm;
-        height: 28mm;
-        max-height: 28mm;
+        height: 31mm;
+        max-height: 31mm;
         box-sizing: border-box;
         margin: 0;
-        padding: 1.5mm;
-        gap: 3mm;
+        padding: 0.5mm;
+        gap: 5mm;
         page-break-after: always;
         break-after: page;
         page-break-inside: avoid;
@@ -7385,8 +7389,8 @@ def home() -> HTMLResponse:
       .print-label {
         width: 50mm;
         max-width: 50mm;
-        height: 25mm;
-        max-height: 25mm;
+        height: 30mm;
+        max-height: 30mm;
         box-sizing: border-box;
         padding: 0.4mm 0.7mm 0.25mm;
         margin: 0;
@@ -7497,16 +7501,16 @@ def home() -> HTMLResponse:
       justify-content: flex-start;
       align-items: flex-start;
       width: 106mm;
-      height: 28mm;
-      padding: 1.5mm;
-      gap: 3mm;
+      height: 31mm;
+      padding: 0.5mm;
+      gap: 5mm;
       box-sizing: border-box;
     }
     .print-label-sheet.print-measure .print-label {
       width: 50mm;
       max-width: 50mm;
-      height: 25mm;
-      max-height: 25mm;
+      height: 30mm;
+      max-height: 30mm;
       box-sizing: border-box;
       padding: 0.4mm 0.7mm 0.25mm;
       margin: 0;
@@ -7626,7 +7630,8 @@ def home() -> HTMLResponse:
     .print-designer-scroll {
       overflow: auto;
       max-width: 100%;
-      padding: 10px 8px 14px;
+      padding: 12px 10px 18px;
+      min-height: 180px;
     }
     .print-designer-sheet {
       position: relative;
@@ -8093,7 +8098,7 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
+              الورقة <strong>106×31 مم</strong> · كل لزقة <strong>50×30 مم</strong> · هامش <strong>0.5 مم</strong> · فجوة <strong>5 مم</strong> · محتوى اليمين بإزاحة <strong>+2 مم</strong>.
               <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
               <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
@@ -8182,7 +8187,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 106×28 مم · كل لزقة 50×25 مم · فجوة 3 مم · هوامش 1.5 مم.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · ورقة 106×31 مم · كل لزقة 50×30 مم · فجوة 5 مم · محتوى اليمين +2 مم · هوامش 0.5 مم.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -9134,16 +9139,19 @@ def home() -> HTMLResponse:
       return list.filter((r) => locationRowMatchesPrintBarcode(r, rawBc));
     }
     function splitOriginalTokens(raw) {
+      // فواصل بين أرقام أصلية متعددة: مسافة/فاصلة/|/; فقط
+      // لا نقطع على / أو + أو @ — تبقى جزءاً من الرقم كما هو
       return String(raw || '')
-        .split(/[\s,/|;]+/)
+        .split(/[\s,|;]+/)
         .map((s) => s.trim())
         .filter(Boolean);
     }
     function isPrintOriginalMenuToken(tok) {
-      // قائمة اختيار الأصلي: استبعد أي مقطع فيه @ أو + أو /
+      // اقبل الرقم كما هو بما فيه @ و + و / — لا تحذف الرقم بسبب هذه الرموز
       const t = String(tok || '').trim();
       if (!t) return false;
-      if (/[@+/]/.test(t)) return false;
+      // تجاهل فواصل وحيدة بلا محتوى رقمي/حرفي
+      if (!/[A-Za-z0-9\u0600-\u06FF]/.test(t)) return false;
       return true;
     }
     function sanitizePrintItemName(name) {
@@ -9203,6 +9211,30 @@ def home() -> HTMLResponse:
       }
       return out;
     }
+    function printBarcodeScanValue(code) {
+      // قيمة CODE128 للقراءة على الجهاز: اضغط مسافات التنسيق الطويلة إلى مسافة واحدة
+      // (223112U001        HI → 223112U001 HI) حتى يبقى عرض الباركود قابلاً للقراءة
+      const raw = printBarcodeExactValue(code);
+      if (!raw) return '';
+      let out = '';
+      let prevSpace = false;
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw.charAt(i);
+        if (ch === ' ' || ch === '\t') {
+          if (!prevSpace) out += ' ';
+          prevSpace = true;
+        } else {
+          out += ch;
+          prevSpace = false;
+        }
+      }
+      // trim يدوي بدون regex
+      let a = 0;
+      let b = out.length;
+      while (a < b && out.charAt(a) === ' ') a++;
+      while (b > a && out.charAt(b - 1) === ' ') b--;
+      return out.slice(a, b);
+    }
     function pickPrintBarcodeExactFromRow(row) {
       // خذ حقل barcode كما هو مع كل الفراغات؛ لا split (مسار البحث منفصل)
       const bc = printBarcodeExactValue(row && row.barcode != null ? row.barcode : '');
@@ -9211,10 +9243,22 @@ def home() -> HTMLResponse:
       if (/[A-Za-z0-9]/.test(ub)) return ub;
       return '';
     }
+    function printBarcodeCompactValue(code) {
+      // بدون مسافات نهائياً — أقصر CODE128 للقراءة على الطابعة الحرارية
+      const raw = printBarcodeScanValue(code) || printBarcodeExactValue(code);
+      if (!raw) return '';
+      let out = '';
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw.charAt(i);
+        if (ch !== ' ' && ch !== '\t') out += ch;
+      }
+      return out;
+    }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
-      // CODE128 قياسي للطباعة — الفراغات تُرمَّز كما هي
-      const value = printBarcodeExactValue(code);
+      const value = printBarcodeCompactValue(code)
+        || printBarcodeScanValue(code)
+        || printBarcodeExactValue(code);
       if (!value || !/[A-Za-z0-9]/.test(value)) {
         svgEl.innerHTML = '';
         return false;
@@ -9256,17 +9300,24 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeDynamic(targetEl, code, opts) {
       if (!targetEl || typeof JsBarcode === 'undefined') return false;
-      const value = printBarcodeExactValue(code);
-      if (!value || !/[A-Za-z0-9]/.test(value)) return false;
+      const displayCode = printBarcodeExactValue(code);
+      // للترميز: بلا مسافات أولاً (أوضح للقارئ على Rongta)، ثم بمسافة واحدة، ثم كما هو
+      const encodeList = [];
+      const c0 = printBarcodeCompactValue(code);
+      const c1 = printBarcodeScanValue(code);
+      const c2 = displayCode;
+      [c0, c1, c2].forEach((v) => {
+        if (v && /[A-Za-z0-9]/.test(v) && encodeList.indexOf(v) < 0) encodeList.push(v);
+      });
+      if (!encodeList.length) return false;
       const inLabel = !!(targetEl.closest && targetEl.closest('.print-label'));
 
       if (!inLabel) {
-        // معاينة شاشة — SVG عادي
         const svgEl = targetEl.tagName && targetEl.tagName.toLowerCase() === 'svg'
           ? targetEl
           : null;
         if (!svgEl) return false;
-        const okPrev = renderPrintBarcodeSvg(svgEl, value, Object.assign({
+        const okPrev = renderPrintBarcodeSvg(svgEl, encodeList[0], Object.assign({
           format: 'CODE128',
           height: (opts && opts.height) || 40,
           width: 2,
@@ -9283,8 +9334,7 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— باركود حراري 203dpi · لكل لزقة (يسار/يمين) إعداداتها ——
-      // الباركود الطويل + منطقة bc ضيقة كانت تُرجع فشل أو تُقصّ الأعمدة (خصوصاً اليسار بعد تعديل GUI)
+      // —— باركود حراري 203dpi: ارسم بالنقاط الصحيحة واعرض بدون تشويه object-fit ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
@@ -9292,32 +9342,24 @@ def home() -> HTMLResponse:
         : 'left';
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
-        : { bcHmm: 9.1, bcWmm: 48.6, bcHeightMm: 9.1 };
+        : { bcHmm: 13.8, bcWmm: 48.6, bcHeightMm: 13.8 };
       const contentWmm = (typeof PRINT_CONTENT_W_MM === 'number' && PRINT_CONTENT_W_MM > 0)
         ? PRINT_CONTENT_W_MM
         : 48.6;
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
-      // استخدم عرض الصندوق الفعلي، مع حد أدنى عملي للباركود الطويل
-      const usableMm = Math.max(14, Math.min(contentWmm, boxWmm - 0.4));
-      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 9.1);
-      // احجز مساحة لنص الباركود حتى لا يقصّ flex العمود صورة الباركود بالكامل
-      const textReserveMm = Math.max(1.4, Math.min(2.4, boxHmm * 0.22));
-      const heightMm = Math.max(
-        3.2,
-        Math.min(14, boxHmm - textReserveMm, boxHmm * 0.78)
-      );
-      const usableDots = Math.max(80, Math.floor(usableMm * dotsPerMm));
-      const heightDots = Math.max(28, Math.round(heightMm * dotsPerMm));
-      const TARGET_MODULE_DOTS = 3;
-      const MIN_MODULE_DOTS = 1; // الباركود الطويل يحتاج 1 نقطة/وحدة أحياناً
-      const quietTries = [6, 4, 3, 2];
+      const usableMm = Math.max(16, Math.min(contentWmm, boxWmm - 0.2));
+      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 13.8);
+      const textReserveMm = Math.max(1.3, Math.min(2.0, boxHmm * 0.15));
+      const heightMm = Math.max(6.0, Math.min(18, boxHmm - textReserveMm));
+      const usableDots = Math.max(100, Math.floor(usableMm * dotsPerMm));
+      const heightDots = Math.max(48, Math.round(heightMm * dotsPerMm));
 
-      function probeUnits(quietMods) {
-        const probe = document.createElement('canvas');
+      function probe(encodeVal, quietMods) {
+        const probeCanvas = document.createElement('canvas');
         const formats = ['CODE128', 'CODE128B'];
         for (let fi = 0; fi < formats.length; fi++) {
           try {
-            JsBarcode(probe, value, {
+            JsBarcode(probeCanvas, encodeVal, {
               format: formats[fi],
               width: 1,
               height: 8,
@@ -9330,49 +9372,44 @@ def home() -> HTMLResponse:
               background: '#ffffff',
               lineColor: '#000000'
             });
-            return { units: probe.width || 0, format: formats[fi] };
+            return { units: probeCanvas.width || 0, format: formats[fi] };
           } catch (_) {}
         }
         return null;
       }
 
       let best = null;
-      for (let i = 0; i < quietTries.length; i++) {
-        const quietMods = quietTries[i];
-        const probed = probeUnits(quietMods);
-        if (!probed || !probed.units) continue;
-        let moduleDots = TARGET_MODULE_DOTS;
-        const totalUnits = probed.units; // يشمل هوامش quiet لأنها مرسومة في العرض
-        if (totalUnits * moduleDots > usableDots) {
-          moduleDots = Math.floor(usableDots / totalUnits);
-          if (moduleDots < MIN_MODULE_DOTS) {
-            if (i < quietTries.length - 1) continue;
-            moduleDots = MIN_MODULE_DOTS;
-          }
+      for (let ci = 0; ci < encodeList.length; ci++) {
+        const enc = encodeList[ci];
+        for (let qi = 0; qi < 6; qi++) {
+          const quietMods = 4 - qi; // 4..-1 → نستخدم max(0,…)
+          const q = Math.max(0, quietMods);
+          const probed = probe(enc, q);
+          if (!probed || !probed.units) continue;
+          let moduleDots = Math.floor(usableDots / probed.units);
+          if (moduleDots < 1) moduleDots = 1;
+          if (moduleDots > 3) moduleDots = 3;
+          const total = probed.units * moduleDots;
+          const candidate = {
+            encodeVal: enc,
+            format: probed.format,
+            quietMods: q,
+            moduleDots: moduleDots,
+            units: probed.units,
+            total: total,
+            fits: total <= usableDots,
+            score: moduleDots * 10 + q + (total <= usableDots ? 100 : 0) - enc.length * 0.01
+          };
+          if (!best || candidate.score > best.score) best = candidate;
+          if (candidate.fits && candidate.moduleDots >= 2) break;
         }
-        best = {
-          quietMods,
-          moduleDots,
-          units: probed.units,
-          format: probed.format
-        };
-        if (probed.units * moduleDots <= usableDots) break;
+        if (best && best.fits && best.moduleDots >= 2) break;
       }
-      // لا تترك اللزقة فارغة — آخر محاولة بهوامش ضيقة ووحدة 1
-      if (!best) {
-        const probed = probeUnits(2) || probeUnits(0);
-        if (!probed || !probed.units) return false;
-        best = {
-          quietMods: 2,
-          moduleDots: 1,
-          units: probed.units,
-          format: probed.format
-        };
-      }
+      if (!best) return false;
 
       const canvas = document.createElement('canvas');
       try {
-        JsBarcode(canvas, value, {
+        JsBarcode(canvas, best.encodeVal, {
           format: best.format,
           width: best.moduleDots,
           height: heightDots,
@@ -9386,51 +9423,45 @@ def home() -> HTMLResponse:
           lineColor: '#000000'
         });
       } catch (_) {
-        // سقوط احتياطي: SVG بعرض كامل الصندوق
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('class', 'pl-bc');
-        const ok = renderPrintBarcodeSvg(svg, value, {
-          format: 'CODE128',
-          height: Math.max(24, heightDots),
-          width: 1,
-          margin: 4,
-          displayValue: false
-        });
-        if (!ok) return false;
-        svg.style.width = '100%';
-        svg.style.height = heightMm.toFixed(2) + 'mm';
-        svg.style.maxWidth = '100%';
-        svg.style.display = 'block';
-        svg.style.margin = '0 auto';
-        targetEl.replaceWith(svg);
-        return true;
+        return false;
       }
-      if (!canvas.width) return false;
+      if (!canvas.width || !canvas.height) return false;
 
-      // اعرض دائماً داخل عرض الصندوق (حتى لو الرسم أوسع — يُضغط بنسبة)
-      const widthMm = usableMm;
-      const printHmm = heightMm;
+      // تصغير موحّد فقط إن لزم — ممنوع تغيير نسبة العرض/الارتفاع (يكسر القراءة)
+      let widthMm = canvas.width / dotsPerMm;
+      let drawHmm = canvas.height / dotsPerMm;
+      if (widthMm > usableMm) {
+        const s = usableMm / widthMm;
+        widthMm = usableMm;
+        drawHmm *= s;
+      }
+      if (drawHmm > heightMm) {
+        const s = heightMm / drawHmm;
+        drawHmm = heightMm;
+        widthMm *= s;
+      }
       const img = document.createElement('img');
       img.className = 'pl-bc';
-      img.alt = value;
+      img.alt = best.encodeVal;
+      img.title = displayCode || best.encodeVal;
       img.src = canvas.toDataURL('image/png');
-      img.style.width = widthMm.toFixed(2) + 'mm';
-      img.style.height = printHmm.toFixed(2) + 'mm';
+      img.width = canvas.width;
+      img.height = canvas.height;
+      img.style.width = widthMm.toFixed(3) + 'mm';
+      img.style.height = drawHmm.toFixed(3) + 'mm';
       img.style.maxWidth = '100%';
-      img.style.maxHeight = printHmm.toFixed(2) + 'mm';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.imageRendering = 'pixelated';
-      img.style.flex = '1 1 auto';
-      img.style.flexShrink = '1';
-      img.style.minHeight = '0';
-      img.style.objectFit = 'fill';
+      img.style.flex = '0 0 auto';
+      img.style.objectFit = 'contain';
+      img.style.objectPosition = 'center center';
       targetEl.replaceWith(img);
       return true;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // نفس قيمة CODE128 حرفاً بحرف مع كل الفراغات
+      // النص تحت الباركود: كما بالمصدر (مع المسافات)
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
@@ -9679,9 +9710,10 @@ def home() -> HTMLResponse:
         setPrintName(s, name);
       }
       let original = chosen || '';
-      if (!isPrintOriginalMenuToken(original)) {
-        const okTok = splitOriginalTokens(row.original_number).find(isPrintOriginalMenuToken);
-        original = okTok || '';
+      if (!original || !isPrintOriginalMenuToken(original)) {
+        const rawOrig = String(row.original_number || '').trim();
+        const okTok = splitOriginalTokens(rawOrig).find(isPrintOriginalMenuToken);
+        original = okTok || rawOrig || '';
       }
       if (!original) original = '—';
       const location = String(row.location || '').trim() || '—';
@@ -9956,11 +9988,12 @@ def home() -> HTMLResponse:
       const name = getPrintName(s)
         || sanitizePrintItemName(String(row.item_name || '').trim())
         || '—';
-      // الأصلي المعروض على اللزقة: إن المختار فيه @/+// تجاهله
+      // الأصلي على اللزقة كما هو (بما فيه @ و + و /)
       let original = chosen || '';
-      if (!isPrintOriginalMenuToken(original)) {
-        const okTok = splitOriginalTokens(row.original_number).find(isPrintOriginalMenuToken);
-        original = okTok || '';
+      if (!original || !isPrintOriginalMenuToken(original)) {
+        const rawOrig = String(row.original_number || '').trim();
+        const okTok = splitOriginalTokens(rawOrig).find(isPrintOriginalMenuToken);
+        original = okTok || rawOrig || '';
       }
       if (!original) original = '—';
       const location = String(row.location || '').trim() || '—';
@@ -9970,15 +10003,17 @@ def home() -> HTMLResponse:
     }
     const PRINT_SHEET_MM = {
       sheetW: 106,
-      sheetH: 28,
-      margin: 1.5,
-      gap: 3,
+      sheetH: 31,
+      margin: 0.5,
+      gap: 5,
       labelW: 50,
-      labelH: 25,
-      padY: 0.65,
-      contentH: 23.8
+      labelH: 30, // ارتفاع اللزقة (+3 مم عن 27)
+      padY: 0.5,
+      contentH: 29.0,
+      rightContentShiftXmm: 2 // إزاحة معلومات لزقة اليمين باتجاه اليمين
     };
-    const PRINT_DESIGNER_PX_PER_MM = 4.4;
+    // مقياس GUI أكبر ليتناسب مع لزقة 50×30 مم
+    const PRINT_DESIGNER_PX_PER_MM = 5.6;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 1.4;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH - 0.65;
     const PRINT_LAYOUT_DEFAULTS = {
@@ -9989,23 +10024,22 @@ def home() -> HTMLResponse:
       nameXmm: 0,
       nameYmm: 0,
       nameWmm: 48.6,
-      nameHmm: 11.5,
+      nameHmm: 12.0,
       origXmm: 0,
-      origYmm: 11.5,
+      origYmm: 12.0,
       origWmm: 24.0,
       origHmm: 3.2,
       locXmm: 24.6,
-      locYmm: 11.5,
+      locYmm: 12.0,
       locWmm: 24.0,
       locHmm: 3.2,
       bcXmm: 0,
-      bcYmm: 14.7,
+      bcYmm: 15.2,
       bcWmm: 48.6,
-      bcHmm: 9.1,
-      // توافق خلفي مع الإعدادات القديمة
-      nameHeightMm: 11.5,
+      bcHmm: 13.8, // يستغل المساحة تحت الباركود بعد زيادة الارتفاع
+      nameHeightMm: 12.0,
       metaHeightMm: 3.2,
-      bcHeightMm: 9.1,
+      bcHeightMm: 13.8,
       origWidthPct: 50,
       bcShiftXmm: 0,
       bcShiftYmm: 0
@@ -10106,52 +10140,66 @@ def home() -> HTMLResponse:
         locationPx: clampPrintNum(raw.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
         bcTextPx: clampPrintNum(raw.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
         nameXmm: clampPrintNum(raw.nameXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.nameXmm),
-        nameYmm: clampPrintNum(raw.nameYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.nameYmm),
+        nameYmm: clampPrintNum(raw.nameYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.nameYmm),
         nameWmm: clampPrintNum(raw.nameWmm, 8, 50, PRINT_LAYOUT_DEFAULTS.nameWmm),
-        nameHmm: clampPrintNum(raw.nameHmm, 3, 25, PRINT_LAYOUT_DEFAULTS.nameHmm),
+        nameHmm: clampPrintNum(raw.nameHmm, 3, 30, PRINT_LAYOUT_DEFAULTS.nameHmm),
         origXmm: clampPrintNum(raw.origXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.origXmm),
-        origYmm: clampPrintNum(raw.origYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.origYmm),
+        origYmm: clampPrintNum(raw.origYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.origYmm),
         origWmm: clampPrintNum(raw.origWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.origWmm),
         origHmm: clampPrintNum(raw.origHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.origHmm),
         locXmm: clampPrintNum(raw.locXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.locXmm),
-        locYmm: clampPrintNum(raw.locYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.locYmm),
+        locYmm: clampPrintNum(raw.locYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.locYmm),
         locWmm: clampPrintNum(raw.locWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.locWmm),
         locHmm: clampPrintNum(raw.locHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.locHmm),
         bcXmm: clampPrintNum(raw.bcXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.bcXmm),
-        bcYmm: clampPrintNum(raw.bcYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.bcYmm),
+        bcYmm: clampPrintNum(raw.bcYmm, -2, 30, PRINT_LAYOUT_DEFAULTS.bcYmm),
         bcWmm: clampPrintNum(raw.bcWmm, 12, 50, PRINT_LAYOUT_DEFAULTS.bcWmm),
-        bcHmm: clampPrintNum(raw.bcHmm, 4, 20, PRINT_LAYOUT_DEFAULTS.bcHmm),
+        bcHmm: clampPrintNum(raw.bcHmm, 4, 22, PRINT_LAYOUT_DEFAULTS.bcHmm),
         bcShiftXmm: clampPrintNum(raw.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
         bcShiftYmm: clampPrintNum(raw.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
       };
       return normalizePrintLayoutBoxes(base);
     }
+    function migratePrintLayoutSideHeightV3(side) {
+      // رفع منطقة الباركود +3 مم لاستغلال ارتفاع اللزقة الجديد
+      const s = coercePrintLayoutSide(side || {});
+      if (Number(s.bcHmm) < 12.5) {
+        s.bcHmm = Math.min(22, Number(s.bcHmm) + 3);
+        s.bcHeightMm = s.bcHmm;
+      }
+      return s;
+    }
     function getPrintLayoutBundle() {
       try {
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
+        const ver = Number(parsed && parsed.version) || 0;
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
-          return {
-            version: 2,
-            left: coercePrintLayoutSide(parsed.left),
-            right: coercePrintLayoutSide(parsed.right)
-          };
+          let left = coercePrintLayoutSide(parsed.left);
+          let right = coercePrintLayoutSide(parsed.right);
+          if (ver < 3) {
+            left = migratePrintLayoutSideHeightV3(left);
+            right = migratePrintLayoutSideHeightV3(right);
+            const b = { version: 3, left: left, right: right };
+            try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
+            return b;
+          }
+          return { version: 3, left: left, right: right };
         }
-        // إعداد قديم مشترك → انسخه لليسار واليمين (ثم يصير كل واحد مستقل)
         const shared = coercePrintLayoutSide(parsed || {});
         return {
-          version: 2,
+          version: 3,
           left: Object.assign({}, shared),
           right: Object.assign({}, shared)
         };
       } catch (_) {
         const d = coercePrintLayoutSide({});
-        return { version: 2, left: Object.assign({}, d), right: Object.assign({}, d) };
+        return { version: 3, left: Object.assign({}, d), right: Object.assign({}, d) };
       }
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 2,
+        version: 3,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS)
       };
@@ -10432,15 +10480,18 @@ def home() -> HTMLResponse:
       if (!board) return;
       const ppm = PRINT_DESIGNER_PX_PER_MM;
       const padTop = 0.4 * ppm;
-      const padX = 0.7 * ppm;
       board.querySelectorAll('.print-designer-label').forEach((labelEl) => {
         const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
         const s = getPrintLayoutSettings(side);
+        const padX = 0.7 * ppm;
+        const xShift = (side === 'right')
+          ? (Number(PRINT_SHEET_MM.rightContentShiftXmm) || 2)
+          : 0;
         ['name', 'orig', 'loc', 'bc'].forEach((zone) => {
           const zEl = labelEl.querySelector('.pdg-zone[data-zone="' + zone + '"]');
           if (!zEl) return;
           const b = printZoneBox(s, zone);
-          zEl.style.left = (padX + b.x * ppm) + 'px';
+          zEl.style.left = (padX + (b.x + xShift) * ppm) + 'px';
           zEl.style.top = (padTop + b.y * ppm) + 'px';
           zEl.style.width = (b.w * ppm) + 'px';
           zEl.style.height = (b.h * ppm) + 'px';
@@ -10545,6 +10596,10 @@ def home() -> HTMLResponse:
         || 'left'
       );
       const s = getPrintLayoutSettings(side);
+      // إزاحة معلومات لزقة اليمين 2 مم يمين (العناصر absolute ما بتتأثر بالـ padding)
+      const xShift = (side === 'right')
+        ? (Number(PRINT_SHEET_MM.rightContentShiftXmm) || 2)
+        : 0;
       const nameEl = label.querySelector('.pl-name');
       const metaEl = label.querySelector('.pl-meta');
       const origEl = label.querySelector('.pl-orig');
@@ -10556,28 +10611,32 @@ def home() -> HTMLResponse:
         nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
         nameEl.style.fontWeight = '900';
         nameEl.dataset.maxNamePx = String(s.namePx);
-        applyPrintBoxStyle(nameEl, { x: s.nameXmm, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
+        applyPrintBoxStyle(nameEl, { x: s.nameXmm + xShift, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
       }
       if (origEl) {
         origEl.style.fontSize = s.originalPx + 'px';
         origEl.style.fontWeight = '800';
-        applyPrintBoxStyle(origEl, { x: s.origXmm, y: s.origYmm, w: s.origWmm, h: s.origHmm });
+        applyPrintBoxStyle(origEl, { x: s.origXmm + xShift, y: s.origYmm, w: s.origWmm, h: s.origHmm });
       }
       if (locEl) {
         locEl.style.fontSize = s.locationPx + 'px';
         locEl.style.fontWeight = '800';
-        applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
+        applyPrintBoxStyle(locEl, { x: s.locXmm + xShift, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
         // باركود طويل: لا تضيّق عرض منطقة bc تحت حد عملي (كان يفشل غالباً على لزقة اليسار)
         const minBcW = Math.min(PRINT_CONTENT_W_MM || 48.6, 40);
         let bcW = Number(s.bcWmm) || minBcW;
-        let bcX = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0);
+        let bcX = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0) + xShift;
         if (bcW < minBcW) {
           bcW = Math.min(PRINT_CONTENT_W_MM || 48.6, Math.max(bcW, minBcW));
-          if (bcX + bcW > (PRINT_CONTENT_W_MM || 48.6)) {
-            bcX = Math.max(0, (PRINT_CONTENT_W_MM || 48.6) - bcW);
-          }
+        }
+        const maxX = (PRINT_CONTENT_W_MM || 48.6);
+        if (bcX + bcW > maxX) {
+          bcW = Math.max(minBcW, maxX - bcX);
+        }
+        if (bcX + bcW > maxX) {
+          bcX = Math.max(0, maxX - bcW);
         }
         applyPrintBoxStyle(wrap, {
           x: bcX,
@@ -10728,7 +10787,7 @@ def home() -> HTMLResponse:
       sheet.className = 'print-label-sheet';
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 106×28 مم`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 106×31 مم`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       try { savePrintFormState(); } catch (_) {}
