@@ -9409,15 +9409,13 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // بسيط: Code128 · ارتفاع ثابت 8مم · الطويل يُصغَّر بالعرض ليدخل اللزقة
+      // Code128: الطويل يصغّر العرض ليدخل اللزقة · الارتفاع يتصغّر إذا لزم · خط الرقم 8
       const cfg = PRINT_BARCODE_CFG;
       const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
       const QUIET = 10;
-      const barHmm = 8;
       const availMm = Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
       const availDots = Math.floor(availMm * dotsPerMm);
-      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
 
       function probeSymbolMods(val) {
         const c = document.createElement('canvas');
@@ -9448,6 +9446,13 @@ def home() -> HTMLResponse:
       if (moduleDots < 1) moduleDots = 1;
       if (moduleDots > 3) moduleDots = 3;
 
+      // ارتفاع الأعمدة: قصير=أوضح · طويل=أقل إذا احتاج يتسع
+      let barHmm = 10;
+      if (moduleDots <= 1) barHmm = 6;
+      else if (moduleDots === 2) barHmm = 8;
+      else barHmm = 10;
+      const heightDots = Math.max(36, Math.round(barHmm * dotsPerMm));
+
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
       try {
@@ -9469,15 +9474,19 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // العرض: إن زاد عن اللزقة صغّره ليتسع · الارتفاع ثابت 8مم
+      // العرض: صغّر ليتسع باللزقة · الارتفاع يتبع barHmm أعلاه
       let wMm = canvas.width / dotsPerMm;
-      if (wMm > availMm) wMm = availMm;
-      const hMm = barHmm;
+      let hMm = barHmm;
+      if (wMm > availMm) {
+        wMm = availMm;
+        // إذا صغّرنا العرض كثير، خفّض الارتفاع شوي للطويل
+        if (moduleDots <= 2) hMm = Math.min(hMm, 7);
+      }
 
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = displayCode;
-      img.title = 'Code128 · H=8mm · fit ' + availMm.toFixed(1) + 'mm';
+      img.title = 'Code128 · H=' + hMm + 'mm · text=8px · fit ' + availMm.toFixed(1) + 'mm';
       img.src = canvas.toDataURL('image/png');
       img.width = canvas.width;
       img.height = canvas.height;
@@ -9493,7 +9502,10 @@ def home() -> HTMLResponse:
       if (labelEl) labelEl.dataset.bcUnreliable = '0';
       clearPrintBarcodeWarn(wrap);
       try {
-        setPrintFetchStatus('Code128 · ارتفاع 8مم · عرض ملاءَم للزقة', layoutSide);
+        setPrintFetchStatus(
+          'Code128 · خط الرقم 8 · ارتفاع أعمدة ' + hMm + 'مم · عرض ملاءَم للزقة',
+          layoutSide
+        );
       } catch (_) {}
       return true;
     }
