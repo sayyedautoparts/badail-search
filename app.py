@@ -8168,8 +8168,8 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              GUI = قياسات الورقة: كل لزقة <strong>50×25 مم</strong> · فجوة <strong>3 مم</strong> · الورقة <strong>103×25 مم</strong> · رقم الباركود خط <strong>10</strong>.
-              اسحب وسط الخانة لنقلها، والمربعات الزرقا للتكبير/التصغير.
+              لزقة <strong>50×25 مم</strong> · فجوة <strong>3 مم</strong> · هامش <strong>1 مم</strong> يمين/يسار ·
+              اسم <strong>9 مم</strong> · أصلي+موقع <strong>2 مم</strong> · باركود <strong>14 مم</strong>.
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -9414,7 +9414,9 @@ def home() -> HTMLResponse:
       const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
       const QUIET = 10;
-      const availMm = Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
+      const availMm = (typeof PRINT_ZONE_CONTENT_W_MM === 'number')
+        ? PRINT_ZONE_CONTENT_W_MM
+        : Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
       const availDots = Math.floor(availMm * dotsPerMm);
 
       function probeSymbolMods(val) {
@@ -9446,10 +9448,12 @@ def home() -> HTMLResponse:
       if (moduleDots < 1) moduleDots = 1;
       if (moduleDots > 3) moduleDots = 3;
 
-      // خط الباركود نفسه = 10مم · للطويل جداً يصغر أكثر إذا لزم
-      let barHmm = 10;
-      if (moduleDots <= 1) barHmm = 7;
-      else if (moduleDots === 2) barHmm = 9;
+      // ارتفاع الأعمدة داخل منطقة الباركود 14مم (ناقص سطر الرقم) · الطويل يصغّر أكثر
+      const textReserve = (cfg.textReserveMm != null) ? cfg.textReserveMm : 2.4;
+      const zoneH = (typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 14;
+      let barHmm = Math.max(6, zoneH - textReserve);
+      if (moduleDots <= 1) barHmm = Math.min(barHmm, 8);
+      else if (moduleDots === 2) barHmm = Math.min(barHmm, 10);
       const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
@@ -10064,7 +10068,7 @@ def home() -> HTMLResponse:
       contentH: 25,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود — Code128 قابل للمسح على Rongta 203dpi (حد أدنى وحدتان) */
+    /** إعدادات الباركود — منطقة الباركود 48×14 مم داخل لزقة 50×25 */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
@@ -10075,7 +10079,7 @@ def home() -> HTMLResponse:
       minModuleDots: 2,
       maxModuleDots: 3,
       barHMinMm: 10,
-      barHMaxMm: 10,
+      barHMaxMm: 11,
       quietModulesEach: 10,
       textReserveMm: 2.4
     };
@@ -10110,67 +10114,62 @@ def home() -> HTMLResponse:
     const PRINT_DESIGNER_PX_PER_MM = 7.2;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH;
-    // قياسات المستخدم المعتمدة — مضبوطة لتناسب لزقة 50×25 مم (نسب GUI كما هي)
-    const PRINT_LAYOUT_DEFAULTS_LEFT = {
-      namePx: 26,
-      originalPx: 14,
-      locationPx: 11,
-      bcTextPx: 8,
-      nameXmm: -3.04,
-      nameYmm: 0.35,
-      nameWmm: 54.14,
-      nameHmm: 8.03,
-      origXmm: -3.75,
-      origYmm: 8.37,
-      origWmm: 31.72,
-      origHmm: 5.05,
-      locXmm: 28.62,
-      locYmm: 9.22,
-      locWmm: 22.48,
-      locHmm: 3.89,
-      bcXmm: -3.93,
-      bcYmm: 13.54,
-      bcWmm: 54.49,
-      bcHmm: 11.2,
-      nameHeightMm: 8.03,
-      metaHeightMm: 5.05,
-      bcHeightMm: 11.2,
-      origWidthPct: 58.5,
-      bcShiftXmm: 0,
-      bcShiftYmm: 0
-    };
-    const PRINT_LAYOUT_DEFAULTS_RIGHT = {
-      namePx: 28,
-      originalPx: 13,
-      locationPx: 10,
-      bcTextPx: 8,
-      nameXmm: -1.07,
-      nameYmm: 0.47,
-      nameWmm: 56.81,
-      nameHmm: 8.87,
-      origXmm: -1.61,
-      origYmm: 8.59,
-      origWmm: 36.51,
-      origHmm: 4.75,
-      locXmm: 35.86,
-      locYmm: 9.61,
-      locWmm: 19.53,
-      locHmm: 3.59,
-      bcXmm: -1.61,
-      bcYmm: 13.5,
-      bcWmm: 55.03,
-      bcHmm: 11.3,
-      nameHeightMm: 8.87,
-      metaHeightMm: 4.75,
-      bcHeightMm: 11.3,
-      origWidthPct: 65.1,
-      bcShiftXmm: 0,
-      bcShiftYmm: 0
-    };
+    /*
+     * قياسات ثابتة لكل لزقة 50×25 مم · فجوة الورقة 3 مم:
+     * - هامش يسار/يمين 1 مم → عرض المحتوى 48 مم
+     * - اسم الصنف: 9 مم من فوق
+     * - الرقم الأصلي + الموقع: 2 مم
+     * - الباقي باركود: 14 مم
+     */
+    const PRINT_ZONE_INSET_MM = 1;
+    const PRINT_ZONE_NAME_H_MM = 9;
+    const PRINT_ZONE_META_H_MM = 2;
+    const PRINT_ZONE_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 2 * PRINT_ZONE_INSET_MM; // 48
+    const PRINT_ZONE_BC_H_MM = PRINT_SHEET_MM.labelH - PRINT_ZONE_NAME_H_MM - PRINT_ZONE_META_H_MM; // 14
+    const PRINT_ZONE_META_W_MM = PRINT_ZONE_CONTENT_W_MM / 2; // 24 + 24
+    function buildFixedPrintLayoutSide(fontTweaks) {
+      const f = fontTweaks || {};
+      const inset = PRINT_ZONE_INSET_MM;
+      const cw = PRINT_ZONE_CONTENT_W_MM;
+      const nameH = PRINT_ZONE_NAME_H_MM;
+      const metaH = PRINT_ZONE_META_H_MM;
+      const bcH = PRINT_ZONE_BC_H_MM;
+      const metaW = PRINT_ZONE_META_W_MM;
+      return {
+        namePx: f.namePx != null ? f.namePx : 24,
+        originalPx: f.originalPx != null ? f.originalPx : 7,
+        locationPx: f.locationPx != null ? f.locationPx : 7,
+        bcTextPx: f.bcTextPx != null ? f.bcTextPx : 8,
+        nameXmm: inset,
+        nameYmm: 0,
+        nameWmm: cw,
+        nameHmm: nameH,
+        origXmm: inset,
+        origYmm: nameH,
+        origWmm: metaW,
+        origHmm: metaH,
+        locXmm: inset + metaW,
+        locYmm: nameH,
+        locWmm: metaW,
+        locHmm: metaH,
+        bcXmm: inset,
+        bcYmm: nameH + metaH,
+        bcWmm: cw,
+        bcHmm: bcH,
+        nameHeightMm: nameH,
+        metaHeightMm: metaH,
+        bcHeightMm: bcH,
+        origWidthPct: 50,
+        bcShiftXmm: 0,
+        bcShiftYmm: 0
+      };
+    }
+    const PRINT_LAYOUT_DEFAULTS_LEFT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 });
+    const PRINT_LAYOUT_DEFAULTS_RIGHT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 });
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 7,
+        version: 8,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10411,15 +10410,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v7 = خط الرقم تحت الباركود 8 · ارتفاع الأعمدة يتصغّر للطويل عند الحاجة
-        if (ver < 7) {
+        // v8 = لزقة 50×25: اسم 9مم · أصلي+موقع 2مم · باركود 14مم · هامش 1مم
+        if (ver < 8) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 7,
+            version: 8,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10431,7 +10430,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 7,
+        version: 8,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10562,7 +10561,7 @@ def home() -> HTMLResponse:
         renderPrintSideLabelMock('right');
       } catch (_) {}
       const el = document.getElementById('printDesignerReadout');
-      if (el) el.textContent = 'تمت إعادة القياسات للزقة 50×25 مم (GUI معتمد + رقم باركود أوضح)';
+      if (el) el.textContent = 'قياسات ثابتة: اسم 9مم · أصلي+موقع 2مم · باركود 14مم · هامش 1مم';
     }
     function fitTextIntoBox(el, maxPx, minPx) {
       if (!el) return minPx;
@@ -10912,24 +10911,19 @@ def home() -> HTMLResponse:
         applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        // شريط باركود كامل العرض داخل اللزقة — ارتفاع يكفي للأعمدة+النص بدون قص (أساسي للمسح)
-        const geo = (typeof getPrintGeometryMm === 'function') ? getPrintGeometryMm() : null;
-        const labelW = (geo && geo.labelW) || 50;
-        const labelH = (geo && geo.labelH) || 25;
-        const cfg = (typeof PRINT_BARCODE_CFG !== 'undefined') ? PRINT_BARCODE_CFG : { marginMm: 1, barHMinMm: 8, textReserveMm: 2.9 };
-        const margin = Number(cfg.marginMm) || 1;
-        const needH = 8 + (Number(cfg.textReserveMm) || 2.4) + 0.5;
-        let bw = Math.max(20, labelW - 2 * margin);
-        let bh = Math.min(labelH - 0.5, Math.max(needH, Number(s.bcHmm) || needH));
-        let bx = margin;
-        let by = Math.max(0, labelH - bh);
-        applyPrintBoxStyle(wrap, { x: bx, y: by, w: bw, h: bh });
+        // قياسات ثابتة: باركود من y=11مم بارتفاع 14مم وعرض 48مم (هامش 1مم)
+        applyPrintBoxStyle(wrap, {
+          x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
+          y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
+          w: Number(s.bcWmm) || 48,
+          h: Number(s.bcHmm) || 14
+        });
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
         wrap.style.justifyContent = 'flex-end';
-        wrap.style.gap = '0.35mm';
-        wrap.style.overflow = 'visible';
+        wrap.style.gap = '0.3mm';
+        wrap.style.overflow = 'hidden';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
