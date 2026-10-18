@@ -7433,11 +7433,17 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-name,
       .print-label .pl-orig,
-      .print-label .pl-loc,
-      .print-label .pl-bc-wrap {
+      .print-label .pl-loc {
         position: absolute;
         box-sizing: border-box;
         overflow: hidden !important;
+        margin: 0;
+        padding: 0;
+      }
+      .print-label .pl-bc-wrap {
+        position: absolute;
+        box-sizing: border-box;
+        overflow: visible !important;
         margin: 0;
         padding: 0;
       }
@@ -7470,9 +7476,10 @@ def home() -> HTMLResponse:
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: flex-start;
+        justify-content: flex-end;
         gap: 0.35mm;
-        padding: 0 0.2mm;
+        padding: 0;
+        overflow: visible !important;
       }
       .print-label .pl-bc-wrap.is-bc-unreliable {
         outline: 1px solid #b00020;
@@ -9378,9 +9385,11 @@ def home() -> HTMLResponse:
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
         ? printLayoutSideFromEl(targetEl)
         : 'left';
+      const labelEl = targetEl.closest && targetEl.closest('.print-label');
+
+      try { await ensureJsBarcodeLib(); } catch (_) { return false; }
 
       if (!inLabel) {
-        try { await ensureJsBarcodeLib(); } catch (_) { return false; }
         const svgEl = targetEl.tagName && targetEl.tagName.toLowerCase() === 'svg'
           ? targetEl
           : null;
@@ -9390,8 +9399,6 @@ def home() -> HTMLResponse:
           height: (opts && opts.height) || 40,
           width: 2,
           margin: 10,
-          marginTop: 0,
-          marginBottom: 0,
           displayValue: false
         }, opts || {}));
         if (okPrev) {
@@ -9402,68 +9409,77 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
+      /*
+       * قابل للمسح على Rongta 203dpi:
+       * - حد أدنى لوحدة Code128 = 2 نقاط (≈0.25مم) — وحدة 1 لا تُقرأ غالباً
+       * - Quiet Zone = 10× لا تُقصّ
+       * - رسم canvas→PNG بأبعاد mm = نقاط/dpi (بدون تشويه SVG/object-fit)
+       * - ارتفاع أعمدة كافٍ + بدون قص overflow
+       */
       const cfg = PRINT_BARCODE_CFG;
-      const fit = computePrintBarcodeFit(displayCode, {
-        labelWmm: cfg.labelWmm,
-        labelHmm: cfg.labelHmm,
-        marginMm: cfg.marginMm
-      });
-      const labelEl = targetEl.closest && targetEl.closest('.print-label');
+      const DPI = cfg.dpi;
+      const dotsPerMm = DPI / 25.4;
+      const QUIET = cfg.quietModulesEach;
+      const MIN_DOTS = cfg.minModuleDots;
+      const MAX_DOTS = cfg.maxModuleDots;
+      const availMm = Math.max(20, cfg.labelWmm - 2 * cfg.marginMm);
+      const availDots = Math.floor(availMm * dotsPerMm);
+      const barHmm = cfg.barHMinMm;
+      const heightDots = Math.max(48, Math.round(barHmm * dotsPerMm));
 
-      function placeSvg(svg, wMm, hMm, rotated) {
-        svg.classList.add('pl-bc');
-        svg.setAttribute('width', wMm.toFixed(4) + 'mm');
-        svg.setAttribute('height', hMm.toFixed(4) + 'mm');
-        svg.setAttribute('preserveAspectRatio', 'none');
-        svg.style.display = 'block';
-        svg.style.margin = '0 auto';
-        svg.style.maxWidth = 'none';
-        svg.style.flex = '0 0 auto';
-        svg.style.overflow = 'visible';
-        if (rotated) {
-          // الرمز مرسوم أفقياً بطول symbolW؛ بعد الدوران يشغل ارتفاع اللزقة
-          const host = document.createElement('div');
-          host.className = 'pl-bc-rot';
-          host.style.width = hMm.toFixed(4) + 'mm';
-          host.style.height = wMm.toFixed(4) + 'mm';
-          host.style.position = 'relative';
-          host.style.flex = '0 0 auto';
-          host.style.margin = '0 auto';
-          host.style.overflow = 'hidden';
-          svg.style.position = 'absolute';
-          svg.style.left = '0';
-          svg.style.top = '0';
-          svg.style.transformOrigin = 'top left';
-          svg.style.transform = 'rotate(90deg) translateY(-100%)';
-          host.appendChild(svg);
-          targetEl.replaceWith(host);
-          return host;
+      function probeSymbolMods(val) {
+        const c = document.createElement('canvas');
+        const formats = ['CODE128', 'CODE128B'];
+        for (let i = 0; i < formats.length; i++) {
+          try {
+            JsBarcode(c, val, {
+              format: formats[i],
+              width: 1,
+              height: 8,
+              margin: 0,
+              marginLeft: 0,
+              marginRight: 0,
+              displayValue: false,
+              background: '#ffffff',
+              lineColor: '#000000'
+            });
+            return { mods: c.width || 0, format: formats[i] };
+          } catch (_) {}
         }
-        targetEl.replaceWith(svg);
-        return svg;
+        return null;
       }
 
-      if (!fit.ok || fit.mode === 'fail') {
-        if (wrap) {
-          const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
-          if (old) old.remove();
-          showPrintBarcodeWarn(wrap, fit.warning || 'تعذر طباعة الباركود');
+      const probed = probeSymbolMods(displayCode);
+      if (!probed || !probed.mods) return false;
+      const totalMods = probed.mods + QUIET * 2;
+      let moduleDots = Math.floor(availDots / totalMods);
+      if (moduleDots > MAX_DOTS) moduleDots = MAX_DOTS;
+      let thinWarn = '';
+      if (moduleDots < MIN_DOTS) {
+        // آخر حل: وحدة 1 نقطة مع رسم 1:1 وارتفاع كامل — بدون تشويه/قص
+        if (totalMods > availDots) {
+          const needMm = (totalMods * MIN_DOTS) / dotsPerMm;
+          const msg = 'الباركود أطول من اللزقة للقراءة (يحتاج ≈'
+            + needMm.toFixed(1) + ' مم). استخدم لزقة أعرض.';
+          if (wrap) {
+            const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
+            if (old) old.remove();
+            showPrintBarcodeWarn(wrap, msg);
+          }
+          try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
+          if (labelEl) labelEl.dataset.bcUnreliable = '1';
+          return false;
         }
-        try { setPrintFetchStatus(fit.warning || 'تعذر طباعة الباركود', layoutSide); } catch (_) {}
-        if (labelEl) labelEl.dataset.bcUnreliable = '1';
-        return false;
+        moduleDots = 1;
+        thinWarn = 'وحدة دقيقة (1 نقطة) — قرّب الماسح وزد التباين إن لزم';
       }
 
-      try { await ensureJsBarcodeLib(); } catch (_) { return false; }
-      const dotsPerMm = cfg.dpi / 25.4;
-      // Quiet Zone 10× لكل جهة (لا تُقصّ) — بالبكسل = وحدات × نقاط الوحدة
-      const quietPx = cfg.quietModulesEach * fit.moduleDots;
-      const heightDots = Math.max(40, Math.round(fit.barHmm * dotsPerMm));
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      const quietPx = QUIET * moduleDots;
+      const canvas = document.createElement('canvas');
       try {
-        JsBarcode(svg, fit.value, {
-          format: 'CODE128',
-          width: fit.moduleDots,
+        JsBarcode(canvas, displayCode, {
+          format: probed.format,
+          width: moduleDots,
           height: heightDots,
           margin: 0,
           marginLeft: quietPx,
@@ -9475,96 +9491,43 @@ def home() -> HTMLResponse:
           lineColor: '#000000'
         });
       } catch (_) {
-        try {
-          JsBarcode(svg, fit.value, {
-            format: 'CODE128B',
-            width: fit.moduleDots,
-            height: heightDots,
-            margin: 0,
-            marginLeft: quietPx,
-            marginRight: quietPx,
-            marginTop: 0,
-            marginBottom: 0,
-            displayValue: false,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-        } catch (__) {
-          return false;
-        }
+        return false;
       }
-      // mm من نقاط SVG الفعلية @203dpi — 1:1 مع شبكة الطابعة
-      let pxW = Number(svg.getAttribute('width')) || (fit.modules * fit.moduleDots);
-      let pxH = Number(svg.getAttribute('height')) || heightDots;
-      const availDots = Math.floor(fit.availableMm * dotsPerMm);
-      // إن الرمز الحقيقي أعرض من الحساب: أعد التوليد بوحدة أصغر أو انتقل لـ fallback
-      if (pxW > availDots && fit.moduleDots > cfg.minModuleDots) {
-        const smaller = Object.assign({}, fit, {
-          moduleDots: fit.moduleDots - 1,
-          moduleMm: (fit.moduleDots - 1) / dotsPerMm
-        });
-        const q2 = cfg.quietModulesEach * smaller.moduleDots;
-        try {
-          JsBarcode(svg, fit.value, {
-            format: 'CODE128',
-            width: smaller.moduleDots,
-            height: heightDots,
-            margin: 0,
-            marginLeft: q2,
-            marginRight: q2,
-            displayValue: false,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-          fit.moduleDots = smaller.moduleDots;
-          fit.moduleMm = smaller.moduleMm;
-          pxW = Number(svg.getAttribute('width')) || pxW;
-          pxH = Number(svg.getAttribute('height')) || pxH;
-        } catch (_) {}
-      }
-      if (pxW > availDots + 1 && fit.moduleDots > cfg.minModuleDots) {
-        // محاولة أخيرة بوحدة 1 نقطة — ما زال Code128 خطي
-        const q1 = cfg.quietModulesEach * cfg.minModuleDots;
-        try {
-          JsBarcode(svg, fit.value, {
-            format: 'CODE128',
-            width: cfg.minModuleDots,
-            height: heightDots,
-            margin: 0,
-            marginLeft: q1,
-            marginRight: q1,
-            displayValue: false,
-            background: '#ffffff',
-            lineColor: '#000000'
-          });
-          fit.moduleDots = cfg.minModuleDots;
-          fit.moduleMm = cfg.minModuleDots / dotsPerMm;
-          pxW = Number(svg.getAttribute('width')) || pxW;
-          pxH = Number(svg.getAttribute('height')) || pxH;
-        } catch (_) {}
-      }
-      if (pxW > availDots + 1) {
-        const msg = 'باركود Code128 أعرض من اللزقة. استخدم لزقة أعرض — لن يُحوَّل إلى QR.';
-        if (wrap) {
-          const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
-          if (old) old.remove();
-          showPrintBarcodeWarn(wrap, msg);
-        }
+      if (!canvas.width || !canvas.height) return false;
+      if (canvas.width > availDots + 2) {
+        const msg = 'تعذر ملاءمة Code128 داخل اللزقة مع وحدة قابلة للمسح.';
+        if (wrap) showPrintBarcodeWarn(wrap, msg);
         try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
         if (labelEl) labelEl.dataset.bcUnreliable = '1';
         return false;
       }
-      const wMm = pxW / dotsPerMm;
-      const hMm = pxH / dotsPerMm;
-      placeSvg(svg, wMm, hMm, fit.mode === 'rotated');
-      svg.setAttribute('shape-rendering', 'crispEdges');
+
+      const wMm = canvas.width / dotsPerMm;
+      const hMm = canvas.height / dotsPerMm;
+      const img = document.createElement('img');
+      img.className = 'pl-bc';
+      img.alt = displayCode;
+      img.title = 'Code128 · X=' + moduleDots + 'dot · H=' + barHmm + 'mm · QZ=' + QUIET + ' · ' + DPI + 'dpi';
+      img.src = canvas.toDataURL('image/png');
+      img.width = canvas.width;
+      img.height = canvas.height;
+      img.style.width = wMm.toFixed(4) + 'mm';
+      img.style.height = hMm.toFixed(4) + 'mm';
+      img.style.maxWidth = 'none';
+      img.style.maxHeight = 'none';
+      img.style.display = 'block';
+      img.style.margin = '0 auto';
+      img.style.flex = '0 0 auto';
+      img.style.objectFit = 'none';
+      img.style.imageRendering = 'pixelated';
+      img.style.imageRendering = 'crisp-edges';
+      targetEl.replaceWith(img);
       if (labelEl) labelEl.dataset.bcUnreliable = '0';
       try {
         setPrintFetchStatus(
-          (fit.warning ? fit.warning + ' · ' : '')
-          + 'Code128 · X=' + fit.moduleDots + 'dot ('
-          + fit.moduleMm.toFixed(3) + 'مم) · H=' + hMm.toFixed(1)
-          + 'مم · n=' + fit.n + ' · ' + cfg.dpi + 'dpi',
+          (thinWarn ? thinWarn + ' · ' : '')
+          + 'Code128 · X=' + moduleDots + ' نقطة · H='
+          + barHmm + 'مم · QZ=' + QUIET + ' · PNG@' + DPI + 'dpi',
           layoutSide
         );
       } catch (_) {}
@@ -10126,20 +10089,18 @@ def home() -> HTMLResponse:
       contentH: 25,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود المركزية (مطابقة barcode_fit.py) — Code128 فقط · Rongta 203dpi */
+    /** إعدادات الباركود — Code128 قابل للمسح على Rongta 203dpi (حد أدنى وحدتان) */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
       labelHmm: PRINT_SHEET_MM.labelH,
-      marginMm: 1.5,
-      minModuleMm: 0.125,
-      prefMinModuleMm: 0.25,
+      marginMm: 1.0,
+      minModuleMm: 0.25,
       maxModuleMm: 0.5,
-      minModuleDots: 1,
-      prefMinModuleDots: 2,
-      maxModuleDots: 4,
-      barHMinMm: 10,
-      barHMaxMm: 15,
+      minModuleDots: 2,
+      maxModuleDots: 3,
+      barHMinMm: 8,
+      barHMaxMm: 12,
       quietModulesEach: 10,
       textReserveMm: 2.9
     };
@@ -10148,70 +10109,26 @@ def home() -> HTMLResponse:
       return 11 * (nn + 2) + 13 + 20;
     }
     function computePrintBarcodeFit(value, opts) {
-      // Code128 خطي فقط — بلا QR / DataMatrix
+      // تقدير أولي؛ الرسم الفعلي يعتمد وحدات JsBarcode الحقيقية
       const cfg = PRINT_BARCODE_CFG;
       const lw = (opts && opts.labelWmm) || cfg.labelWmm;
-      const lh = (opts && opts.labelHmm) || cfg.labelHmm;
       const margin = (opts && opts.marginMm != null) ? opts.marginMm : cfg.marginMm;
       const text = printBarcodeExactValue(value);
       const n = text.length;
       const modules = code128ModulesCount(n);
-      const dotsPerMm = cfg.dpi / 25.4;
-      const empty = {
-        ok: false, mode: 'fail', value: text, n: n, modules: modules,
-        moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
-        availableMm: Math.max(0, lw - 2 * margin), warning: 'قيمة باركود غير صالحة للطباعة'
-      };
-      if (!text || !/[A-Za-z0-9]/.test(text)) return empty;
-
-      function clampBarH(availBars) {
-        if (availBars >= cfg.barHMinMm) return Math.min(cfg.barHMaxMm, availBars);
-        return Math.max(5, Math.min(cfg.barHMaxMm, availBars));
-      }
-      function tryCode128(availableMm, barHmm, mode, minDots) {
-        if (!(availableMm > 0) || modules <= 0) return null;
-        const availDots = Math.floor(availableMm * dotsPerMm);
-        let moduleDots = Math.floor(availDots / modules);
-        if (moduleDots < minDots) return null;
-        if (moduleDots > cfg.maxModuleDots) moduleDots = cfg.maxModuleDots;
-        let moduleMm = moduleDots / dotsPerMm;
-        if (moduleMm > cfg.maxModuleMm + 1e-9) {
-          moduleDots = Math.min(cfg.maxModuleDots, Math.floor(cfg.maxModuleMm * dotsPerMm + 1e-9));
-          if (moduleDots < minDots) return null;
-          if (modules * moduleDots > availDots) return null;
-          moduleMm = moduleDots / dotsPerMm;
-        }
-        let warning = '';
-        if (moduleDots < cfg.prefMinModuleDots) {
-          warning = 'Code128 بوحدة دقيقة (1 نقطة) ليتسع — باركود خطي قابل للمسح';
-        }
+      const availW = lw - 2 * margin;
+      if (!text || !/[A-Za-z0-9]/.test(text)) {
         return {
-          ok: true, mode: mode, value: text, n: n, modules: modules,
-          moduleMm: moduleMm, moduleDots: moduleDots, barHmm: barHmm,
-          symbolWmm: modules * moduleMm, symbolHmm: barHmm,
-          availableMm: availableMm, warning: warning
+          ok: false, mode: 'fail', value: text, n: n, modules: modules,
+          moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
+          availableMm: availW, warning: 'قيمة باركود غير صالحة للطباعة'
         };
       }
-
-      const availW = lw - 2 * margin;
-      const barH = clampBarH(lh - 2 * margin - cfg.textReserveMm);
-      let hit = tryCode128(availW, barH, 'horizontal', cfg.prefMinModuleDots)
-        || tryCode128(availW, barH, 'horizontal', cfg.minModuleDots);
-      if (hit) return hit;
-      const barHRot = clampBarH(lw - 2 * margin - 1);
-      hit = tryCode128(lh - 2 * margin, barHRot, 'rotated', cfg.prefMinModuleDots)
-        || tryCode128(lh - 2 * margin, barHRot, 'rotated', cfg.minModuleDots);
-      if (hit) {
-        hit.warning = (hit.warning ? hit.warning + ' · ' : '') + 'Code128 مُدار 90° ليتسع على اللزقة';
-        return hit;
-      }
-      const needMm = modules * cfg.prefMinModuleMm;
       return {
-        ok: false, mode: 'fail', value: text, n: n, modules: modules,
-        moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
-        availableMm: availW,
-        warning: 'الباركود أطول من اللزقة حتى بوحدة Code128 الدنيا (يحتاج ≈'
-          + needMm.toFixed(1) + ' مم). استخدم لزقة أعرض — لن يُحوَّل إلى QR.'
+        ok: true, mode: 'horizontal', value: text, n: n, modules: modules,
+        moduleMm: cfg.minModuleMm, moduleDots: cfg.minModuleDots,
+        barHmm: cfg.barHMinMm, symbolWmm: availW, symbolHmm: cfg.barHMinMm,
+        availableMm: availW, warning: ''
       };
     }
     // مقياس شاشة أوضح للزقة 50×25 مم (GUI + سحب)
@@ -11020,29 +10937,24 @@ def home() -> HTMLResponse:
         applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        // اجعل منطقة الباركود داخل حدود اللزقة حتى لا يُقصّ نصف الرمز عند الطباعة
+        // شريط باركود كامل العرض داخل اللزقة — ارتفاع يكفي للأعمدة+النص بدون قص (أساسي للمسح)
         const geo = (typeof getPrintGeometryMm === 'function') ? getPrintGeometryMm() : null;
         const labelW = (geo && geo.labelW) || 50;
         const labelH = (geo && geo.labelH) || 25;
-        let bx = Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0);
-        let by = Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0);
-        let bw = Number(s.bcWmm) || 16;
-        let bh = Number(s.bcHmm) || 8;
-        if (bx < 0) { bw += bx; bx = 0; }
-        if (by < 0) { bh += by; by = 0; }
-        if (bx + bw > labelW) bw = labelW - bx;
-        if (by + bh > labelH) bh = labelH - by;
-        bw = Math.max(12, bw);
-        bh = Math.max(6.5, bh);
-        if (bx + bw > labelW) bx = Math.max(0, labelW - bw);
-        if (by + bh > labelH) by = Math.max(0, labelH - bh);
+        const cfg = (typeof PRINT_BARCODE_CFG !== 'undefined') ? PRINT_BARCODE_CFG : { marginMm: 1, barHMinMm: 8, textReserveMm: 2.9 };
+        const margin = Number(cfg.marginMm) || 1;
+        const needH = (Number(cfg.barHMinMm) || 8) + (Number(cfg.textReserveMm) || 2.9) + 0.5;
+        let bw = Math.max(20, labelW - 2 * margin);
+        let bh = Math.min(labelH - 0.5, Math.max(needH, Number(s.bcHmm) || needH));
+        let bx = margin;
+        let by = Math.max(0, labelH - bh);
         applyPrintBoxStyle(wrap, { x: bx, y: by, w: bw, h: bh });
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
-        wrap.style.justifyContent = 'flex-start';
+        wrap.style.justifyContent = 'flex-end';
         wrap.style.gap = '0.35mm';
-        wrap.style.overflow = 'hidden';
+        wrap.style.overflow = 'visible';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
