@@ -9416,16 +9416,28 @@ def home() -> HTMLResponse:
        * - Quiet Zone ≥ 10×X من كل جهة
        * - Auto-fit = اختر أكبر X يدخل عرض المنطقة (3→2→1)
        * - لا Resize لصورة / لا object-fit:fill — العرض المعروض = نقاط الرسم × مم/نقطة
-       * - الارتفاع خاصية مستقلة (أعمدة فقط)؛ الرقم تحته عنصر منفصل
+       * - لزقة اليسار: عرض المنطقة أضيق من جهة حافة الورقة حتى لا يُقصّ الـ Quiet Zone
        */
       const cfg = PRINT_BARCODE_CFG;
       const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
       const QUIET = (cfg.quietModulesEach != null) ? cfg.quietModulesEach : 10;
       const maxDots = (cfg.maxModuleDots != null) ? cfg.maxModuleDots : 3;
-      const availMm = (typeof PRINT_ZONE_CONTENT_W_MM === 'number')
-        ? PRINT_ZONE_CONTENT_W_MM
-        : Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
+      const isLeftLabel = !!(labelEl && labelEl.classList.contains('print-label-left'));
+      const layoutS = (typeof getPrintLayoutSettings === 'function')
+        ? getPrintLayoutSettings(layoutSide)
+        : null;
+      let availMm = (layoutS && Number(layoutS.bcWmm) > 0)
+        ? Number(layoutS.bcWmm)
+        : ((typeof PRINT_ZONE_CONTENT_W_MM === 'number')
+          ? PRINT_ZONE_CONTENT_W_MM
+          : Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1)));
+      // حماية إضافية لحافة الورقة على اليسار (حتى لو الـ GUI رجّع عرضًا واسعًا)
+      if (isLeftLabel) {
+        const safeMax = PRINT_SHEET_MM.labelW - PRINT_ZONE_OUTER_EDGE_MM - PRINT_ZONE_INSET_MM;
+        if (availMm > safeMax) availMm = safeMax;
+      }
+      availMm = Math.max(18, availMm);
       const availDots = Math.floor(availMm * dotsPerMm);
 
       function probeSymbolMods(val) {
@@ -10179,37 +10191,42 @@ def home() -> HTMLResponse:
      * داخل اللزقة: هامش محتوى 1 مم يمين/يسار · اسم 9 مم · أصلي+موقع 2 مم · باركود الباقي (15 مم)
      */
     const PRINT_ZONE_INSET_MM = 1;
+    /** هامش إضافي من حافة الورقة (لزقة اليسار يسارًا / لزقة اليمين يمينًا) حتى لا يُقصّ Quiet Zone */
+    const PRINT_ZONE_OUTER_EDGE_MM = 2;
     const PRINT_ZONE_NAME_H_MM = 9;
     const PRINT_ZONE_META_H_MM = 2;
     const PRINT_ZONE_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 2 * PRINT_ZONE_INSET_MM; // 48
     const PRINT_ZONE_BC_H_MM = PRINT_SHEET_MM.labelH - PRINT_ZONE_NAME_H_MM - PRINT_ZONE_META_H_MM; // 15
     const PRINT_ZONE_META_W_MM = PRINT_ZONE_CONTENT_W_MM / 2; // 24 + 24
-    function buildFixedPrintLayoutSide(fontTweaks) {
+    function buildFixedPrintLayoutSide(fontTweaks, side) {
       const f = fontTweaks || {};
-      const inset = PRINT_ZONE_INSET_MM;
-      const cw = PRINT_ZONE_CONTENT_W_MM;
+      const sideKey = (side === 'right') ? 'right' : 'left';
+      // حافة الورقة تحتاج inset أكبر من جهة الوسط (الفجوة) — سبب فشل مسح اليسار سابقًا
+      const leftInset = (sideKey === 'left') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
+      const rightInset = (sideKey === 'right') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
+      const cw = PRINT_SHEET_MM.labelW - leftInset - rightInset; // 47
       const nameH = PRINT_ZONE_NAME_H_MM;
       const metaH = PRINT_ZONE_META_H_MM;
       const bcH = PRINT_ZONE_BC_H_MM;
-      const metaW = PRINT_ZONE_META_W_MM;
+      const metaW = cw / 2;
       return {
         namePx: f.namePx != null ? f.namePx : 24,
         originalPx: f.originalPx != null ? f.originalPx : 7,
         locationPx: f.locationPx != null ? f.locationPx : 7,
         bcTextPx: f.bcTextPx != null ? f.bcTextPx : 8,
-        nameXmm: inset,
+        nameXmm: leftInset,
         nameYmm: 0,
         nameWmm: cw,
         nameHmm: nameH,
-        origXmm: inset,
+        origXmm: leftInset,
         origYmm: nameH,
         origWmm: metaW,
         origHmm: metaH,
-        locXmm: inset + metaW,
+        locXmm: leftInset + metaW,
         locYmm: nameH,
         locWmm: metaW,
         locHmm: metaH,
-        bcXmm: inset,
+        bcXmm: leftInset,
         bcYmm: nameH + metaH,
         bcWmm: cw,
         bcHmm: bcH,
@@ -10221,12 +10238,12 @@ def home() -> HTMLResponse:
         bcShiftYmm: 0
       };
     }
-    const PRINT_LAYOUT_DEFAULTS_LEFT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 });
-    const PRINT_LAYOUT_DEFAULTS_RIGHT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 });
+    const PRINT_LAYOUT_DEFAULTS_LEFT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 }, 'left');
+    const PRINT_LAYOUT_DEFAULTS_RIGHT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 }, 'right');
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 9,
+        version: 10,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10469,15 +10486,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v9 = حامل 105×28 · هامش 1مم · لزقة 50×26 · اسم 9 · ميتا 2 · باركود 15
-        if (ver < 9) {
+        // v10 = حماية حافة الورقة لليسار/اليمين (Quiet Zone) · حامل 105×28 · لزقة 50×26
+        if (ver < 10) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 9,
+            version: 10,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10489,7 +10506,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 9,
+        version: 10,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10971,19 +10988,20 @@ def home() -> HTMLResponse:
         applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        // قياسات ثابتة: باركود من y=11مم بارتفاع 14مم وعرض 48مم (هامش 1مم)
+        // باركود داخل اللزقة — اليسار inset أكبر من حافة الورقة حتى لا يُقصّ Quiet Zone
         applyPrintBoxStyle(wrap, {
           x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
           y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
-          w: Number(s.bcWmm) || 48,
-          h: Number(s.bcHmm) || 14
+          w: Number(s.bcWmm) || 47,
+          h: Number(s.bcHmm) || PRINT_ZONE_BC_H_MM
         });
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
         wrap.style.justifyContent = 'flex-end';
         wrap.style.gap = '0.3mm';
-        wrap.style.overflow = 'hidden';
+        // visible: لا تقصّ أشرطة الباركود؛ الضبط يتم بإعادة توليد X وليس بالـ clip
+        wrap.style.overflow = 'visible';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
