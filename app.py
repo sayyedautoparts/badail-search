@@ -7626,7 +7626,7 @@ def home() -> HTMLResponse:
     .print-designer-scroll {
       overflow: auto;
       max-width: 100%;
-      padding-bottom: 6px;
+      padding: 10px 8px 14px;
     }
     .print-designer-sheet {
       position: relative;
@@ -7651,7 +7651,7 @@ def home() -> HTMLResponse:
       box-sizing: border-box;
       background: #fff;
       border: 1.5px solid #1a2744;
-      overflow: hidden;
+      overflow: visible; /* مقابض التكبير على حواف الخانات */
       box-shadow: 0 1px 0 rgba(0,0,0,.06);
     }
     .print-designer-label .pdg-side-tag {
@@ -7669,11 +7669,12 @@ def home() -> HTMLResponse:
     .pdg-zone {
       position: absolute;
       box-sizing: border-box;
-      overflow: hidden;
+      overflow: visible; /* لازم ظاهرة عشان مقابض التكبير برا الحافة */
       border: 1px solid rgba(45,95,255,.45);
       background: rgba(255,255,255,.92);
       cursor: grab;
       z-index: 2;
+      touch-action: none;
     }
     .pdg-zone.is-active {
       outline: 2px solid #2d5fff;
@@ -7682,6 +7683,7 @@ def home() -> HTMLResponse:
       z-index: 4;
     }
     .pdg-zone.is-dragging { cursor: grabbing; z-index: 6; }
+    .pdg-zone.is-resizing { cursor: inherit; z-index: 6; }
     .pdg-zone-inner {
       width: 100%;
       height: 100%;
@@ -7692,6 +7694,7 @@ def home() -> HTMLResponse:
       text-align: center;
       padding: 1px 3px;
       overflow: hidden;
+      border-radius: 1px;
       font-weight: 800;
       color: #111;
       line-height: 1.05;
@@ -7739,16 +7742,46 @@ def home() -> HTMLResponse:
     }
     .pdg-resize {
       position: absolute;
-      right: -4px;
-      bottom: -4px;
-      width: 12px;
-      height: 12px;
-      border-radius: 2px;
+      z-index: 8;
       background: #2d5fff;
-      border: 1px solid #fff;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,.28);
+      touch-action: none;
+      opacity: .95;
+    }
+    .pdg-resize:hover,
+    .pdg-resize.is-dragging {
+      background: #1a46d4;
+      opacity: 1;
+    }
+    /* زاوية: كبّر العرض والارتفاع معاً */
+    .pdg-resize-se {
+      right: -7px;
+      bottom: -7px;
+      width: 15px;
+      height: 15px;
+      border-radius: 3px;
       cursor: nwse-resize;
-      z-index: 7;
-      box-shadow: 0 0 0 1px rgba(0,0,0,.15);
+    }
+    /* حافة يمين: كبّر/صغّر العرض فقط */
+    .pdg-resize-e {
+      right: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 11px;
+      height: 26px;
+      border-radius: 3px;
+      cursor: ew-resize;
+    }
+    /* حافة تحت: كبّر/صغّر الارتفاع فقط */
+    .pdg-resize-s {
+      left: 50%;
+      bottom: -6px;
+      transform: translateX(-50%);
+      width: 26px;
+      height: 11px;
+      border-radius: 3px;
+      cursor: ns-resize;
     }
     .pdg-zone-label {
       position: absolute;
@@ -8057,11 +8090,12 @@ def home() -> HTMLResponse:
 
       <div id="printSearchPanel" class="search-panel">
         <details id="printLayoutDesigner" class="print-designer-wrap" style="margin-top:0;margin-bottom:12px;">
-          <summary>شكل الليبل · تصميم GUI اللزقتين — اسحب لنقل العناصر أو كبّر/صغّر من الزاوية</summary>
+          <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
               الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
-              <strong>اليسار واليمين مستقلين</strong> — اسحب عناصر كل لزقة لوحدها، وزاوية الزرقا لتكبير/تصغير الصندوق.
+              <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
+              <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
             </p>
             <div class="print-designer-toolbar">
@@ -10273,11 +10307,16 @@ def home() -> HTMLResponse:
           h: start.h
         });
       } else if (d.mode === 'resize') {
+        const dir = d.resizeDir || 'se';
+        let nw = start.w;
+        let nh = start.h;
+        if (dir === 'se' || dir === 'e') nw = start.w + dxMm;
+        if (dir === 'se' || dir === 's') nh = start.h + dyMm;
         s = setPrintZoneBox(s, d.zone, {
           x: start.x,
           y: start.y,
-          w: start.w + dxMm,
-          h: start.h + dyMm
+          w: nw,
+          h: nh
         });
       }
       const fonts = deriveMaxFontsFromZones(s);
@@ -10293,8 +10332,10 @@ def home() -> HTMLResponse:
     function endDesignerDrag() {
       if (!printDesignerDrag) return;
       const side = printSideKey(printDesignerDrag.side || 'left');
-      document.querySelectorAll('.pdg-zone.is-dragging, .pdg-zone.is-active, .pdg-resize.is-dragging').forEach((h) => {
-        h.classList.remove('is-dragging', 'is-active');
+      document.querySelectorAll(
+        '.pdg-zone.is-dragging, .pdg-zone.is-resizing, .pdg-zone.is-active, .pdg-resize.is-dragging'
+      ).forEach((h) => {
+        h.classList.remove('is-dragging', 'is-resizing', 'is-active');
       });
       printDesignerDrag = null;
       try {
@@ -10306,15 +10347,17 @@ def home() -> HTMLResponse:
         renderPrintSideLabelMock(side);
       } catch (_) {}
     }
-    function startDesignerZoneInteract(side, zone, mode, ev) {
+    function startDesignerZoneInteract(side, zone, mode, ev, resizeDir) {
       ev.preventDefault();
       ev.stopPropagation();
       const sKey = printSideKey(side || 'left');
       const s = getPrintLayoutSettings(sKey);
+      const dir = resizeDir || 'se';
       printDesignerDrag = {
         side: sKey,
         zone: zone,
         mode: mode,
+        resizeDir: dir,
         startX: ev.clientX,
         startY: ev.clientY,
         startBox: printZoneBox(s, zone)
@@ -10323,13 +10366,22 @@ def home() -> HTMLResponse:
         ? ev.currentTarget.closest('.pdg-zone')
         : null;
       if (zoneEl) {
-        zoneEl.classList.add('is-dragging', 'is-active');
+        zoneEl.classList.add(mode === 'resize' ? 'is-resizing' : 'is-dragging', 'is-active');
       }
       if (ev.currentTarget && ev.currentTarget.classList) {
         ev.currentTarget.classList.add('is-dragging');
       }
       try {
-        document.body.style.cursor = mode === 'resize' ? 'nwse-resize' : 'grabbing';
+        if (ev.currentTarget && ev.currentTarget.setPointerCapture && ev.pointerId != null) {
+          ev.currentTarget.setPointerCapture(ev.pointerId);
+        }
+      } catch (_) {}
+      try {
+        let cur = 'grabbing';
+        if (mode === 'resize') {
+          cur = dir === 'e' ? 'ew-resize' : (dir === 's' ? 'ns-resize' : 'nwse-resize');
+        }
+        document.body.style.cursor = cur;
         document.body.style.userSelect = 'none';
       } catch (_) {}
       updatePrintDesignerReadout(sKey, s);
@@ -10372,25 +10424,30 @@ def home() -> HTMLResponse:
       ];
       let html = '<span class="pdg-side-tag">' + (sKey === 'right' ? 'يمين' : 'يسار') + '</span>';
       zones.forEach((z) => {
-        html += '<div class="pdg-zone" data-zone="' + z.key + '" title="اسحب لنقل · الزاوية لتكبير/تصغير">'
+        html += '<div class="pdg-zone" data-zone="' + z.key + '" title="اسحب للنقل · المربعات الزرقا للتكبير/التصغير">'
           + '<span class="pdg-zone-label">' + z.title + '</span>'
           + '<div class="pdg-zone-inner">'
           + (z.key === 'bc' ? '<div class="pdg-bc-bars"></div><div class="pdg-bc-text"></div>' : '')
           + '</div>'
-          + '<div class="pdg-resize" data-zone="' + z.key + '" title="تكبير / تصغير"></div>'
+          + '<div class="pdg-resize pdg-resize-e" data-zone="' + z.key + '" data-resize="e" title="عرض — كبّر/صغّر"></div>'
+          + '<div class="pdg-resize pdg-resize-s" data-zone="' + z.key + '" data-resize="s" title="ارتفاع — كبّر/صغّر"></div>'
+          + '<div class="pdg-resize pdg-resize-se" data-zone="' + z.key + '" data-resize="se" title="زاوية — كبّر/صغّر معاً"></div>'
           + '</div>';
       });
       label.innerHTML = html;
       label.querySelectorAll('.pdg-zone').forEach((zEl) => {
         const zone = zEl.getAttribute('data-zone');
         zEl.addEventListener('pointerdown', (ev) => {
-          if (ev.target && ev.target.classList && ev.target.classList.contains('pdg-resize')) return;
+          if (ev.target && ev.target.closest && ev.target.closest('.pdg-resize')) return;
           startDesignerZoneInteract(sKey, zone, 'move', ev);
         });
       });
       label.querySelectorAll('.pdg-resize').forEach((rEl) => {
         const zone = rEl.getAttribute('data-zone');
-        rEl.addEventListener('pointerdown', (ev) => startDesignerZoneInteract(sKey, zone, 'resize', ev));
+        const dir = rEl.getAttribute('data-resize') || 'se';
+        rEl.addEventListener('pointerdown', (ev) => {
+          startDesignerZoneInteract(sKey, zone, 'resize', ev, dir);
+        });
       });
       return label;
     }
