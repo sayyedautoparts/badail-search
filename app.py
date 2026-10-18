@@ -7614,6 +7614,7 @@ def home() -> HTMLResponse:
       width: auto;
       margin: 0;
       padding: 8px 12px;
+      font-size: 12px;
     }
     #printDesignerReadout {
       font-size: 12px;
@@ -8059,11 +8060,13 @@ def home() -> HTMLResponse:
           <div class="print-designer-body">
             <p class="print-designer-hint">
               الورقة <strong>106×28 مم</strong> · كل لزقة <strong>50×25 مم</strong> · هامش <strong>1.5 مم</strong> · فجوة <strong>3 مم</strong>.
-              <strong>اسحب</strong> الاسم أو الأصلي أو الموقع أو الباركود لنقلهم، و<strong>زاوية الزرقا</strong> لتكبير/تصغير الصندوق.
+              <strong>اليسار واليمين مستقلين</strong> — اسحب عناصر كل لزقة لوحدها، وزاوية الزرقا لتكبير/تصغير الصندوق.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
             </p>
             <div class="print-designer-toolbar">
-              <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي</button>
+              <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
+              <button type="button" class="btn-secondary" onclick="copyPrintLayoutSide('left','right')">نسخ يسار → يمين</button>
+              <button type="button" class="btn-secondary" onclick="copyPrintLayoutSide('right','left')">نسخ يمين → يسار</button>
               <button type="button" class="btn-secondary" onclick="refreshPrintDesignerBoard()">تحديث من الأصناف الحالية</button>
               <div id="printDesignerReadout">—</div>
             </div>
@@ -9232,11 +9235,14 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— باركود حراري 203dpi · الارتفاع من إعدادات المحرر الرسمي ——
+      // —— باركود حراري 203dpi · الارتفاع من إعدادات المحرر الرسمي (حسب جهة اللزقة) ——
       const DPI = 203;
       const dotsPerMm = DPI / 25.4;
+      const layoutSide = (typeof printLayoutSideFromEl === 'function')
+        ? printLayoutSideFromEl(targetEl)
+        : 'left';
       const layoutS = (typeof getPrintLayoutSettings === 'function')
-        ? getPrintLayoutSettings()
+        ? getPrintLayoutSettings(layoutSide)
         : { bcHmm: 9.1, bcWmm: 45, bcHeightMm: 9.1 };
       const usableMm = Math.max(20, Math.min(48, Number(layoutS.bcWmm || layoutS.bcWidthMm || 45) - 1));
       // مساحة الباركود ≈ 78% من ارتفاع منطقة bc (الباقي لنص الباركود)
@@ -9340,7 +9346,8 @@ def home() -> HTMLResponse:
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
-      const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings() : null;
+      const side = (typeof printLayoutSideFromEl === 'function') ? printLayoutSideFromEl(el) : 'left';
+      const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings(side) : null;
       const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 8;
       const n = display.length;
       let hint = maxPx;
@@ -9975,58 +9982,119 @@ def home() -> HTMLResponse:
       out.bcShiftYmm = clampPrintNum(out.bcShiftYmm, -5, 5, 0);
       return out;
     }
-    function getPrintLayoutSettings() {
+    function coercePrintLayoutSide(o) {
+      const raw = migrateLegacyPrintLayout(o || {});
+      const base = {
+        namePx: clampPrintNum(raw.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: clampPrintNum(raw.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
+        locationPx: clampPrintNum(raw.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
+        bcTextPx: clampPrintNum(raw.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
+        nameXmm: clampPrintNum(raw.nameXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.nameXmm),
+        nameYmm: clampPrintNum(raw.nameYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.nameYmm),
+        nameWmm: clampPrintNum(raw.nameWmm, 8, 50, PRINT_LAYOUT_DEFAULTS.nameWmm),
+        nameHmm: clampPrintNum(raw.nameHmm, 3, 25, PRINT_LAYOUT_DEFAULTS.nameHmm),
+        origXmm: clampPrintNum(raw.origXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.origXmm),
+        origYmm: clampPrintNum(raw.origYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.origYmm),
+        origWmm: clampPrintNum(raw.origWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.origWmm),
+        origHmm: clampPrintNum(raw.origHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.origHmm),
+        locXmm: clampPrintNum(raw.locXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.locXmm),
+        locYmm: clampPrintNum(raw.locYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.locYmm),
+        locWmm: clampPrintNum(raw.locWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.locWmm),
+        locHmm: clampPrintNum(raw.locHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.locHmm),
+        bcXmm: clampPrintNum(raw.bcXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.bcXmm),
+        bcYmm: clampPrintNum(raw.bcYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.bcYmm),
+        bcWmm: clampPrintNum(raw.bcWmm, 12, 50, PRINT_LAYOUT_DEFAULTS.bcWmm),
+        bcHmm: clampPrintNum(raw.bcHmm, 4, 20, PRINT_LAYOUT_DEFAULTS.bcHmm),
+        bcShiftXmm: clampPrintNum(raw.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
+        bcShiftYmm: clampPrintNum(raw.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+      };
+      return normalizePrintLayoutBoxes(base);
+    }
+    function getPrintLayoutBundle() {
       try {
         const raw = localStorage.getItem('printLayoutSettings');
-        const o = migrateLegacyPrintLayout(raw ? JSON.parse(raw) : {});
-        const base = {
-          namePx: clampPrintNum(o.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
-          originalPx: clampPrintNum(o.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
-          locationPx: clampPrintNum(o.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
-          bcTextPx: clampPrintNum(o.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
-          nameXmm: clampPrintNum(o.nameXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.nameXmm),
-          nameYmm: clampPrintNum(o.nameYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.nameYmm),
-          nameWmm: clampPrintNum(o.nameWmm, 8, 50, PRINT_LAYOUT_DEFAULTS.nameWmm),
-          nameHmm: clampPrintNum(o.nameHmm, 3, 25, PRINT_LAYOUT_DEFAULTS.nameHmm),
-          origXmm: clampPrintNum(o.origXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.origXmm),
-          origYmm: clampPrintNum(o.origYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.origYmm),
-          origWmm: clampPrintNum(o.origWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.origWmm),
-          origHmm: clampPrintNum(o.origHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.origHmm),
-          locXmm: clampPrintNum(o.locXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.locXmm),
-          locYmm: clampPrintNum(o.locYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.locYmm),
-          locWmm: clampPrintNum(o.locWmm, 4, 50, PRINT_LAYOUT_DEFAULTS.locWmm),
-          locHmm: clampPrintNum(o.locHmm, 1.5, 12, PRINT_LAYOUT_DEFAULTS.locHmm),
-          bcXmm: clampPrintNum(o.bcXmm, -2, 50, PRINT_LAYOUT_DEFAULTS.bcXmm),
-          bcYmm: clampPrintNum(o.bcYmm, -2, 25, PRINT_LAYOUT_DEFAULTS.bcYmm),
-          bcWmm: clampPrintNum(o.bcWmm, 12, 50, PRINT_LAYOUT_DEFAULTS.bcWmm),
-          bcHmm: clampPrintNum(o.bcHmm, 4, 20, PRINT_LAYOUT_DEFAULTS.bcHmm),
-          bcShiftXmm: clampPrintNum(o.bcShiftXmm, -6, 6, PRINT_LAYOUT_DEFAULTS.bcShiftXmm),
-          bcShiftYmm: clampPrintNum(o.bcShiftYmm, -5, 5, PRINT_LAYOUT_DEFAULTS.bcShiftYmm)
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
+          return {
+            version: 2,
+            left: coercePrintLayoutSide(parsed.left),
+            right: coercePrintLayoutSide(parsed.right)
+          };
+        }
+        // إعداد قديم مشترك → انسخه لليسار واليمين (ثم يصير كل واحد مستقل)
+        const shared = coercePrintLayoutSide(parsed || {});
+        return {
+          version: 2,
+          left: Object.assign({}, shared),
+          right: Object.assign({}, shared)
         };
-        return normalizePrintLayoutBoxes(base);
       } catch (_) {
-        return normalizePrintLayoutBoxes(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
+        const d = coercePrintLayoutSide({});
+        return { version: 2, left: Object.assign({}, d), right: Object.assign({}, d) };
       }
     }
-    function savePrintLayoutSettings(s) {
-      const normalized = normalizePrintLayoutBoxes(s || getPrintLayoutSettings());
-      try { localStorage.setItem('printLayoutSettings', JSON.stringify(normalized)); } catch (_) {}
-      return normalized;
+    function savePrintLayoutBundle(bundle) {
+      const b = {
+        version: 2,
+        left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS),
+        right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS)
+      };
+      try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
+      return b;
     }
-    function updatePrintDesignerReadout(s) {
-      const st = s || getPrintLayoutSettings();
+    function getPrintLayoutSettings(side) {
+      const b = getPrintLayoutBundle();
+      const s = printSideKey(side || 'left');
+      return b[s] || b.left;
+    }
+    function savePrintLayoutSettings(sideOrSettings, maybeSettings) {
+      // savePrintLayoutSettings('left', layout) أو savePrintLayoutSettings(layout) للوضع القديم
+      if (maybeSettings != null || typeof sideOrSettings === 'string') {
+        const side = printSideKey(sideOrSettings || 'left');
+        const b = getPrintLayoutBundle();
+        b[side] = coercePrintLayoutSide(maybeSettings);
+        return savePrintLayoutBundle(b)[side];
+      }
+      const shared = coercePrintLayoutSide(sideOrSettings || PRINT_LAYOUT_DEFAULTS);
+      return savePrintLayoutBundle({ left: shared, right: Object.assign({}, shared) });
+    }
+    function copyPrintLayoutSide(fromSide, toSide) {
+      const from = printSideKey(fromSide);
+      const to = printSideKey(toSide);
+      if (from === to) return;
+      const b = getPrintLayoutBundle();
+      b[to] = Object.assign({}, b[from]);
+      savePrintLayoutBundle(b);
+      syncPrintLayoutSettingsUi(to);
+      refreshPrintDesignerBoard();
+      try {
+        renderPrintSideLabelMock('left');
+        renderPrintSideLabelMock('right');
+      } catch (_) {}
+      const el = document.getElementById('printDesignerReadout');
+      if (el) {
+        el.textContent = (from === 'right' ? 'تم نسخ اليمين → اليسار' : 'تم نسخ اليسار → اليمين');
+      }
+    }
+    function updatePrintDesignerReadout(side, s) {
       const el = document.getElementById('printDesignerReadout');
       if (!el) return;
+      if (!side) {
+        el.textContent = 'اليسار واليمين مستقلين — اسحب عناصر أي لزقة لوحدها';
+        return;
+      }
+      const st = s || getPrintLayoutSettings(side);
+      const tag = printSideKey(side) === 'right' ? 'يمين' : 'يسار';
       el.textContent =
-        'اسم @' + st.nameXmm.toFixed(1) + ',' + st.nameYmm.toFixed(1)
+        tag + ': اسم @' + st.nameXmm.toFixed(1) + ',' + st.nameYmm.toFixed(1)
         + ' (' + st.nameWmm.toFixed(1) + '×' + st.nameHmm.toFixed(1) + 'مم) · '
         + 'أصلي @' + st.origXmm.toFixed(1) + ',' + st.origYmm.toFixed(1) + ' · '
         + 'موقع @' + st.locXmm.toFixed(1) + ',' + st.locYmm.toFixed(1) + ' · '
         + 'باركود @' + st.bcXmm.toFixed(1) + ',' + st.bcYmm.toFixed(1)
         + ' (' + st.bcWmm.toFixed(1) + '×' + st.bcHmm.toFixed(1) + 'مم)';
     }
-    function syncPrintLayoutSettingsUi(s) {
-      const st = s || getPrintLayoutSettings();
+    function syncPrintLayoutSettingsUi(side) {
+      const st = getPrintLayoutSettings(side || 'left');
       const set = (id, val, labelId) => {
         const el = document.getElementById(id);
         if (el) el.value = String(val);
@@ -10038,18 +10106,19 @@ def home() -> HTMLResponse:
       set('printSetLocationPx', st.locationPx, 'printSetLocationPxVal');
       set('printSetBcShiftX', st.bcShiftXmm, 'printSetBcShiftXVal');
       set('printSetBcShiftY', st.bcShiftYmm, 'printSetBcShiftYVal');
-      updatePrintDesignerReadout(st);
+      updatePrintDesignerReadout(side || null, st);
     }
     function readPrintLayoutSettingsFromUi() {
-      return getPrintLayoutSettings();
+      return getPrintLayoutSettings('left');
     }
     function onPrintLayoutSettingChange() {
-      syncPrintLayoutSettingsUi(getPrintLayoutSettings());
+      syncPrintLayoutSettingsUi('left');
       refreshPrintDesignerBoard();
     }
     function resetPrintLayoutSettings() {
-      const s = savePrintLayoutSettings(Object.assign({}, PRINT_LAYOUT_DEFAULTS));
-      syncPrintLayoutSettingsUi(s);
+      const d = coercePrintLayoutSide({});
+      savePrintLayoutBundle({ left: Object.assign({}, d), right: Object.assign({}, d) });
+      syncPrintLayoutSettingsUi(null);
       refreshPrintDesignerBoard();
       try {
         renderPrintSideLabelMock('left');
@@ -10149,10 +10218,11 @@ def home() -> HTMLResponse:
     function applyDesignerDrag(clientY, clientX) {
       if (!printDesignerDrag) return;
       const d = printDesignerDrag;
+      const side = printSideKey(d.side || 'left');
       const ppm = PRINT_DESIGNER_PX_PER_MM;
       const dxMm = (clientX - d.startX) / ppm;
       const dyMm = (clientY - d.startY) / ppm;
-      let s = Object.assign({}, getPrintLayoutSettings());
+      let s = Object.assign({}, getPrintLayoutSettings(side));
       const start = d.startBox;
       if (d.mode === 'move') {
         s = setPrintZoneBox(s, d.zone, {
@@ -10174,12 +10244,14 @@ def home() -> HTMLResponse:
       s.originalPx = fonts.originalPx;
       s.locationPx = fonts.locationPx;
       s.bcTextPx = fonts.bcTextPx;
-      const saved = savePrintLayoutSettings(s);
-      syncPrintLayoutSettingsUi(saved);
-      paintPrintDesignerZones(saved);
+      const saved = savePrintLayoutSettings(side, s);
+      syncPrintLayoutSettingsUi(side);
+      paintPrintDesignerZones(side);
+      updatePrintDesignerReadout(side, saved);
     }
     function endDesignerDrag() {
       if (!printDesignerDrag) return;
+      const side = printSideKey(printDesignerDrag.side || 'left');
       document.querySelectorAll('.pdg-zone.is-dragging, .pdg-zone.is-active, .pdg-resize.is-dragging').forEach((h) => {
         h.classList.remove('is-dragging', 'is-active');
       });
@@ -10190,15 +10262,16 @@ def home() -> HTMLResponse:
       } catch (_) {}
       refreshPrintDesignerBoard();
       try {
-        renderPrintSideLabelMock('left');
-        renderPrintSideLabelMock('right');
+        renderPrintSideLabelMock(side);
       } catch (_) {}
     }
-    function startDesignerZoneInteract(zone, mode, ev) {
+    function startDesignerZoneInteract(side, zone, mode, ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      const s = getPrintLayoutSettings();
+      const sKey = printSideKey(side || 'left');
+      const s = getPrintLayoutSettings(sKey);
       printDesignerDrag = {
+        side: sKey,
         zone: zone,
         mode: mode,
         startX: ev.clientX,
@@ -10218,15 +10291,17 @@ def home() -> HTMLResponse:
         document.body.style.cursor = mode === 'resize' ? 'nwse-resize' : 'grabbing';
         document.body.style.userSelect = 'none';
       } catch (_) {}
+      updatePrintDesignerReadout(sKey, s);
     }
-    function paintPrintDesignerZones(layout) {
+    function paintPrintDesignerZones(activeSide) {
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
-      const s = layout || getPrintLayoutSettings();
       const ppm = PRINT_DESIGNER_PX_PER_MM;
       const padTop = 0.4 * ppm;
       const padX = 0.7 * ppm;
       board.querySelectorAll('.print-designer-label').forEach((labelEl) => {
+        const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
+        const s = getPrintLayoutSettings(side);
         ['name', 'orig', 'loc', 'bc'].forEach((zone) => {
           const zEl = labelEl.querySelector('.pdg-zone[data-zone="' + zone + '"]');
           if (!zEl) return;
@@ -10236,16 +10311,16 @@ def home() -> HTMLResponse:
           zEl.style.width = (b.w * ppm) + 'px';
           zEl.style.height = (b.h * ppm) + 'px';
         });
-        const side = labelEl.getAttribute('data-side') || 'left';
         fitDesignerZoneFonts(labelEl, s, designerSamplePayload(side));
       });
-      updatePrintDesignerReadout(s);
+      updatePrintDesignerReadout(activeSide || null);
     }
-    function buildPrintDesignerLabelEl(side, layout) {
+    function buildPrintDesignerLabelEl(side) {
       const ppm = PRINT_DESIGNER_PX_PER_MM;
+      const sKey = printSideKey(side);
       const label = document.createElement('div');
       label.className = 'print-designer-label';
-      label.setAttribute('data-side', printSideKey(side));
+      label.setAttribute('data-side', sKey);
       label.style.width = (PRINT_SHEET_MM.labelW * ppm) + 'px';
       label.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
       const zones = [
@@ -10254,7 +10329,7 @@ def home() -> HTMLResponse:
         { key: 'loc', title: 'الموقع' },
         { key: 'bc', title: 'الباركود' }
       ];
-      let html = '<span class="pdg-side-tag">' + (printSideKey(side) === 'right' ? 'يمين' : 'يسار') + '</span>';
+      let html = '<span class="pdg-side-tag">' + (sKey === 'right' ? 'يمين' : 'يسار') + '</span>';
       zones.forEach((z) => {
         html += '<div class="pdg-zone" data-zone="' + z.key + '" title="اسحب لنقل · الزاوية لتكبير/تصغير">'
           + '<span class="pdg-zone-label">' + z.title + '</span>'
@@ -10269,19 +10344,18 @@ def home() -> HTMLResponse:
         const zone = zEl.getAttribute('data-zone');
         zEl.addEventListener('pointerdown', (ev) => {
           if (ev.target && ev.target.classList && ev.target.classList.contains('pdg-resize')) return;
-          startDesignerZoneInteract(zone, 'move', ev);
+          startDesignerZoneInteract(sKey, zone, 'move', ev);
         });
       });
       label.querySelectorAll('.pdg-resize').forEach((rEl) => {
         const zone = rEl.getAttribute('data-zone');
-        rEl.addEventListener('pointerdown', (ev) => startDesignerZoneInteract(zone, 'resize', ev));
+        rEl.addEventListener('pointerdown', (ev) => startDesignerZoneInteract(sKey, zone, 'resize', ev));
       });
       return label;
     }
     function refreshPrintDesignerBoard() {
       const board = document.getElementById('printDesignerBoard');
       if (!board) return;
-      const s = getPrintLayoutSettings();
       const ppm = PRINT_DESIGNER_PX_PER_MM;
       const sheetW = PRINT_SHEET_MM.sheetW * ppm;
       const sheetH = PRINT_SHEET_MM.sheetH * ppm;
@@ -10295,13 +10369,11 @@ def home() -> HTMLResponse:
       row.style.width = ((PRINT_SHEET_MM.sheetW - PRINT_SHEET_MM.margin * 2) * ppm) + 'px';
       row.style.height = (PRINT_SHEET_MM.labelH * ppm) + 'px';
       row.style.gap = (PRINT_SHEET_MM.gap * ppm) + 'px';
-      const left = buildPrintDesignerLabelEl('left', s);
-      const right = buildPrintDesignerLabelEl('right', s);
-      row.appendChild(left);
-      row.appendChild(right);
+      row.appendChild(buildPrintDesignerLabelEl('left'));
+      row.appendChild(buildPrintDesignerLabelEl('right'));
       board.appendChild(row);
-      paintPrintDesignerZones(s);
-      syncPrintLayoutSettingsUi(s);
+      paintPrintDesignerZones(null);
+      syncPrintLayoutSettingsUi(null);
     }
     function applyPrintBoxStyle(el, box) {
       if (!el || !box) return;
@@ -10316,9 +10388,24 @@ def home() -> HTMLResponse:
       el.style.overflow = 'hidden';
       el.style.margin = '0';
     }
+    function printLayoutSideFromEl(el) {
+      if (!el || !el.closest) return 'left';
+      const label = el.closest('.print-label') || el.closest('.print-designer-label');
+      if (!label) return 'left';
+      return printSideKey(
+        label.getAttribute('data-print-side')
+        || label.getAttribute('data-side')
+        || 'left'
+      );
+    }
     function applyPrintLayoutToLabel(label) {
       if (!label) return;
-      const s = getPrintLayoutSettings();
+      const side = printSideKey(
+        label.getAttribute('data-print-side')
+        || label.getAttribute('data-side')
+        || 'left'
+      );
+      const s = getPrintLayoutSettings(side);
       const nameEl = label.querySelector('.pl-name');
       const metaEl = label.querySelector('.pl-meta');
       const origEl = label.querySelector('.pl-orig');
@@ -10360,7 +10447,7 @@ def home() -> HTMLResponse:
     }
     function fitPrintNameDynamic(el) {
       if (!el) return;
-      const s = getPrintLayoutSettings();
+      const s = getPrintLayoutSettings(printLayoutSideFromEl(el));
       const maxPx = Number(el.dataset.maxNamePx) || s.namePx || 48;
       const minPx = Math.min(14, Math.max(9, Math.round(maxPx * 0.32)));
       el.style.display = 'block';
@@ -10378,7 +10465,7 @@ def home() -> HTMLResponse:
     }
     function fitPrintMetaLeft(el) {
       if (!el) return;
-      const s = getPrintLayoutSettings();
+      const s = getPrintLayoutSettings(printLayoutSideFromEl(el));
       const orig = el.classList && el.classList.contains('pl-orig')
         ? el
         : el.querySelector('.pl-orig');
@@ -13553,7 +13640,7 @@ def home() -> HTMLResponse:
       // تحديث مواقع حساباتي تلقائياً بدون انتظار فتح تبويب معيّن
       startHesabateAutoEnsure();
       try {
-        syncPrintLayoutSettingsUi(getPrintLayoutSettings());
+        syncPrintLayoutSettingsUi(null);
         // المحرر مغلق افتراضياً — يُبنى المحتوى عند الفتح اليدوي
         const desInit = document.getElementById('printLayoutDesigner');
         if (desInit) {
