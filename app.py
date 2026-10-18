@@ -7474,7 +7474,7 @@ def home() -> HTMLResponse:
         min-height: 2.8mm;
         max-width: 100%;
         font-family: Consolas, "Courier New", "Segoe UI", monospace;
-        font-size: 9px;
+        font-size: 10px;
         font-weight: 900;
         color: #000;
         letter-spacing: .05em;
@@ -9495,15 +9495,11 @@ def home() -> HTMLResponse:
       el.style.minHeight = '2.8mm';
       const side = (typeof printLayoutSideFromEl === 'function') ? printLayoutSideFromEl(el) : 'left';
       const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings(side) : null;
-      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 11;
-      const n = display.length;
-      let hint = maxPx;
-      if (n > 18) hint = Math.min(hint, 10);
-      if (n > 24) hint = Math.min(hint, 9);
-      if (n > 30) hint = Math.min(hint, 8);
-      if (n > 38) hint = Math.min(hint, 7);
+      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 10;
+      // حجم ثابت 10px كما طلب المستخدم — نصغّر فقط لو الرقم أطول من العرض
+      const hint = Math.min(10, maxPx);
       el.style.fontSize = hint + 'px';
-      fitTextIntoBox(el, hint, 6.5);
+      fitTextIntoBox(el, hint, Math.min(10, hint));
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -10050,7 +10046,7 @@ def home() -> HTMLResponse:
       namePx: 26,
       originalPx: 14,
       locationPx: 11,
-      bcTextPx: 11,
+      bcTextPx: 10,
       nameXmm: -3.04,
       nameYmm: 0.35,
       nameWmm: 54.14,
@@ -10078,7 +10074,7 @@ def home() -> HTMLResponse:
       namePx: 28,
       originalPx: 13,
       locationPx: 10,
-      bcTextPx: 11,
+      bcTextPx: 10,
       nameXmm: -1.07,
       nameYmm: 0.47,
       nameWmm: 56.81,
@@ -10105,7 +10101,7 @@ def home() -> HTMLResponse:
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 5,
+        version: 6,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10340,15 +10336,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v5 = قياسات GUI المعتمدة مضبوطة للزقة 50×25 مم + رقم باركود أوضح
-        if (ver < 5) {
+        // v6 = خط رقم الباركود 10.0
+        if (ver < 6) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 5,
+            version: 6,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10360,7 +10356,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 5,
+        version: 6,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10582,7 +10578,7 @@ def home() -> HTMLResponse:
         namePx: clampPrintNum(Math.round(layout.nameHmm * 3.35), 14, 64, PRINT_LAYOUT_DEFAULTS.namePx),
         originalPx: clampPrintNum(Math.round(layout.origHmm * 2.95), 6, 22, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(Math.round(layout.locHmm * 2.95), 6, 20, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: clampPrintNum(Math.round(Math.max(10, layout.bcHmm * 0.98)), 8, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx)
+        bcTextPx: 10
       };
     }
     let printDesignerDrag = null;
