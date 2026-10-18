@@ -8402,7 +8402,6 @@ def home() -> HTMLResponse:
     const SCRIPT_XLSX = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
     const SCRIPT_QR = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
     const SCRIPT_JSBARCODE = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js';
-    const SCRIPT_BWIP = 'https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js';
     /** اسم الطابعة كما يظهر في ويندوز بعد تثبيت درايفر Rongta */
     const RONGTA_PRINTER_NAME = 'Rongta RP4xx Series';
     const loadedScripts = {};
@@ -8450,10 +8449,6 @@ def home() -> HTMLResponse:
     async function ensureJsBarcodeLib() {
       if (typeof JsBarcode !== 'undefined') return;
       await loadExternalScript(SCRIPT_JSBARCODE);
-    }
-    async function ensureBwipLib() {
-      if (typeof bwipjs !== 'undefined') return;
-      await loadExternalScript(SCRIPT_BWIP);
     }
     function setSyncInfo(message) {
       document.getElementById('syncInfo').innerText = message || '';
@@ -9459,44 +9454,6 @@ def home() -> HTMLResponse:
         return false;
       }
 
-      if (fit.mode === 'datamatrix') {
-        try { await ensureBwipLib(); } catch (_) {
-          const msg = 'تعذر تحميل مكتبة DataMatrix. ' + (fit.warning || '');
-          if (wrap) {
-            const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
-            if (old) old.remove();
-            showPrintBarcodeWarn(wrap, msg);
-          }
-          try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
-          if (labelEl) labelEl.dataset.bcUnreliable = '1';
-          return false;
-        }
-        let svgStr = '';
-        try {
-          svgStr = bwipjs.toSVG({
-            bcid: 'datamatrix',
-            text: fit.value,
-            includeText: false,
-            scale: 3,
-            padding: 2
-          });
-        } catch (_) {
-          const msg = 'فشل توليد DataMatrix لنفس القيمة. استخدم لزقة أعرض.';
-          if (wrap) showPrintBarcodeWarn(wrap, msg);
-          try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
-          if (labelEl) labelEl.dataset.bcUnreliable = '1';
-          return false;
-        }
-        const holder = document.createElement('div');
-        holder.innerHTML = svgStr;
-        const svg = holder.querySelector('svg');
-        if (!svg) return false;
-        placeSvg(svg, fit.symbolWmm, fit.symbolHmm, false);
-        if (labelEl) labelEl.dataset.bcUnreliable = '0';
-        try { setPrintFetchStatus(fit.warning, layoutSide); } catch (_) {}
-        return true;
-      }
-
       try { await ensureJsBarcodeLib(); } catch (_) { return false; }
       const dotsPerMm = cfg.dpi / 25.4;
       // Quiet Zone 10× لكل جهة (لا تُقصّ) — بالبكسل = وحدات × نقاط الوحدة
@@ -9565,44 +9522,29 @@ def home() -> HTMLResponse:
           pxH = Number(svg.getAttribute('height')) || pxH;
         } catch (_) {}
       }
-      if (pxW > availDots + 1) {
-        // لا يتسع فعلياً — جرّب DataMatrix بدل ضغط يكسّر المسح
-        if (fit.mode === 'horizontal' || fit.mode === 'rotated') {
-          const dm = computePrintBarcodeFit(displayCode, {
-            labelWmm: cfg.labelWmm,
-            labelHmm: cfg.labelHmm,
-            marginMm: cfg.marginMm
+      if (pxW > availDots + 1 && fit.moduleDots > cfg.minModuleDots) {
+        // محاولة أخيرة بوحدة 1 نقطة — ما زال Code128 خطي
+        const q1 = cfg.quietModulesEach * cfg.minModuleDots;
+        try {
+          JsBarcode(svg, fit.value, {
+            format: 'CODE128',
+            width: cfg.minModuleDots,
+            height: heightDots,
+            margin: 0,
+            marginLeft: q1,
+            marginRight: q1,
+            displayValue: false,
+            background: '#ffffff',
+            lineColor: '#000000'
           });
-          // إجبار مسار DataMatrix إن Code128 الحقيقي لم يدخل
-          if (dm.mode !== 'datamatrix') {
-            const side = Math.min(cfg.labelWmm, cfg.labelHmm) - 2 * cfg.marginMm;
-            if (side >= 8) {
-              try { await ensureBwipLib(); } catch (_) {}
-              if (typeof bwipjs !== 'undefined') {
-                try {
-                  const svgStr = bwipjs.toSVG({
-                    bcid: 'datamatrix', text: displayCode, includeText: false, scale: 3, padding: 2
-                  });
-                  const holder = document.createElement('div');
-                  holder.innerHTML = svgStr;
-                  const dmsvg = holder.querySelector('svg');
-                  if (dmsvg) {
-                    placeSvg(dmsvg, side, side, false);
-                    if (labelEl) labelEl.dataset.bcUnreliable = '0';
-                    try {
-                      setPrintFetchStatus(
-                        'Code128 الحقيقي أعرض من اللزقة — طُبع DataMatrix بنفس القيمة',
-                        layoutSide
-                      );
-                    } catch (_) {}
-                    return true;
-                  }
-                } catch (_) {}
-              }
-            }
-          }
-        }
-        const msg = 'باركود Code128 أعرض من اللزقة عند الحد الأدنى المقروء. استخدم لزقة أعرض.';
+          fit.moduleDots = cfg.minModuleDots;
+          fit.moduleMm = cfg.minModuleDots / dotsPerMm;
+          pxW = Number(svg.getAttribute('width')) || pxW;
+          pxH = Number(svg.getAttribute('height')) || pxH;
+        } catch (_) {}
+      }
+      if (pxW > availDots + 1) {
+        const msg = 'باركود Code128 أعرض من اللزقة. استخدم لزقة أعرض — لن يُحوَّل إلى QR.';
         if (wrap) {
           const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
           if (old) old.remove();
@@ -10184,15 +10126,17 @@ def home() -> HTMLResponse:
       contentH: 25,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود المركزية (مطابقة barcode_fit.py) — Rongta RP4xx 203dpi */
+    /** إعدادات الباركود المركزية (مطابقة barcode_fit.py) — Code128 فقط · Rongta 203dpi */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
       labelHmm: PRINT_SHEET_MM.labelH,
       marginMm: 1.5,
-      minModuleMm: 0.25,
+      minModuleMm: 0.125,
+      prefMinModuleMm: 0.25,
       maxModuleMm: 0.5,
-      minModuleDots: 2,
+      minModuleDots: 1,
+      prefMinModuleDots: 2,
       maxModuleDots: 4,
       barHMinMm: 10,
       barHMaxMm: 15,
@@ -10204,6 +10148,7 @@ def home() -> HTMLResponse:
       return 11 * (nn + 2) + 13 + 20;
     }
     function computePrintBarcodeFit(value, opts) {
+      // Code128 خطي فقط — بلا QR / DataMatrix
       const cfg = PRINT_BARCODE_CFG;
       const lw = (opts && opts.labelWmm) || cfg.labelWmm;
       const lh = (opts && opts.labelHmm) || cfg.labelHmm;
@@ -10223,52 +10168,50 @@ def home() -> HTMLResponse:
         if (availBars >= cfg.barHMinMm) return Math.min(cfg.barHMaxMm, availBars);
         return Math.max(5, Math.min(cfg.barHMaxMm, availBars));
       }
-      function tryCode128(availableMm, barHmm, mode) {
+      function tryCode128(availableMm, barHmm, mode, minDots) {
         if (!(availableMm > 0) || modules <= 0) return null;
         const availDots = Math.floor(availableMm * dotsPerMm);
         let moduleDots = Math.floor(availDots / modules);
-        if (moduleDots < cfg.minModuleDots) return null;
+        if (moduleDots < minDots) return null;
         if (moduleDots > cfg.maxModuleDots) moduleDots = cfg.maxModuleDots;
         let moduleMm = moduleDots / dotsPerMm;
-        if (moduleMm < cfg.minModuleMm - 1e-9) return null;
         if (moduleMm > cfg.maxModuleMm + 1e-9) {
           moduleDots = Math.min(cfg.maxModuleDots, Math.floor(cfg.maxModuleMm * dotsPerMm + 1e-9));
-          if (moduleDots < cfg.minModuleDots) return null;
+          if (moduleDots < minDots) return null;
           if (modules * moduleDots > availDots) return null;
           moduleMm = moduleDots / dotsPerMm;
+        }
+        let warning = '';
+        if (moduleDots < cfg.prefMinModuleDots) {
+          warning = 'Code128 بوحدة دقيقة (1 نقطة) ليتسع — باركود خطي قابل للمسح';
         }
         return {
           ok: true, mode: mode, value: text, n: n, modules: modules,
           moduleMm: moduleMm, moduleDots: moduleDots, barHmm: barHmm,
           symbolWmm: modules * moduleMm, symbolHmm: barHmm,
-          availableMm: availableMm, warning: ''
+          availableMm: availableMm, warning: warning
         };
       }
 
       const availW = lw - 2 * margin;
-      let hit = tryCode128(availW, clampBarH(lh - 2 * margin - cfg.textReserveMm), 'horizontal');
+      const barH = clampBarH(lh - 2 * margin - cfg.textReserveMm);
+      let hit = tryCode128(availW, barH, 'horizontal', cfg.prefMinModuleDots)
+        || tryCode128(availW, barH, 'horizontal', cfg.minModuleDots);
       if (hit) return hit;
-      hit = tryCode128(lh - 2 * margin, clampBarH(lw - 2 * margin - 1), 'rotated');
+      const barHRot = clampBarH(lw - 2 * margin - 1);
+      hit = tryCode128(lh - 2 * margin, barHRot, 'rotated', cfg.prefMinModuleDots)
+        || tryCode128(lh - 2 * margin, barHRot, 'rotated', cfg.minModuleDots);
       if (hit) {
-        hit.warning = 'Code128 مُدار 90° ليتسع على اللزقة';
+        hit.warning = (hit.warning ? hit.warning + ' · ' : '') + 'Code128 مُدار 90° ليتسع على اللزقة';
         return hit;
       }
-      const side = Math.min(lw, lh) - 2 * margin;
-      if (side >= 8) {
-        return {
-          ok: true, mode: 'datamatrix', value: text, n: n, modules: modules,
-          moduleMm: 0, moduleDots: 0, barHmm: side, symbolWmm: side, symbolHmm: side,
-          availableMm: side,
-          warning: 'Code128 لا يتسع بخط مقروء — سيُطبع DataMatrix بنفس القيمة (مع الفراغات)'
-        };
-      }
-      const needMm = modules * cfg.minModuleMm;
+      const needMm = modules * cfg.prefMinModuleMm;
       return {
         ok: false, mode: 'fail', value: text, n: n, modules: modules,
         moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
         availableMm: availW,
-        warning: 'الباركود لا يتسع بشكل مقروء (يحتاج ≈' + needMm.toFixed(1)
-          + ' مم عند الحد الأدنى). استخدم لزقة أعرض — لن تُقصّ القيمة.'
+        warning: 'الباركود أطول من اللزقة حتى بوحدة Code128 الدنيا (يحتاج ≈'
+          + needMm.toFixed(1) + ' مم). استخدم لزقة أعرض — لن يُحوَّل إلى QR.'
       };
     }
     // مقياس شاشة أوضح للزقة 50×25 مم (GUI + سحب)

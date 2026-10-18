@@ -1,10 +1,11 @@
 """
 حساب أبعاد Code128 الديناميكية لطباعة اللزقات (Rongta 203dpi).
 
-معادلة الوحدات (كما طُلب):
+معادلة الوحدات:
   modules = 11 * (n + 2) + 13 + 20
 حيث n = طول القيمة حرفياً (شامل الفراغات)، و20 = Quiet Zone (10 لكل جهة).
 
+Code128 فقط — بلا QR / DataMatrix.
 لا تُضغط الفراغات ولا يُجرى trim — فقط حذف \\r و \\n.
 """
 
@@ -19,9 +20,11 @@ PRINT_BARCODE_CFG = {
     "label_w_mm": 50.0,
     "label_h_mm": 25.0,
     "margin_mm": 1.5,
-    "min_module_mm": 0.25,  # 2 dots @ 203dpi
+    "min_module_mm": 0.125,  # 1 dot @ 203dpi — آخر حل للطويل (ما زال Code128)
+    "pref_min_module_mm": 0.25,  # 2 dots — المفضّل
     "max_module_mm": 0.5,  # ~4 dots
-    "min_module_dots": 2,
+    "min_module_dots": 1,
+    "pref_min_module_dots": 2,
     "max_module_dots": 4,
     "bar_h_min_mm": 10.0,
     "bar_h_max_mm": 15.0,
@@ -47,7 +50,7 @@ def code128_modules(n: int) -> int:
 @dataclass(frozen=True)
 class BarcodeFitResult:
     ok: bool
-    mode: str  # horizontal | rotated | datamatrix | fail
+    mode: str  # horizontal | rotated | fail
     value: str
     n: int
     modules: int
@@ -65,7 +68,6 @@ def _clamp_bar_h(cfg: dict, avail_for_bars_mm: float) -> float:
     hi = float(cfg["bar_h_max_mm"])
     if avail_for_bars_mm >= lo:
         return min(hi, avail_for_bars_mm)
-    # مساحة اللزقة أضيق من 10مم — خذ المتاح (أقل من المثالي) مع إبقاء الحد الأدنى العملي
     return max(5.0, min(hi, avail_for_bars_mm))
 
 
@@ -78,38 +80,37 @@ def _try_code128(
     bar_hmm: float,
     mode: str,
     cfg: dict,
+    min_dots: Optional[int] = None,
 ) -> Optional[BarcodeFitResult]:
     dpi = float(cfg["dpi"])
     dots_per_mm = dpi / 25.4
-    min_dots = int(cfg["min_module_dots"])
+    min_d = int(min_dots if min_dots is not None else cfg["min_module_dots"])
     max_dots = int(cfg["max_module_dots"])
-    min_mm = float(cfg["min_module_mm"])
     max_mm = float(cfg["max_module_mm"])
 
     if available_mm <= 0 or modules <= 0:
         return None
 
     avail_dots = int(available_mm * dots_per_mm)
-    # أكبر عدد صحيح من نقاط الطابعة يدخل، ضمن [min_dots, max_dots]
     module_dots = avail_dots // modules
-    if module_dots < min_dots:
+    if module_dots < min_d:
         return None
     if module_dots > max_dots:
         module_dots = max_dots
 
     module_mm = module_dots / dots_per_mm
-    if module_mm < min_mm - 1e-9:
-        return None
     if module_mm > max_mm + 1e-9:
-        # لا تضخّم فوق 0.5مم
         module_dots = min(max_dots, int(max_mm * dots_per_mm + 1e-9))
-        if module_dots < min_dots:
+        if module_dots < min_d:
             return None
         if modules * module_dots > avail_dots:
             return None
         module_mm = module_dots / dots_per_mm
 
     symbol_w = modules * module_mm
+    warn = ""
+    if module_dots < int(cfg["pref_min_module_dots"]):
+        warn = "Code128 بوحدة دقيقة (1 نقطة) ليتسع — ما زال باركود خطي قابل للمسح"
     return BarcodeFitResult(
         ok=True,
         mode=mode,
@@ -122,7 +123,7 @@ def _try_code128(
         symbol_w_mm=round(symbol_w, 4),
         symbol_h_mm=round(bar_hmm, 3),
         available_mm=round(available_mm, 4),
-        warning="",
+        warning=warn,
     )
 
 
@@ -135,8 +136,8 @@ def compute_barcode_fit(
     cfg: Optional[dict] = None,
 ) -> BarcodeFitResult:
     """
-    احسب أفضل طريقة لطباعة القيمة على اللزقة:
-    horizontal → rotated 90° → datamatrix → fail.
+    Code128 فقط: horizontal → rotated 90° → fail.
+    بلا QR / DataMatrix.
     """
     c = dict(PRINT_BARCODE_CFG)
     if cfg:
@@ -166,58 +167,50 @@ def compute_barcode_fit(
             warning="قيمة باركود غير صالحة للطباعة",
         )
 
-    # أ) أفقي: على عرض اللزقة
     avail_w = lw - 2 * margin
     bar_h = _clamp_bar_h(c, lh - 2 * margin - text_reserve)
-    hit = _try_code128(
-        value=value_exact,
-        n=n,
-        modules=modules,
-        available_mm=avail_w,
-        bar_hmm=bar_h,
-        mode="horizontal",
-        cfg=c,
-    )
-    if hit:
-        return hit
+    pref = int(c["pref_min_module_dots"])
+    absolute_min = int(c["min_module_dots"])
 
-    # ب) تدوير 90°: طول الرمز على ارتفاع اللزقة
-    avail_rot = lh - 2 * margin
-    bar_h_rot = _clamp_bar_h(c, lw - 2 * margin - 1.0)
-    hit = _try_code128(
-        value=value_exact,
-        n=n,
-        modules=modules,
-        available_mm=avail_rot,
-        bar_hmm=bar_h_rot,
-        mode="rotated",
-        cfg=c,
-    )
-    if hit:
-        hit = BarcodeFitResult(
-            **{**hit.__dict__, "warning": "Code128 مُدار 90° ليتسع على اللزقة"}
-        )
-        return hit
-
-    # ج) DataMatrix بنفس القيمة حرفياً
-    side = min(lw, lh) - 2 * margin
-    if side >= 8.0:
-        return BarcodeFitResult(
-            ok=True,
-            mode="datamatrix",
+    # أ) أفقي — فضّل وحدة ≥2 ثم اسمح بـ 1 للطويل
+    for min_d in (pref, absolute_min):
+        hit = _try_code128(
             value=value_exact,
             n=n,
             modules=modules,
-            module_mm=0.0,
-            module_dots=0,
-            bar_hmm=round(side, 3),
-            symbol_w_mm=round(side, 3),
-            symbol_h_mm=round(side, 3),
-            available_mm=round(side, 3),
-            warning="Code128 لا يتسع بخط مقروء — سيُطبع DataMatrix بنفس القيمة (مع الفراغات)",
+            available_mm=avail_w,
+            bar_hmm=bar_h,
+            mode="horizontal",
+            cfg=c,
+            min_dots=min_d,
         )
+        if hit:
+            return hit
 
-    need_mm = modules * float(c["min_module_mm"])
+    # ب) تدوير 90°
+    avail_rot = lh - 2 * margin
+    bar_h_rot = _clamp_bar_h(c, lw - 2 * margin - 1.0)
+    for min_d in (pref, absolute_min):
+        hit = _try_code128(
+            value=value_exact,
+            n=n,
+            modules=modules,
+            available_mm=avail_rot,
+            bar_hmm=bar_h_rot,
+            mode="rotated",
+            cfg=c,
+            min_dots=min_d,
+        )
+        if hit:
+            return BarcodeFitResult(
+                **{
+                    **hit.__dict__,
+                    "warning": (hit.warning + " · " if hit.warning else "")
+                    + "Code128 مُدار 90° ليتسع على اللزقة",
+                }
+            )
+
+    need_mm = modules * float(c["pref_min_module_mm"])
     return BarcodeFitResult(
         ok=False,
         mode="fail",
@@ -231,7 +224,7 @@ def compute_barcode_fit(
         symbol_h_mm=0.0,
         available_mm=round(avail_w, 4),
         warning=(
-            f"الباركود لا يتسع بشكل مقروء (يحتاج ≈{need_mm:.1f} مم عند الحد الأدنى "
-            f"0.25مم/وحدة). استخدم لزقة أعرض — لن تُقصّ القيمة."
+            f"الباركود أطول من اللزقة حتى بوحدة Code128 الدنيا "
+            f"(يحتاج ≈{need_mm:.1f} مم). استخدم لزقة أعرض — لن يُحوَّل إلى QR."
         ),
     )

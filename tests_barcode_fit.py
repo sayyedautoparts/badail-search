@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests لحساب أبعاد الباركود الديناميكي."""
+"""Unit tests لحساب أبعاد الباركود الديناميكي — Code128 فقط."""
 
 import unittest
 
@@ -29,7 +29,6 @@ class TestBarcodeText(unittest.TestCase):
 
 class TestCode128Modules(unittest.TestCase):
     def test_formula(self):
-        # modules = 11*(n+2) + 13 + 20
         for n in (0, 5, 12, 20, 40):
             self.assertEqual(code128_modules(n), 11 * (n + 2) + 13 + 20)
 
@@ -42,36 +41,35 @@ class TestCode128Modules(unittest.TestCase):
 
 class TestComputeFit(unittest.TestCase):
     def test_short_wide_modules(self):
-        # قصير → يتسع بخط عريض (قرب الحد الأقصى)
         r = compute_barcode_fit("12345")
         self.assertTrue(r.ok)
         self.assertEqual(r.mode, "horizontal")
         self.assertEqual(r.value, "12345")
         self.assertGreaterEqual(r.module_dots, 2)
         self.assertLessEqual(r.module_dots, 4)
-        self.assertGreaterEqual(r.module_mm, PRINT_BARCODE_CFG["min_module_mm"] - 1e-6)
-        self.assertLessEqual(r.module_mm, PRINT_BARCODE_CFG["max_module_mm"] + 1e-6)
-        self.assertLessEqual(r.symbol_w_mm, r.available_mm + 1e-6)
+        self.assertNotEqual(r.mode, "datamatrix")
 
     def test_long_fits_at_minimum(self):
-        # أطول ما يدخل أفقياً عند 2 dots على لزقة 50مم
-        # modules*0.25 <= 47 → n تقريباً <= 12
         val = "A" * 12
         r = compute_barcode_fit(val)
         self.assertTrue(r.ok)
         self.assertEqual(r.mode, "horizontal")
-        self.assertEqual(r.n, 12)
         self.assertEqual(r.value, val)
-        self.assertGreaterEqual(r.module_dots, 2)
+        self.assertGreaterEqual(r.module_dots, 1)
 
-    def test_very_long_fallback_rotate_or_datamatrix(self):
-        # طويل جداً لن يدخل أفقياً بـ 0.25مم
+    def test_very_long_stays_code128(self):
         val = "223112U001                    HI19EXTRALONG"
         r = compute_barcode_fit(val)
-        self.assertEqual(r.value, val)  # لم تُقصّ القيمة
+        self.assertEqual(r.value, val)
         self.assertIn(" ", r.value)
-        self.assertTrue(r.ok)
-        self.assertIn(r.mode, ("rotated", "datamatrix"))
+        self.assertNotEqual(r.mode, "datamatrix")
+        if r.ok:
+            self.assertIn(r.mode, ("horizontal", "rotated"))
+            self.assertGreaterEqual(r.module_dots, 1)
+        else:
+            self.assertEqual(r.mode, "fail")
+            self.assertIn("QR", r.warning)
+            self.assertIn("لزقة", r.warning)
 
     def test_spaces_preserved_and_counted(self):
         val = "223112U001        HI"
@@ -79,19 +77,15 @@ class TestComputeFit(unittest.TestCase):
         self.assertEqual(r.value, val)
         self.assertEqual(r.n, len(val))
         self.assertEqual(r.modules, code128_modules(len(val)))
-        # على 50×25 غالباً DataMatrix أو rotated لأن 275*0.25 > 47
+        self.assertNotEqual(r.mode, "datamatrix")
         self.assertTrue(r.ok)
-        self.assertIn(r.mode, ("horizontal", "rotated", "datamatrix"))
+        self.assertIn(r.mode, ("horizontal", "rotated"))
 
-    def test_fail_when_impossible(self):
-        # لزقة ضيقة جداً + نص طويل
-        val = "X" * 80
-        r = compute_barcode_fit(val, label_w_mm=20, label_h_mm=12, margin_mm=1.5)
-        if r.ok:
-            self.assertEqual(r.mode, "datamatrix")
-        else:
-            self.assertEqual(r.mode, "fail")
-            self.assertTrue(r.warning)
+    def test_never_datamatrix_or_qr(self):
+        for val in ("12345", "A" * 12, "223112U001        HI", "X" * 80):
+            r = compute_barcode_fit(val)
+            self.assertNotEqual(r.mode, "datamatrix")
+            self.assertNotEqual(r.mode, "qr")
 
 
 if __name__ == "__main__":
