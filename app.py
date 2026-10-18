@@ -794,6 +794,8 @@ class HesabateLookupIn(BaseModel):
     refresh: bool = False
     # زر «جلب الصنف» فقط: إن لم يوجد pro_id محلي استورد الكتالوج ثم أعد البحث عن الصنف
     discover_new: bool = False
+    # طباعة الباركود: تطابق تام بدون حذف أصفار وبدون بحث برقم الصنف
+    barcode_exact: bool = False
 
 
 class LocationRowsAbortIn(BaseModel):
@@ -1213,6 +1215,24 @@ def _coalesce_short_digit_barcode_parts(parts: list[str]) -> list[str]:
     return out
 
 
+def _should_index_compact_spaced_barcode(raw: str, parts: list[str], full: str) -> bool:
+    """
+    باركود حساباتي بمسافات تنسيق + لاحقة (مثل 223112U001        HI → 223112U001HI).
+    لا ندمج باركودين رقميين طويلين منفصلين.
+    """
+    if not full or not raw or not re.search(r"\s", raw):
+        return False
+    if len(parts) >= 2 and all(p.isdigit() and len(p) >= 8 for p in parts):
+        return False
+    # لاحقة قصيرة / حروف داخل الباركود → شكل واحد مدمج للبحث
+    if any(re.search(r"[A-Za-z]", p) for p in (parts or [full])):
+        return True
+    # أجزاء رقمية قصيرة بمسافات تنسيق (يُغطّيها coalesce غالباً؛ نُبقي المدمج احتياطاً)
+    if len(parts) >= 2 and all(p.isdigit() and len(p) < 8 for p in parts):
+        return True
+    return False
+
+
 def _extract_location_unit_barcodes_from_cell(unit_barcodes_raw: str) -> list[str]:
     """
     استخراج كل الباركودات من خانة قد تحتوي أكثر من قيمة:
@@ -1220,6 +1240,7 @@ def _extract_location_unit_barcodes_from_cell(unit_barcodes_raw: str) -> list[st
     - حساباتي: مسافة / فاصلة عربية أو لاتينية / ; / | / + / \\ / سطر جديد
     - أرقام ملتصقة بطول باركودين معروفين
     - مسافات التنسيق داخل باركود واحد قصير الأجزاء تُدمَج
+    - باركود حساباتي مع لاحقة بعد مسافات (223112U001        HI) يُفهرس مدمجاً + أجزاؤه
     """
     raw = str(unit_barcodes_raw or "").strip()
     if not raw:
@@ -1252,6 +1273,10 @@ def _extract_location_unit_barcodes_from_cell(unit_barcodes_raw: str) -> list[st
         raw_parts = [raw]
     for part in _coalesce_short_digit_barcode_parts(raw_parts):
         _add(part)
+    # الشكل المدمج الكامل (مسافات التنسيق + لاحقة HI/KI19…)
+    full = normalize_barcode_lookup_key(raw)
+    if full and full not in out and _should_index_compact_spaced_barcode(raw, list(out), full):
+        out.insert(0, full)
     return out
 
 
@@ -1273,7 +1298,7 @@ def location_row_normalized_barcode_value(barcode_raw: str, unit_barcodes_raw: s
 
 
 # عند تغيير منطق تفكيك الباركود المتعدد — نفرض إعادة فهرسة حتى لو لم يتغير كتالوج حساباتي
-HESABATE_BARCODE_PARSER_VERSION = "multi-bc-3"
+HESABATE_BARCODE_PARSER_VERSION = "multi-bc-5"
 
 
 def location_row_normalized_text_value(
@@ -2057,10 +2082,41 @@ def normalize_barcode_lookup_key(raw: str) -> str:
     return up
 
 
+def _barcode_spaced_first_segment_key(s: str) -> str:
+    """الجزء الأول من باركود بمسافات تنسيق (223112U001 من 223112U001        HI)."""
+    if not s or not re.search(r"\s", s):
+        return ""
+    first = next((p.strip() for p in _BARCODE_FIELD_SPLIT_RE.split(s) if p and p.strip()), "")
+    if not first:
+        return ""
+    fk = re.sub(r"[^A-Za-z0-9]", "", first.translate(DIGIT_TRANS)).upper()
+    return fk if fk and len(fk) >= 6 else ""
+
+
+def barcode_search_keys_exact(raw: str) -> list[str]:
+    """
+    مفاتيح تطابق تام — بدون حذف أصفار بادئة.
+    إن وُجدت مسافات تنسيق (223112U001        HI): المدمج الكامل + الجزء الأول
+    حتى يطابق الفهرس قبل إعادة البناء والصف المخزّن بالمسافات.
+    """
+    if not (raw and str(raw).strip()):
+        return []
+    s = strip_barcode_input_noise(raw).translate(DIGIT_TRANS).strip()
+    alnum = re.sub(r"[^A-Za-z0-9]", "", s)
+    if not alnum:
+        return []
+    out: list[str] = [alnum.upper()]
+    fk = _barcode_spaced_first_segment_key(s)
+    if fk and fk not in out:
+        out.append(fk)
+    return out
+
+
 def barcode_search_keys(raw: str) -> list[str]:
     """
     مفاتيح آمنة للبحث: المفتاح الكانوني + للأرقام فقط نضيف الشكل بأصفار بادئة إن اختلف
     (مثال المخزن 12322311 والاستعلام 012322311 بعد الضغط النصي).
+    باركود بمسافات/لاحقة (223112U001        HI): المدمج + الجزء الأول.
     """
     if not (raw and str(raw).strip()):
         return []
@@ -2078,23 +2134,42 @@ def barcode_search_keys(raw: str) -> list[str]:
                 out.append(k)
     else:
         out.append(up)
+        fk = _barcode_spaced_first_segment_key(s)
+        if fk and fk not in out:
+            out.append(fk)
     return out[:LOCATION_BARCODE_SEARCH_KEYS_MAX]
 
 
-def barcode_cell_matches_search_keys(cell_raw: str, key_set: set[str]) -> bool:
+def barcode_cell_matches_search_keys(
+    cell_raw: str, key_set: set[str], *, exact: bool = False
+) -> bool:
     """هل عمود barcode الخام يطابق أي مفتاح — يفكك الباركودات المتعددة أولاً (لا يدمجها)."""
     if not key_set:
         return False
     candidates: list[str] = []
+    # الشكل المدمج للخانة كاملة (223112U001        HI → 223112U001HI)
+    full = normalize_barcode_lookup_key(cell_raw)
+    if full:
+        if exact:
+            candidates.append(full)
+        else:
+            for k in barcode_search_keys(full):
+                if k and k not in candidates:
+                    candidates.append(k)
     # مهم: لا نستدعي barcode_search_keys على النص الكامل إن احتوى عدة باركودات
-    # لأنه يحذف الفواصل ويدمجها في مفتاح واحد خاطئ.
+    # لأنه يحذف الفواصل ويدمجها في مفتاح واحد خاطئ — لذلك نفكك ثم نطابق.
     tokens = _extract_location_unit_barcodes_from_cell(cell_raw)
-    if not tokens:
-        tokens = [normalize_barcode_lookup_key(cell_raw)] if normalize_barcode_lookup_key(cell_raw) else []
+    if not tokens and full:
+        tokens = [full]
     for tok in tokens:
-        for k in barcode_search_keys(tok):
-            if k and k not in candidates:
-                candidates.append(k)
+        if exact:
+            alnum = re.sub(r"[^A-Za-z0-9]", "", str(tok or "").translate(DIGIT_TRANS)).upper()
+            if alnum and alnum not in candidates:
+                candidates.append(alnum)
+        else:
+            for k in barcode_search_keys(tok):
+                if k and k not in candidates:
+                    candidates.append(k)
     for k in candidates:
         if k in key_set:
             return True
@@ -2290,6 +2365,7 @@ def _search_locations_sql_only(
     norm_tokens: list[str],
     limit: int,
     offset: int,
+    barcode_exact: bool = False,
 ) -> tuple[list[Any], bool]:
     lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
     off = max(0, offset)
@@ -2335,7 +2411,7 @@ def _search_locations_sql_only(
         exact_rows: list[Any] = []
         for row in rows:
             rd = sql_row_to_dict(row)
-            if _location_row_matches_barcode_keys_exact(rd, key_set):
+            if _location_row_matches_barcode_keys_exact(rd, key_set, exact=barcode_exact):
                 exact_rows.append(row)
         rows = exact_rows
     else:
@@ -2407,26 +2483,33 @@ def _search_locations_sql_only(
     return rows[:lim], has_more
 
 
-def _location_row_matches_barcode_keys_exact(rd: dict[str, Any], key_set: set[str]) -> bool:
+def _location_row_matches_barcode_keys_exact(
+    rd: dict[str, Any], key_set: set[str], *, exact: bool = False
+) -> bool:
     """مطابقة باركود دقيقة فقط (عمود الباركود + التوكنات في normalized_barcode) — بدون رقم أصلي/نص."""
     if not key_set:
         return False
-    if barcode_cell_matches_search_keys(str(rd.get("barcode") or ""), key_set):
+    if barcode_cell_matches_search_keys(str(rd.get("barcode") or ""), key_set, exact=exact):
         return True
     nb = str(rd.get("normalized_barcode") or "").strip()
     if nb:
         for tok in nb.split():
-            if tok in key_set:
-                return True
-            for k in barcode_search_keys(tok):
-                if k in key_set:
+            if exact:
+                alnum = re.sub(r"[^A-Za-z0-9]", "", str(tok or "").translate(DIGIT_TRANS)).upper()
+                if alnum and alnum in key_set:
                     return True
+            else:
+                if tok in key_set:
+                    return True
+                for k in barcode_search_keys(tok):
+                    if k in key_set:
+                        return True
     return False
 
 
 def _location_row_matches_barcode_keys(rd: dict[str, Any], key_set: set[str]) -> bool:
     """توافق قديم — يوجّه للمطابقة الدقيقة على الباركود فقط."""
-    return _location_row_matches_barcode_keys_exact(rd, key_set)
+    return _location_row_matches_barcode_keys_exact(rd, key_set, exact=False)
 
 
 def _search_locations_barcode_python_fallback(
@@ -2434,6 +2517,8 @@ def _search_locations_barcode_python_fallback(
     key_set: set[str],
     limit: int,
     offset: int,
+    *,
+    barcode_exact: bool = False,
 ) -> tuple[list[Any], bool]:
     """صفوف بلا تطبيع جيد — مطابقة مفاتيح الباركود فقط في بايثون."""
     if not key_set:
@@ -2457,7 +2542,7 @@ def _search_locations_barcode_python_fallback(
     matched: list[Any] = []
     for row in rows:
         rd = sql_row_to_dict(row)
-        if _location_row_matches_barcode_keys_exact(rd, key_set):
+        if _location_row_matches_barcode_keys_exact(rd, key_set, exact=barcode_exact):
             matched.append(row)
     lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
     off = max(0, offset)
@@ -2471,9 +2556,12 @@ def _search_locations_barcode_like_fallback(
     key_set: set[str],
     limit: int,
     offset: int,
+    *,
+    barcode_exact: bool = False,
 ) -> tuple[list[Any], bool]:
     """
     بيانات قديمة سيئة التطبيع: LIKE على عمود barcode فقط ثم تحقق بمساواة المفاتيح.
+    عند barcode_exact لا يُستخدم هذا المسار من search_locations (يُستدعى فقط من المسار العادي).
     """
     if not key_set:
         return [], False
@@ -2498,8 +2586,82 @@ def _search_locations_barcode_like_fallback(
     matched: list[Any] = []
     for row in rows:
         rd = sql_row_to_dict(row)
-        if _location_row_matches_barcode_keys_exact(rd, key_set):
+        if _location_row_matches_barcode_keys_exact(rd, key_set, exact=barcode_exact):
             matched.append(row)
+    lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
+    off = max(0, offset)
+    chunk = matched[off : off + lim + 1]
+    has_more = len(chunk) > lim
+    return chunk[:lim], has_more
+
+
+def _spaced_barcode_like_prefixes(key_set: set[str]) -> list[str]:
+    """
+    بادئات LIKE لباركود حساباتي بمسافات: من 223112U001HI → 223112U001
+    حتى يطابق الحقل المخزّن «223112U001        HI».
+    """
+    prefixes: list[str] = []
+    for k in sorted(key_set, key=len, reverse=True):
+        if len(k) < 6:
+            continue
+        cands: list[str] = []
+        # جسم الباركود …U001 ثم لاحقة HI/KI19 — لا تقطع من وسط الرقم
+        m = re.match(r"^(\d{2,}[A-Z]\d{2,})([A-Z]{1,4}\d{0,4})$", k)
+        if m:
+            cands.append(m.group(1))
+        elif re.search(r"[A-Z]", k):
+            # الجزء الأول بدون لاحقة إن وُجد كمفتاح منفصل
+            cands.append(k)
+        for pref in cands:
+            if pref and pref not in prefixes:
+                prefixes.append(pref)
+        if len(prefixes) >= 6:
+            break
+    return prefixes
+
+
+def _search_locations_barcode_spaced_compact_fallback(
+    conn: DBConnection,
+    key_set: set[str],
+    limit: int,
+    offset: int,
+    *,
+    barcode_exact: bool = True,
+) -> tuple[list[Any], bool]:
+    """
+    باركودات حساباتي بمسافات داخل الحقل (223112U001        HI):
+    الفهرس قد لا يحتوي الشكل المدمج بعد — نبحث بالبادئة ثم نتحقق بالمساواة المدمجة.
+    """
+    if not key_set:
+        return [], False
+    prefixes = _spaced_barcode_like_prefixes(key_set)
+    if not prefixes:
+        return [], False
+    matched: list[Any] = []
+    seen_ids: set[Any] = set()
+    for pref in prefixes:
+        pat = f"{_like_pattern_escape_sql(pref)}%"
+        rows = conn.execute(
+            """
+            SELECT id, item_name, location, company, original_number, barcode, brand, notes, quantity, price,
+                   source_file, source_sheet, normalized_barcode
+            FROM location_rows
+            WHERE COALESCE(TRIM(barcode), '') <> ''
+              AND LENGTH(barcode) <= 128
+              AND barcode LIKE ? ESCAPE '\\'
+            ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
+            LIMIT ?
+            """,
+            (pat, LOCATION_API_SOURCE_FILE, LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP),
+        ).fetchall()
+        for row in rows:
+            rd = sql_row_to_dict(row)
+            rid = rd.get("id")
+            if rid in seen_ids:
+                continue
+            if _location_row_matches_barcode_keys_exact(rd, key_set, exact=barcode_exact):
+                seen_ids.add(rid)
+                matched.append(row)
     lim = max(1, min(limit, LOCATION_SEARCH_LIMIT_MAX))
     off = max(0, offset)
     chunk = matched[off : off + lim + 1]
@@ -3828,16 +3990,76 @@ def _fast_cache_barcode_keys(barcode: str, other_codes: str) -> list[str]:
     out: list[str] = []
     for raw in (barcode, other_codes):
         for part in _extract_location_unit_barcodes_from_cell(raw):
+            # لا تفهرس لاحقات قصيرة جداً (HI) وحدها — تسبب تطابقات خاطئة
+            if len(part) < 4 and not part.isdigit():
+                continue
             if part not in out:
                 out.append(part)
             if part.isdigit():
                 stripped = part.lstrip("0") or "0"
                 if stripped not in out:
                     out.append(stripped)
-            # حد أعلى كافٍ لعدة باركودات + أشكال الأصفار
+            # حد أعلى كافٍ لعدة باركودات + أشكال الأصفار + الشكل المدمج
             if len(out) >= 48:
                 return out
     return out
+
+
+def _lookup_product_cache_rows_by_compact_barcode(
+    conn: DBConnection,
+    keys: list[str],
+    *,
+    limit: int = 10,
+) -> list[Any]:
+    """
+    بحث مباشر في كاش المنتجات بالباركود المدمج — يتجاوز فهرس barcode_key القديم.
+    يغطي 223112U001        HI عبر LIKE على البادئة ثم مساواة مدمجة.
+    """
+    key_set = {k for k in keys if k}
+    if not key_set:
+        return []
+    prefixes = _spaced_barcode_like_prefixes(key_set)
+    if not prefixes:
+        # مفاتيح بلا أحرف: جرّب أطول مفتاح كبادئة
+        prefixes = [k for k in sorted(key_set, key=len, reverse=True) if len(k) >= 6][:4]
+    if not prefixes:
+        return []
+    matched: list[Any] = []
+    seen: set[str] = set()
+    lim = max(1, min(int(limit), 30))
+    for pref in prefixes:
+        pat = f"{_like_pattern_escape_sql(pref)}%"
+        rows = conn.execute(
+            """
+            SELECT product_id, barcode, model_no, other_codes, name, note,
+                   company_id, trade_id, model_id, amount, price
+            FROM hesabate_product_cache
+            WHERE COALESCE(TRIM(barcode), '') <> ''
+              AND (
+                barcode LIKE ? ESCAPE '\\'
+                OR other_codes LIKE ? ESCAPE '\\'
+              )
+            LIMIT ?
+            """,
+            (pat, pat, LOCATION_BARCODE_LIKE_FALLBACK_FETCH_CAP),
+        ).fetchall()
+        for row in rows:
+            rd = sql_row_to_dict(row)
+            pid = str(rd.get("product_id") or "").strip()
+            if not pid or pid in seen:
+                continue
+            # طابق الباركود أو other_codes بالشكل المدمج
+            blob = f"{rd.get('barcode') or ''} {rd.get('other_codes') or ''}"
+            cand_keys = set(_extract_location_unit_barcodes_from_cell(blob))
+            full = normalize_barcode_lookup_key(str(rd.get("barcode") or ""))
+            if full:
+                cand_keys.add(full)
+            if key_set & cand_keys:
+                seen.add(pid)
+                matched.append(row)
+                if len(matched) >= lim:
+                    return matched
+    return matched
 
 
 def _product_cache_row_tuple(prod: dict) -> tuple[str, ...]:
@@ -4200,6 +4422,11 @@ def lookup_hesabate_product_cache(
                 """,
                 (*keys, max(1, min(int(limit), 30))),
             ).fetchall()
+            # فهرس قديم / باركود بمسافات: طابق عمود barcode مباشرة بالشكل المدمج
+            if not rows:
+                rows = _lookup_product_cache_rows_by_compact_barcode(
+                    conn, keys, limit=max(1, min(int(limit), 30))
+                )
         if not rows and qt:
             qkeys = barcode_search_keys(qt)
             if qkeys:
@@ -5734,6 +5961,7 @@ def resolve_local_hesabate_product_id(
                       AND TRIM(hesabate_product_id) <> ''
                       AND (
                         barcode = ?
+                        OR barcode LIKE ?
                         OR normalized_barcode LIKE ?
                         OR hesabate_product_id = ?
                       )
@@ -5742,11 +5970,30 @@ def resolve_local_hesabate_product_id(
                       id DESC
                     LIMIT 1
                     """,
-                    (k, f"% {k} %", k, LOCATION_API_SOURCE_FILE),
+                    (k, f"{k}%", f"% {k} %", k, LOCATION_API_SOURCE_FILE),
                 ).fetchone()
                 if row:
                     pid = str(sql_row_to_dict(row).get("hesabate_product_id") or "").strip()
                     if _is_trusted_hesabate_product_id(pid):
+                        # تحقق: الباركود المدمج يطابق أحد المفاتيح (لا تأخذ لاحقة مشتركة بالخطأ)
+                        try:
+                            brow = conn.execute(
+                                """
+                                SELECT barcode, normalized_barcode FROM location_rows
+                                WHERE hesabate_product_id = ?
+                                ORDER BY CASE WHEN source_file = ? THEN 0 ELSE 1 END, id DESC
+                                LIMIT 1
+                                """,
+                                (pid, LOCATION_API_SOURCE_FILE),
+                            ).fetchone()
+                            if brow:
+                                bd = sql_row_to_dict(brow)
+                                if not _location_row_matches_barcode_keys_exact(
+                                    bd, set(keys), exact=False
+                                ):
+                                    continue
+                        except Exception:
+                            pass
                         return pid
         qt = str(text_query or "").strip()
         if qt:
@@ -5994,6 +6241,7 @@ def _lookup_location_rows_for_live(
     barcode_keys: list[str] | None,
     text_query: str = "",
     limit: int = 10,
+    barcode_exact: bool = False,
 ) -> list[dict[str, Any]]:
     """بحث فوري من جدول البحث المحلي (location_rows) بدون API."""
     conn = get_db()
@@ -6009,8 +6257,13 @@ def _lookup_location_rows_for_live(
                 norm_tokens=[],
                 limit=limit,
                 offset=0,
+                barcode_exact=barcode_exact,
             )
-        elif text_query.strip():
+            if not rows:
+                rows, _ = _search_locations_barcode_spaced_compact_fallback(
+                    conn, set(keys), limit, 0, barcode_exact=barcode_exact
+                )
+        elif text_query.strip() and not barcode_exact:
             tokens = [t for t in normalize_text(text_query).split() if t][:8]
             rows, _ = _search_locations_sql_only(
                 conn,
@@ -6059,6 +6312,7 @@ def live_lookup_locations_from_hesabate(
     cache_only: bool = False,
     refresh: bool = False,
     discover_new: bool = False,
+    barcode_exact: bool = False,
 ) -> dict:
     """
     جلب/تحديث موجّه من حساباتي:
@@ -6103,9 +6357,10 @@ def live_lookup_locations_from_hesabate(
         }
     keys = list(barcode_keys or [])
     qb = str(q_barcode or "").strip()
-    qt = str(q_text or "").strip()
+    # تطابق تام: باركود فقط — لا نبحث برقم الصنف/الاسم
+    qt = "" if barcode_exact else str(q_text or "").strip()
     if qb and not keys:
-        keys = barcode_search_keys(qb)
+        keys = barcode_search_keys_exact(qb) if barcode_exact else barcode_search_keys(qb)
     stale = _hesabate_last_sync_age_sec() >= HESABATE_SYNC_MIN_INTERVAL_SEC
     t0 = time.perf_counter()
 
@@ -6136,7 +6391,10 @@ def live_lookup_locations_from_hesabate(
     # ——— كاش سريع (يُتخطى عند refresh) ———
     if not refresh:
         local_rows = _lookup_location_rows_for_live(
-            barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+            barcode_keys=keys or None,
+            text_query="" if keys else qt,
+            limit=10,
+            barcode_exact=barcode_exact,
         )
         timing["db_ms"] = int((time.perf_counter() - t0) * 1000)
         if local_rows:
@@ -6167,9 +6425,9 @@ def live_lookup_locations_from_hesabate(
         try:
             t0 = time.perf_counter()
             cached_raw = lookup_hesabate_product_cache(
-                barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+                barcode_keys=keys or None, text_query="" if (keys or barcode_exact) else qt, limit=10
             )
-            if keys and not cached_raw and qt:
+            if keys and not cached_raw and qt and not barcode_exact:
                 cached_raw = lookup_hesabate_product_cache(barcode_keys=None, text_query=qt, limit=10)
             timing["db_ms"] += int((time.perf_counter() - t0) * 1000)
             if cached_raw:
@@ -6189,25 +6447,37 @@ def live_lookup_locations_from_hesabate(
                         pass
                     timing["save_ms"] = int((time.perf_counter() - t0) * 1000)
                     prepared = _prepare_live_rows_from_mapped(mapped)
-                    return _finish(
-                        {
-                            "ok": True,
-                            "live": True,
-                            "fast_path": True,
-                            "stale": stale,
-                            "needs_sync": stale,
-                            "verified": False,
-                            "products_fetch_mode": "db_cache",
-                            "resolved_pro_ids": [str(r.get("product_id") or "") for r in mapped if r.get("product_id")],
-                            "total_rows": len(prepared),
-                            "rows": prepared,
-                            "has_more": False,
-                            "limit": len(prepared),
-                            "offset": 0,
-                            "message": f"كاش · {len(prepared)} · {int((time.perf_counter() - t_total) * 1000)}ms",
-                            "request_count": 0,
-                        }
-                    )
+                    if barcode_exact and keys:
+                        key_set = set(keys)
+                        prepared = [
+                            r
+                            for r in prepared
+                            if _location_row_matches_barcode_keys_exact(r, key_set, exact=True)
+                        ]
+                    if prepared:
+                        return _finish(
+                            {
+                                "ok": True,
+                                "live": True,
+                                "fast_path": True,
+                                "stale": stale,
+                                "needs_sync": stale,
+                                "verified": False,
+                                "products_fetch_mode": "db_cache",
+                                "resolved_pro_ids": [
+                                    str(r.get("hesabate_product_id") or r.get("product_id") or "")
+                                    for r in prepared
+                                    if str(r.get("hesabate_product_id") or r.get("product_id") or "").strip()
+                                ],
+                                "total_rows": len(prepared),
+                                "rows": prepared,
+                                "has_more": False,
+                                "limit": len(prepared),
+                                "offset": 0,
+                                "message": f"كاش · {len(prepared)} · {int((time.perf_counter() - t_total) * 1000)}ms",
+                                "request_count": 0,
+                            }
+                        )
         except Exception:
             pass
 
@@ -6228,15 +6498,19 @@ def live_lookup_locations_from_hesabate(
 
     # ——— تحديث موجّه: pro_id فقط ———
     # عند refresh ابحث أيضاً بالنص حتى لو وُجد باركود (أحياناً الباركود قديم والكاش بالاسم/الأصلي)
+    # barcode_exact: باركود فقط بدون نص
     pro_ids = resolve_local_hesabate_product_ids(
         barcode_keys=keys or None,
-        text_query=qt,
+        text_query="" if barcode_exact else qt,
         limit=5,
     )
     local_fallback = _lookup_location_rows_for_live(
-        barcode_keys=keys or None, text_query="" if keys else qt, limit=10
+        barcode_keys=keys or None,
+        text_query="" if keys else qt,
+        limit=10,
+        barcode_exact=barcode_exact,
     )
-    if not local_fallback and keys and qt:
+    if not local_fallback and keys and qt and not barcode_exact:
         local_fallback = _lookup_location_rows_for_live(
             barcode_keys=None, text_query=qt, limit=10
         )
@@ -6246,7 +6520,7 @@ def live_lookup_locations_from_hesabate(
 
     # زر «جلب الصنف»: صنف جديد غير معروف محلياً — استيراد كتالوج ثم مطابقة
     catalog_import_used = False
-    if not pro_ids and discover_new and not cache_only:
+    if not pro_ids and discover_new and not cache_only and not barcode_exact:
         t_imp = time.perf_counter()
         logger.info(
             "hesabate_lookup discover_new importing catalog barcode=%s q=%s",
@@ -6324,6 +6598,31 @@ def live_lookup_locations_from_hesabate(
                 }
             )
         # pro_ids موجودة → نتابع الجلب الموجّه أدناه لأحدث سعر/كمية
+
+    # فهرس قديم بلا الشكل المدمج لباركودات المسافات — أعد بناءه من الكاش مرة ثم أعد الحل
+    parser_stale = (
+        str(app_kv_get("hesabate_barcode_parser_ver", "") or "") != HESABATE_BARCODE_PARSER_VERSION
+    )
+    if (not pro_ids) and parser_stale and keys and any(re.search(r"[A-Z]", k) for k in keys):
+        try:
+            rebuilt = int(rebuild_hesabate_barcode_index_from_cache() or 0)
+            app_kv_set("hesabate_barcode_parser_ver", HESABATE_BARCODE_PARSER_VERSION)
+            logger.info("hesabate_barcode_index rebuilt for spaced keys n=%s", rebuilt)
+            pro_ids = resolve_local_hesabate_product_ids(
+                barcode_keys=keys or None,
+                text_query="" if barcode_exact else qt,
+                limit=5,
+            )
+            local_fallback = _lookup_location_rows_for_live(
+                barcode_keys=keys or None,
+                text_query="" if keys else qt,
+                limit=10,
+                barcode_exact=barcode_exact,
+            )
+            if not pro_ids and local_fallback:
+                pro_ids = backfill_hesabate_product_ids_for_rows(local_fallback)
+        except Exception as exc:
+            logger.warning("hesabate_barcode_index_rebuild_failed err=%s", type(exc).__name__)
 
     if not pro_ids:
         if local_fallback:
@@ -7789,8 +8088,8 @@ def home() -> HTMLResponse:
         <div class="print-dual-units">
           <div class="print-side-unit" data-side="left">
             <p class="print-side-title">لزق اليسار</p>
-            <label class="field-label" for="printQueryLeft">رقم الصنف أو الباركود</label>
-            <input id="printQueryLeft" placeholder="رقم / باركود اليسار" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
+            <label class="field-label" for="printQueryLeft">الباركود فقط</label>
+            <input id="printQueryLeft" placeholder="باركود اليسار (تطابق تام)" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('left',true);}" />
             <input id="printNameLeft" type="hidden" value="" data-from-fetch="1" />
             <div class="btn-row" style="margin-top:8px;">
               <button type="button" id="printFetchBtnLeft" class="btn-secondary" onclick="fetchItemForBarcodePrint('left')">جلب اليسار</button>
@@ -7814,8 +8113,8 @@ def home() -> HTMLResponse:
           </div>
           <div class="print-side-unit" data-side="right">
             <p class="print-side-title">لزق اليمين</p>
-            <label class="field-label" for="printQueryRight">رقم الصنف أو الباركود</label>
-            <input id="printQueryRight" placeholder="رقم / باركود اليمين" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
+            <label class="field-label" for="printQueryRight">الباركود فقط</label>
+            <input id="printQueryRight" placeholder="باركود اليمين (تطابق تام)" inputmode="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();resolvePrintItemFromLocal('right',true);}" />
             <input id="printNameRight" type="hidden" value="" data-from-fetch="1" />
             <div class="btn-row" style="margin-top:8px;">
               <button type="button" id="printFetchBtnRight" class="btn-secondary" onclick="fetchItemForBarcodePrint('right')">جلب اليمين</button>
@@ -8466,7 +8765,8 @@ def home() -> HTMLResponse:
         }
       } catch (_) {}
     }
-    async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew) {
+    async function lookupHesabateItemOnce(barcode, q, cacheOnly, signal, refresh, discoverNew, barcodeExact) {
+      const exact = !!barcodeExact;
       const res = await fetch('/hesabate/lookup', {
         method: 'POST',
         cache: 'no-store',
@@ -8474,10 +8774,11 @@ def home() -> HTMLResponse:
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
           barcode: barcode || '',
-          q: q || '',
+          q: exact ? '' : (q || ''),
           cache_only: !!cacheOnly,
           refresh: !!refresh,
-          discover_new: !!discoverNew
+          discover_new: exact ? false : !!discoverNew,
+          barcode_exact: exact
         })
       });
       const live = await readJsonSafe(res);
@@ -8709,7 +9010,16 @@ def home() -> HTMLResponse:
           }
           const rows = apiRows.length ? apiRows : [];
           if (!rows.length) {
-            const miss = live.message || 'هذا الصنف مش داخل على حساباتي';
+            // لا تستبدل رسالة الخادم دائماً بـ «مش داخل» — قد يكون فهرس/مزامنة
+            let miss = live.message || 'لا يوجد صنف مطابق.';
+            if (isMissingFromHesabate(live)) {
+              miss = 'هذا الصنف مش داخل على حساباتي';
+            } else if (
+              live.products_fetch_mode === 'targeted_search_unsupported'
+              || live.needs_manual_import
+            ) {
+              miss = live.message || 'الصنف غير موجود في الفهرس المحلي — اضغط «تحديث الكل الآن» ثم أعد الجلب.';
+            }
             clearLocationTable(miss + (timingLine ? ` | ${timingLine}` : ''));
             if (stEl) stEl.textContent = miss;
             return;
@@ -8736,54 +9046,40 @@ def home() -> HTMLResponse:
     }
 
     function splitPrintQuery(raw) {
+      // طباعة الباركود: باركود فقط — بدون بحث برقم الصنف/الاسم
       const t = lightSanitizeBarcodeValue(raw);
       if (!t) return { barcode: '', q: '' };
-      // رقم صنف حساباتي غالباً أرقام قصيرة؛ غير ذلك باركود
-      if (/^\d{1,7}$/.test(t)) return { barcode: '', q: t };
       return { barcode: t, q: '' };
     }
-    function printBarcodeKeySet(raw) {
-      const keys = new Set();
+    function printBarcodeExactNeedle(raw) {
+      // تطابق تام حرفاً بحرف بعد تطبيع الأرقام العربية فقط — بدون حذف أصفار بادئة
       const t = lightSanitizeBarcodeValue(raw);
-      if (!t) return keys;
-      const alnum = String(t).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-      if (!alnum) return keys;
-      keys.add(alnum);
-      const canon = normalizeBarcodeLookupKeyClient(t);
-      if (canon) keys.add(String(canon).toUpperCase());
-      if (/^\d+$/.test(alnum)) {
-        const stripped = alnum.replace(/^0+/, '') || '0';
-        keys.add(stripped);
-      }
-      return keys;
+      if (!t) return '';
+      return String(t).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
     }
     function locationRowMatchesPrintBarcode(row, rawBc) {
-      // مطابقة باركود دقيقة فقط — لا اسم/ملاحظات/رقم أصلي
-      const keySet = printBarcodeKeySet(rawBc);
-      if (!keySet.size || !row) return false;
+      const want = printBarcodeExactNeedle(rawBc);
+      if (!want || !row) return false;
       const blobs = [row.barcode, row.unit_barcodes, row.normalized_barcode];
       for (let bi = 0; bi < blobs.length; bi++) {
         const cell = String(blobs[bi] == null ? '' : blobs[bi]).trim();
         if (!cell) continue;
+        // الشكل المدمج للخانة كاملة (مسافات تنسيق حساباتي: 223112U001        HI)
+        const full = cell.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        if (full && full === want) return true;
         const parts = cell.split(/[\s,;|]+/).map((s) => s.trim()).filter(Boolean);
         const toks = parts.length ? parts : [cell];
         for (let i = 0; i < toks.length; i++) {
           const alnum = String(toks[i]).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-          if (!alnum) continue;
-          if (keySet.has(alnum)) return true;
-          if (/^\d+$/.test(alnum)) {
-            const stripped = alnum.replace(/^0+/, '') || '0';
-            if (keySet.has(stripped)) return true;
-          }
-          const canon = normalizeBarcodeLookupKeyClient(toks[i]);
-          if (canon && keySet.has(String(canon).toUpperCase())) return true;
+          if (alnum && alnum === want) return true;
         }
       }
       return false;
     }
     function filterRowsExactPrintBarcode(rows, rawBc) {
       const list = Array.isArray(rows) ? rows : [];
-      if (!rawBc) return list;
+      const want = printBarcodeExactNeedle(rawBc);
+      if (!want) return [];
       return list.filter((r) => locationRowMatchesPrintBarcode(r, rawBc));
     }
     function splitOriginalTokens(raw) {
@@ -9394,19 +9690,12 @@ def home() -> HTMLResponse:
     async function lookupLocalLocationsForPrint(raw) {
       const t = lightSanitizeBarcodeValue(raw);
       if (!t) return [];
-      const { barcode, q } = splitPrintQuery(t);
-      let rows = [];
-      if (barcode) {
-        // بحث باركود فقط — ممنوع السقوط على بحث نصي (كان يجلب أصناف عشوائية)
-        const canon = normalizeBarcodeLookupKeyClient(barcode);
-        const p = { q_barcode: barcode, limit: '40' };
-        if (canon) p.q_barcode_canonical = canon;
-        rows = await searchLocationsLocal(p);
-        rows = filterRowsExactPrintBarcode(rows, barcode);
-      } else if (q) {
-        // رقم صنف قصير فقط
-        rows = await searchLocationsLocal({ q: q, limit: '40' });
-      }
+      const { barcode } = splitPrintQuery(t);
+      if (!barcode || !printBarcodeExactNeedle(barcode)) return [];
+      // باركود فقط + تطابق تام على الخادم والعميل
+      const p = { q_barcode: barcode, barcode_exact: '1', limit: '40' };
+      let rows = await searchLocationsLocal(p);
+      rows = filterRowsExactPrintBarcode(rows, barcode);
       return rankLocationRowsForPrint(rows);
     }
     async function resolvePrintItemFromLocal(side, showEmptyMsg) {
@@ -9414,7 +9703,7 @@ def home() -> HTMLResponse:
       const st = printSides[s];
       const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
       if (!raw) {
-        if (showEmptyMsg) setPrintFetchStatus('اكتب رقم الصنف أو الباركود.', s);
+        if (showEmptyMsg) setPrintFetchStatus('اكتب الباركود.', s);
         return false;
       }
       const gen = ++st.lookupGen;
@@ -9461,105 +9750,64 @@ def home() -> HTMLResponse:
       const s = printSideKey(side);
       const raw = ((document.getElementById('printQuery' + printSideCap(s)) || {}).value || '').trim();
       if (!raw) {
-        setPrintFetchStatus('اكتب رقم الصنف أو الباركود ثم اضغط جلب.', s);
+        setPrintFetchStatus('اكتب الباركود ثم اضغط جلب.', s);
         return;
       }
       const btn = document.getElementById('printFetchBtn' + printSideCap(s));
       if (btn) btn.disabled = true;
       try {
-        const { barcode, q } = splitPrintQuery(raw);
-        const isBarcodeQuery = !!barcode;
+        const { barcode } = splitPrintQuery(raw);
+        const needle = printBarcodeExactNeedle(barcode);
+        if (!needle) {
+          clearPrintSidePreview(s);
+          applyPrintLookupRows(s, [], 'الباركود غير صالح.');
+          return;
+        }
         const t0 = performance.now();
-        // 1) عرض محلي فوري إن وُجد بمطابقة باركود دقيقة فقط
-        setPrintFetchStatus('بحث في قاعدة المواقع...', s);
+        const missingMsg = 'هذا الباركود مش موجود — لازم يتطابق تماماً، وما رح ينحط صنف بديل.';
+        // 1) محلي: باركود بتطابق تام فقط
+        setPrintFetchStatus('بحث باركود تطابق تام...', s);
         let localRows = await lookupLocalLocationsForPrint(raw);
         if (localRows.length) {
-          applyPrintLookupRows(s, localRows, `محلي · جاري تحديث الموقع/البيانات من حساباتي...`, false);
+          applyPrintLookupRows(s, localRows, 'محلي · جاري التحقق من حساباتي...', false);
         } else {
           clearPrintSidePreview(s);
         }
-        // 2) تحديث موجّه من حساباتي
+        // 2) حساباتي: باركود فقط — بدون رقم صنف وبدون discover_new (يمنع أصناف عشوائية)
         setPrintFetchStatus(
-          localRows.length
-            ? 'تحديث هذا الصنف من حساباتي (موقع/اسم/باركود)...'
-            : 'غير موجود محلياً — جاري الجلب من حساباتي...',
+          localRows.length ? 'تحديث من حساباتي...' : 'غير موجود محلياً — جلب من حساباتي بالباركود فقط...',
           s
         );
-        let live = await lookupHesabateItemOnce(barcode, q, true, undefined, false, false);
-        let cacheRows = Array.isArray(live && live.rows) ? live.rows : [];
-        if (isBarcodeQuery) cacheRows = filterRowsExactPrintBarcode(cacheRows, barcode);
-        if (!localRows.length && cacheRows.length) {
-          localRows = rankLocationRowsForPrint(cacheRows);
-          applyPrintLookupRows(s, localRows, `كاش · جاري التحديث من حساباتي...`, false);
-        }
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), localRows.length || cacheRows.length ? 45000 : 280000);
+        const to = setTimeout(() => ctrl.abort(), 45000);
+        let live = null;
         try {
-          // discover_new فقط إن لم نجد مطابقة باركود دقيقة محلياً
-          live = await lookupHesabateItemOnce(
-            barcode, q, false, ctrl.signal, true, !(localRows.length || cacheRows.length)
-          );
+          live = await lookupHesabateItemOnce(barcode, '', false, ctrl.signal, true, false, true);
         } finally {
           clearTimeout(to);
         }
-        if (
-          live && live.ok !== false
-          && !(Array.isArray(live.rows) && live.rows.length)
-          && (localRows.length || cacheRows.length)
-          && (live.products_fetch_mode === 'local_only_no_pro_id'
-            || live.products_fetch_mode === 'targeted_search_unsupported')
-        ) {
-          const ctrl2 = new AbortController();
-          const to2 = setTimeout(() => ctrl2.abort(), 280000);
-          try {
-            live = await lookupHesabateItemOnce(barcode, q, false, ctrl2.signal, true, true);
-          } finally {
-            clearTimeout(to2);
-          }
-        }
-        let apiRows = Array.isArray(live && live.rows) ? live.rows : [];
-        if (isBarcodeQuery) apiRows = filterRowsExactPrintBarcode(apiRows, barcode);
+        let apiRows = filterRowsExactPrintBarcode(
+          Array.isArray(live && live.rows) ? live.rows : [],
+          barcode
+        );
         const uiMs = Math.round(performance.now() - t0);
         const timingLine = formatLookupTiming(live, uiMs);
-        const missingMsg = 'هذا الباركود/الصنف مش موجود بحساباتي — ما رح ينحط صنف بديل.';
         if (!live || live.ok === false) {
-          if (isBarcodeQuery) {
-            clearPrintSidePreview(s);
-            applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
-          } else if (localRows.length) {
-            applyPrintLookupRows(
-              s,
-              localRows,
-              `بقيت النتيجة المحلية · تعذّر التحديث: ${(live && live.message) || 'خطأ'}`,
-              false
-            );
-          } else {
-            applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
-          }
+          clearPrintSidePreview(s);
+          applyPrintLookupRows(s, [], (live && live.message) || 'تعذر جلب الصنف.');
           return;
         }
         applyHesabateUsageFromResponse(live, live.message || '');
         applyHesabateSearchVersion(live);
-        if (isMissingFromHesabate(live) || (!apiRows.length && (live.not_found || isBarcodeQuery))) {
-          // باركود غير موجود: لا تعرض صنفاً محلياً خاطئاً
+        if (!apiRows.length || isMissingFromHesabate(live) || live.not_found) {
           clearPrintSidePreview(s);
           applyPrintLookupRows(s, [], missingMsg + (timingLine ? ` | ${timingLine}` : ''));
           return;
         }
-        if (!apiRows.length) {
-          if (!isBarcodeQuery && localRows.length) {
-            applyPrintLookupRows(s, localRows, `محلي فقط · ${timingLine || 'بدون تحديث من حساباتي'}`, false);
-          } else {
-            clearPrintSidePreview(s);
-            applyPrintLookupRows(s, [], (live.message || missingMsg) + (timingLine ? ` | ${timingLine}` : ''));
-          }
-          return;
-        }
-        // بيانات حساباتي المحدّثة المطابقة للباركود فقط
         applyPrintLookupRows(
           s,
           rankLocationRowsForPrint(apiRows),
-          `${live.message || `تم تحديث الصنف · ${apiRows.length}`} | ${timingLine}`,
+          `${live.message || ('تم · باركود مطابق ' + needle)} | ${timingLine}`,
           true
         );
         scheduleSharedLocationAndPrintSync('print-fetch');
@@ -9567,12 +9815,8 @@ def home() -> HTMLResponse:
         let hint = 'تعذر جلب الصنف.';
         if (err && err.name === 'AbortError') hint = 'انتهت المهلة — أعد المحاولة.';
         else if (err && err.message) hint = String(err.message);
-        const st = printSides[printSideKey(side)];
-        if (st && st.rows && st.rows.length) {
-          setPrintFetchStatus(`بقيت النتيجة السابقة · ${hint}`, s);
-        } else {
-          applyPrintLookupRows(s, [], hint);
-        }
+        clearPrintSidePreview(s);
+        applyPrintLookupRows(s, [], hint);
         try { refreshHesabateStatus(); } catch (_) {}
       } finally {
         if (btn) btn.disabled = false;
@@ -10464,6 +10708,12 @@ def home() -> HTMLResponse:
         [full, stripped].forEach((k) => { if (k && !out.includes(k)) out.push(k); });
       } else {
         out.push(up);
+        // باركود بمسافات تنسيق: الجزء الأول أيضاً (223112U001 من 223112U001        HI)
+        if (/\s/.test(s)) {
+          const first = s.split(/[\s,/|;\\+]+/).map((p) => p.trim()).filter(Boolean)[0] || '';
+          const fk = String(first).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+          if (fk && fk.length >= 6 && !out.includes(fk)) out.push(fk);
+        }
       }
       return out.slice(0, LOCATION_BARCODE_SEARCH_KEYS_MAX_JS);
     }
@@ -14124,6 +14374,7 @@ def search_locations(
     q: str = "",
     q_barcode: str = "",
     q_barcode_canonical: str = "",
+    barcode_exact: int = Query(default=0, ge=0, le=1),
     barcode_debug: int = Query(default=0, ge=0, le=1),
     limit: int = Query(default=LOCATION_SEARCH_LIMIT_DEFAULT, ge=1, le=LOCATION_SEARCH_LIMIT_MAX),
     offset: int = Query(default=0, ge=0),
@@ -14132,6 +14383,7 @@ def search_locations(
     q: بحث نصي (normalized_text إن وُجد، وإلا مطابقة على أعمدة الصنف/الشركة/العلامة/الرقم/الملاحظات).
     q_barcode: الباركود كما أدخله المستخدم (خام) — يُعاد تطبيعه على الخادم؛ إن وُجد يُتجاهل q.
     q_barcode_canonical: اختياري من الواجهة للمطابقة والتتبع؛ لا يُستخدم للاستعلام دون إعادة تطبيع الخادم.
+    barcode_exact=1: تطابق تام للمفتاح الكامل بدون حذف أصفار بادئة وبدون fallback واسع.
     barcode_debug=1: إخراج تتبع خفيف في استجابة الـ JSON وفي سجلات الخادم (مع BARCODE_SEARCH_DEBUG أو الطلب).
     """
     t_search0 = time.perf_counter()
@@ -14139,6 +14391,7 @@ def search_locations(
     off = int(offset)
     meta: dict[str, Any] = {"has_more": False, "limit": lim, "offset": off}
     debug_req = bool(int(barcode_debug)) or BARCODE_SEARCH_DEBUG
+    exact_bc = bool(int(barcode_exact))
 
     # البحث دائماً من النسخة المحلية فقط (فوري). لا تنزيل API هنا.
     # جلب صنف واحد: /hesabate/lookup — استيراد الكل: زر الاستيراد.
@@ -14173,7 +14426,7 @@ def search_locations(
                         pass
 
             if qb_raw:
-                b_keys = barcode_search_keys(qb_raw)
+                b_keys = barcode_search_keys_exact(qb_raw) if exact_bc else barcode_search_keys(qb_raw)
                 if not b_keys:
                     _barcode_search_debug_log(
                         debug_req, "no-keys-after-normalize", raw=qb_raw, keys=b_keys, kind="none"
@@ -14201,17 +14454,28 @@ def search_locations(
                     norm_tokens=[],
                     limit=lim,
                     offset=off,
+                    barcode_exact=exact_bc,
                 )
                 if rows:
                     match_kind = "exact_index"
+                # باركود بمسافات تنسيق (223112U001        HI) قبل إعادة الفهرسة
                 if not rows:
+                    rows, has_more = _search_locations_barcode_spaced_compact_fallback(
+                        conn, key_set, lim, off, barcode_exact=exact_bc
+                    )
+                    if rows:
+                        match_kind = "spaced_compact_barcode"
+                # barcode_exact: بدون LIKE واسع وبدون مرادفات أصفار
+                if not rows and not exact_bc:
                     rows, has_more = _search_locations_barcode_python_fallback(
-                        conn, key_set, lim, off
+                        conn, key_set, lim, off, barcode_exact=False
                     )
                     if rows:
                         match_kind = "legacy_barcode_fallback"
-                if not rows:
-                    rows, has_more = _search_locations_barcode_like_fallback(conn, key_set, lim, off)
+                if not rows and not exact_bc:
+                    rows, has_more = _search_locations_barcode_like_fallback(
+                        conn, key_set, lim, off, barcode_exact=False
+                    )
                     if rows:
                         match_kind = "like_barcode_fallback"
                 if not rows:
@@ -14230,17 +14494,26 @@ def search_locations(
                         norm_tokens=[],
                         limit=lim,
                         offset=off,
+                        barcode_exact=exact_bc,
                     )
                     if rows:
                         match_kind = "exact_index_after_backfill"
                 if not rows:
+                    rows, has_more = _search_locations_barcode_spaced_compact_fallback(
+                        conn, key_set, lim, off, barcode_exact=exact_bc
+                    )
+                    if rows:
+                        match_kind = "spaced_compact_barcode_after_backfill"
+                if not rows and not exact_bc:
                     rows, has_more = _search_locations_barcode_python_fallback(
-                        conn, key_set, lim, off
+                        conn, key_set, lim, off, barcode_exact=False
                     )
                     if rows:
                         match_kind = "legacy_barcode_fallback_after_backfill"
-                if not rows:
-                    rows, has_more = _search_locations_barcode_like_fallback(conn, key_set, lim, off)
+                if not rows and not exact_bc:
+                    rows, has_more = _search_locations_barcode_like_fallback(
+                        conn, key_set, lim, off, barcode_exact=False
+                    )
                     if rows:
                         match_kind = "like_barcode_fallback_after_backfill"
                 # لا نُحوّل بحث الباركود إلى بحث نصي — كان يُرجع أصنافاً كثيرة بالخطأ
@@ -14511,13 +14784,20 @@ def hesabate_lookup_item(payload: HesabateLookupIn) -> dict:
             "usage": hesabate_usage_summary(),
         }
     try:
+        exact_bc = bool(payload.barcode_exact)
+        if exact_bc:
+            qt = ""
+            b_keys = barcode_search_keys_exact(qb) if qb else None
+        else:
+            b_keys = barcode_search_keys(qb) if qb else None
         live = live_lookup_locations_from_hesabate(
             q_barcode=qb,
             q_text=qt,
-            barcode_keys=barcode_search_keys(qb) if qb else None,
+            barcode_keys=b_keys,
             cache_only=bool(payload.cache_only),
             refresh=bool(payload.refresh),
-            discover_new=bool(payload.discover_new),
+            discover_new=False if exact_bc else bool(payload.discover_new),
+            barcode_exact=exact_bc,
         )
     except Exception as exc:
         return {

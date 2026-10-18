@@ -437,8 +437,14 @@ def row_matches_barcode_keys(row: Dict[str, str], barcode_keys: List[str]) -> bo
     candidates: List[str] = []
     for raw in (row.get("barcode"), row.get("original_number"), row.get("notes")):
         raw_s = _text(raw)
-        parts = re.split(r"[\s,/|;]+", raw_s) if raw_s else []
-        if raw_s and raw_s not in parts:
+        if not raw_s:
+            continue
+        # مدمج كامل أولاً (باركود حساباتي بمسافات داخلية)
+        for v in _key_variants(raw_s):
+            if v not in candidates:
+                candidates.append(v)
+        parts = re.split(r"[\s,/|;]+", raw_s)
+        if raw_s not in parts:
             parts.insert(0, raw_s)
         for part in parts:
             for v in _key_variants(part):
@@ -550,6 +556,9 @@ def filter_raw_products(
                 raw_s = _text(raw)
                 if not raw_s:
                     continue
+                # الشكل المدمج للخانة كاملة (223112U001        HI → 223112U001HI)
+                for v in _key_variants(raw_s):
+                    bc_keys.add(v)
                 # فواصل لاتينية + عربية + + و \\ حتى لا تُدمج عدة باركودات في مفتاح واحد
                 parts = re.split(r"[\s,/|;\\+،؛]+", raw_s)
                 if raw_s and raw_s not in parts:
