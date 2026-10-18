@@ -7519,7 +7519,7 @@ def home() -> HTMLResponse:
         min-height: 2.8mm;
         max-width: 100%;
         font-family: Consolas, "Courier New", "Segoe UI", monospace;
-        font-size: 10px;
+        font-size: 8px;
         font-weight: 900;
         color: #000;
         letter-spacing: .05em;
@@ -9409,21 +9409,15 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      /*
-       * قابل للمسح على Rongta 203dpi:
-       * - حد أدنى لوحدة Code128 = 2 نقاط (≈0.25مم) — وحدة 1 لا تُقرأ غالباً
-       * - Quiet Zone = 10× لا تُقصّ
-       * - رسم canvas→PNG بأبعاد mm = نقاط/dpi (بدون تشويه SVG/object-fit)
-       * - ارتفاع أعمدة كافٍ + بدون قص overflow
-       */
+      // بسيط: Code128 · ارتفاع ثابت 8مم · الطويل يُصغَّر بالعرض ليدخل اللزقة
       const cfg = PRINT_BARCODE_CFG;
-      const DPI = cfg.dpi;
+      const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
-      const QUIET = cfg.quietModulesEach;
-      const MIN_DOTS = cfg.minModuleDots;
-      const MAX_DOTS = cfg.maxModuleDots;
-      const availMm = Math.max(20, cfg.labelWmm - 2 * cfg.marginMm);
+      const QUIET = 10;
+      const barHmm = 8;
+      const availMm = Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1));
       const availDots = Math.floor(availMm * dotsPerMm);
+      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
 
       function probeSymbolMods(val) {
         const c = document.createElement('canvas');
@@ -9451,33 +9445,8 @@ def home() -> HTMLResponse:
       if (!probed || !probed.mods) return false;
       const totalMods = probed.mods + QUIET * 2;
       let moduleDots = Math.floor(availDots / totalMods);
-      if (moduleDots > MAX_DOTS) moduleDots = MAX_DOTS;
-      let thinWarn = '';
-      if (moduleDots < MIN_DOTS) {
-        // آخر حل: وحدة 1 نقطة مع رسم 1:1 — بدون تشويه/قص
-        if (totalMods > availDots) {
-          const needMm = (totalMods * MIN_DOTS) / dotsPerMm;
-          const msg = 'الباركود أطول من اللزقة للقراءة (يحتاج ≈'
-            + needMm.toFixed(1) + ' مم). استخدم لزقة أعرض.';
-          if (wrap) {
-            const old = wrap.querySelector('img.pl-bc, svg.pl-bc, .pl-bc-rot');
-            if (old) old.remove();
-            showPrintBarcodeWarn(wrap, msg);
-          }
-          try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
-          if (labelEl) labelEl.dataset.bcUnreliable = '1';
-          return false;
-        }
-        moduleDots = 1;
-        thinWarn = 'وحدة دقيقة (1 نقطة) — قرّب الماسح وزد التباين إن لزم';
-      }
-
-      // الطويل (وحدة أضيق) → ارتفاع أعمدة أقل؛ القصير يظل بارتفاع أوضح
-      let barHmm = cfg.barHMinMm;
-      if (moduleDots <= 1) barHmm = 5.0;
-      else if (moduleDots === 2) barHmm = 6.5;
-      else barHmm = Math.min(cfg.barHMaxMm || 12, 8);
-      const heightDots = Math.max(36, Math.round(barHmm * dotsPerMm));
+      if (moduleDots < 1) moduleDots = 1;
+      if (moduleDots > 3) moduleDots = 3;
 
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
@@ -9499,48 +9468,38 @@ def home() -> HTMLResponse:
         return false;
       }
       if (!canvas.width || !canvas.height) return false;
-      if (canvas.width > availDots + 2) {
-        const msg = 'تعذر ملاءمة Code128 داخل اللزقة مع وحدة قابلة للمسح.';
-        if (wrap) showPrintBarcodeWarn(wrap, msg);
-        try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
-        if (labelEl) labelEl.dataset.bcUnreliable = '1';
-        return false;
-      }
 
-      const wMm = canvas.width / dotsPerMm;
-      const hMm = canvas.height / dotsPerMm;
+      // العرض: إن زاد عن اللزقة صغّره ليتسع · الارتفاع ثابت 8مم
+      let wMm = canvas.width / dotsPerMm;
+      if (wMm > availMm) wMm = availMm;
+      const hMm = barHmm;
+
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = displayCode;
-      img.title = 'Code128 · X=' + moduleDots + 'dot · H=' + barHmm + 'mm · QZ=' + QUIET + ' · ' + DPI + 'dpi';
+      img.title = 'Code128 · H=8mm · fit ' + availMm.toFixed(1) + 'mm';
       img.src = canvas.toDataURL('image/png');
       img.width = canvas.width;
       img.height = canvas.height;
-      img.style.width = wMm.toFixed(4) + 'mm';
-      img.style.height = hMm.toFixed(4) + 'mm';
-      img.style.maxWidth = 'none';
-      img.style.maxHeight = 'none';
+      img.style.width = wMm.toFixed(3) + 'mm';
+      img.style.height = hMm.toFixed(3) + 'mm';
+      img.style.maxWidth = '100%';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.flex = '0 0 auto';
-      img.style.objectFit = 'none';
+      img.style.objectFit = 'fill';
       img.style.imageRendering = 'pixelated';
-      img.style.imageRendering = 'crisp-edges';
       targetEl.replaceWith(img);
       if (labelEl) labelEl.dataset.bcUnreliable = '0';
+      clearPrintBarcodeWarn(wrap);
       try {
-        setPrintFetchStatus(
-          (thinWarn ? thinWarn + ' · ' : '')
-          + 'Code128 · X=' + moduleDots + ' نقطة · H='
-          + barHmm + 'مم · QZ=' + QUIET + ' · PNG@' + DPI + 'dpi',
-          layoutSide
-        );
+        setPrintFetchStatus('Code128 · ارتفاع 8مم · عرض ملاءَم للزقة', layoutSide);
       } catch (_) {}
       return true;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // خط الرقم تحت الباركود = 10 دائماً — حتى لو الباركود الطويل ضيّقنا عرضه
+      // خط الرقم تحت الباركود = 8
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
@@ -9549,13 +9508,13 @@ def home() -> HTMLResponse:
       el.style.color = '#000';
       el.style.lineHeight = '1';
       el.style.flex = '0 0 auto';
-      el.style.minHeight = '2.9mm';
-      el.style.height = '2.9mm';
+      el.style.minHeight = '2.4mm';
+      el.style.height = '2.4mm';
       el.style.overflow = 'hidden';
       el.style.textOverflow = 'clip';
       const n = display.length;
-      el.style.letterSpacing = n > 28 ? '0' : (n > 20 ? '0.02em' : '0.05em');
-      el.style.fontSize = '10px';
+      el.style.letterSpacing = n > 28 ? '0' : (n > 20 ? '0.02em' : '0.04em');
+      el.style.fontSize = '8px';
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -10105,9 +10064,9 @@ def home() -> HTMLResponse:
       minModuleDots: 2,
       maxModuleDots: 3,
       barHMinMm: 8,
-      barHMaxMm: 12,
+      barHMaxMm: 8,
       quietModulesEach: 10,
-      textReserveMm: 2.9
+      textReserveMm: 2.4
     };
     function code128ModulesCount(n) {
       const nn = Math.max(0, Number(n) || 0);
@@ -10145,7 +10104,7 @@ def home() -> HTMLResponse:
       namePx: 26,
       originalPx: 14,
       locationPx: 11,
-      bcTextPx: 10,
+      bcTextPx: 8,
       nameXmm: -3.04,
       nameYmm: 0.35,
       nameWmm: 54.14,
@@ -10173,7 +10132,7 @@ def home() -> HTMLResponse:
       namePx: 28,
       originalPx: 13,
       locationPx: 10,
-      bcTextPx: 10,
+      bcTextPx: 8,
       nameXmm: -1.07,
       nameYmm: 0.47,
       nameWmm: 56.81,
@@ -10200,7 +10159,7 @@ def home() -> HTMLResponse:
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 6,
+        version: 7,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10441,15 +10400,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v6 = خط رقم الباركود 10.0
-        if (ver < 6) {
+        // v7 = ارتفاع باركود 8مم + خط الرقم 8
+        if (ver < 7) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 6,
+            version: 7,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10461,7 +10420,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 6,
+        version: 7,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10683,7 +10642,7 @@ def home() -> HTMLResponse:
         namePx: clampPrintNum(Math.round(layout.nameHmm * 3.35), 14, 64, PRINT_LAYOUT_DEFAULTS.namePx),
         originalPx: clampPrintNum(Math.round(layout.origHmm * 2.95), 6, 22, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(Math.round(layout.locHmm * 2.95), 6, 20, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: 10
+        bcTextPx: 8
       };
     }
     let printDesignerDrag = null;
