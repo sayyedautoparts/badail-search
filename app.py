@@ -7230,8 +7230,8 @@ def home() -> HTMLResponse:
       color: #5b667a;
     }
     .print-label-mock-host {
-      /* معاينة أكبر على الشاشة بنسبة ثابتة مع اللزقة 50×25 مم */
-      --mock-scale: 1.55;
+      /* معاينة أوضح على الشاشة للزقة 50×25 مم */
+      --mock-scale: 2.2;
       width: 50mm;
       height: 25mm;
       max-width: none;
@@ -7292,8 +7292,8 @@ def home() -> HTMLResponse:
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 0.15mm;
-      padding: 0 0.3mm;
+      gap: 0.35mm;
+      padding: 0 0.2mm;
     }
     .print-label-mock-host .pl-bc-wrap img.pl-bc,
     .print-label-mock-host .pl-bc-wrap svg {
@@ -7303,8 +7303,12 @@ def home() -> HTMLResponse:
       image-rendering: pixelated;
     }
     .print-label-mock-host .pl-bc-text {
-      font-family: Consolas, "Courier New", monospace;
-      font-weight: 700;
+      flex: 0 0 auto;
+      min-height: 2.8mm;
+      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-weight: 900;
+      color: #000;
+      letter-spacing: 0.04em;
       white-space: pre;
       line-height: 1;
       text-align: center;
@@ -7450,8 +7454,8 @@ def home() -> HTMLResponse:
         flex-direction: column;
         align-items: center;
         justify-content: flex-start;
-        gap: 0.15mm;
-        padding: 0 0.3mm;
+        gap: 0.35mm;
+        padding: 0 0.2mm;
       }
       .print-label .pl-bc-wrap svg,
       .print-label .pl-bc-wrap img.pl-bc {
@@ -7467,11 +7471,13 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-bc-text {
         flex: 0 0 auto;
+        min-height: 2.8mm;
         max-width: 100%;
-        font-family: Consolas, "Courier New", monospace;
-        font-size: 6.5px;
-        font-weight: 700;
-        letter-spacing: .02em;
+        font-family: Consolas, "Courier New", "Segoe UI", monospace;
+        font-size: 9px;
+        font-weight: 900;
+        color: #000;
+        letter-spacing: .05em;
         margin: 0;
         padding: 0;
         line-height: 1;
@@ -7558,8 +7564,8 @@ def home() -> HTMLResponse:
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 0.15mm;
-      padding: 0 0.3mm;
+      gap: 0.35mm;
+      padding: 0 0.2mm;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg,
     .print-label-sheet.print-measure .pl-bc-wrap img.pl-bc {
@@ -7571,6 +7577,12 @@ def home() -> HTMLResponse:
       shape-rendering: crispEdges;
     }
     .print-label-sheet.print-measure .pl-bc-text {
+      flex: 0 0 auto;
+      min-height: 2.8mm;
+      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-weight: 900;
+      color: #000;
+      letter-spacing: .05em;
       white-space: pre;
       text-align: center;
       max-width: 100%;
@@ -7629,8 +7641,8 @@ def home() -> HTMLResponse:
     .print-designer-scroll {
       overflow: auto;
       max-width: 100%;
-      padding: 28px 24px 40px;
-      min-height: 220px;
+      padding: 20px 16px 32px;
+      min-height: 280px;
     }
     .print-designer-sheet {
       position: relative;
@@ -7747,8 +7759,12 @@ def home() -> HTMLResponse:
       max-height: 100%;
     }
     .pdg-bc-text {
-      font-family: Consolas, "Courier New", monospace;
-      font-weight: 700;
+      flex: 0 0 auto;
+      min-height: 12px;
+      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-weight: 900;
+      color: #000;
+      letter-spacing: 0.04em;
       white-space: pre;
       line-height: 1;
       max-width: 100%;
@@ -9352,9 +9368,10 @@ def home() -> HTMLResponse:
           : 48.6);
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
       const usableMm = Math.max(16, Math.min(contentWmm, boxWmm - 0.2));
-      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 13.8);
-      const textReserveMm = Math.max(1.3, Math.min(2.0, boxHmm * 0.15));
-      const heightMm = Math.max(6.0, Math.min(18, boxHmm - textReserveMm));
+      const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.5);
+      // مساحة أوضح للرقم تحت الباركود داخل اللزقة 25 مم
+      const textReserveMm = Math.max(2.7, Math.min(3.4, boxHmm * 0.28));
+      const heightMm = Math.max(5.5, Math.min(16, boxHmm - textReserveMm));
       const usableDots = Math.max(100, Math.floor(usableMm * dotsPerMm));
       const heightDots = Math.max(48, Math.round(heightMm * dotsPerMm));
 
@@ -9465,21 +9482,28 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // النص تحت الباركود: كما بالمصدر (مع المسافات)
+      // النص تحت الباركود: كما بالمصدر (مع المسافات) — خط أوضح للطباعة الحرارية
       const display = printBarcodeExactValue(code);
       el.textContent = display;
       el.style.whiteSpace = 'pre';
+      el.style.fontFamily = 'Consolas, "Courier New", "Segoe UI", monospace';
+      el.style.fontWeight = '900';
+      el.style.color = '#000';
+      el.style.letterSpacing = '0.05em';
+      el.style.lineHeight = '1';
+      el.style.flex = '0 0 auto';
+      el.style.minHeight = '2.8mm';
       const side = (typeof printLayoutSideFromEl === 'function') ? printLayoutSideFromEl(el) : 'left';
       const s = (typeof getPrintLayoutSettings === 'function') ? getPrintLayoutSettings(side) : null;
-      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 8;
+      const maxPx = Number(el.dataset.maxBcTextPx) || (s && s.bcTextPx) || 11;
       const n = display.length;
       let hint = maxPx;
-      if (n > 16) hint = Math.min(hint, 7);
-      if (n > 22) hint = Math.min(hint, 6.2);
-      if (n > 28) hint = Math.min(hint, 5.5);
-      if (n > 34) hint = Math.min(hint, 5);
+      if (n > 18) hint = Math.min(hint, 10);
+      if (n > 24) hint = Math.min(hint, 9);
+      if (n > 30) hint = Math.min(hint, 8);
+      if (n > 38) hint = Math.min(hint, 7);
       el.style.fontSize = hint + 'px';
-      fitTextIntoBox(el, hint, 4.5);
+      fitTextIntoBox(el, hint, 6.5);
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -10017,62 +10041,63 @@ def home() -> HTMLResponse:
       contentH: 25,
       rightContentShiftXmm: 0
     };
-    const PRINT_DESIGNER_PX_PER_MM = 5.6;
+    // مقياس شاشة أوضح للزقة 50×25 مم (GUI + سحب)
+    const PRINT_DESIGNER_PX_PER_MM = 7.2;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH;
-    // قياسات معتمدة من GUI المستخدم (2026-10-18)
+    // قياسات المستخدم المعتمدة — مضبوطة لتناسب لزقة 50×25 مم (نسب GUI كما هي)
     const PRINT_LAYOUT_DEFAULTS_LEFT = {
-      namePx: 30,
-      originalPx: 17,
-      locationPx: 13,
-      bcTextPx: 10,
+      namePx: 26,
+      originalPx: 14,
+      locationPx: 11,
+      bcTextPx: 11,
       nameXmm: -3.04,
-      nameYmm: 0.41,
+      nameYmm: 0.35,
       nameWmm: 54.14,
-      nameHmm: 9.43,
+      nameHmm: 8.03,
       origXmm: -3.75,
-      origYmm: 9.83,
+      origYmm: 8.37,
       origWmm: 31.72,
-      origHmm: 5.93,
+      origHmm: 5.05,
       locXmm: 28.62,
-      locYmm: 10.82,
+      locYmm: 9.22,
       locWmm: 22.48,
-      locHmm: 4.57,
+      locHmm: 3.89,
       bcXmm: -3.93,
-      bcYmm: 15.89,
+      bcYmm: 13.54,
       bcWmm: 54.49,
-      bcHmm: 13.46,
-      nameHeightMm: 9.43,
-      metaHeightMm: 5.93,
-      bcHeightMm: 13.46,
+      bcHmm: 11.2,
+      nameHeightMm: 8.03,
+      metaHeightMm: 5.05,
+      bcHeightMm: 11.2,
       origWidthPct: 58.5,
       bcShiftXmm: 0,
       bcShiftYmm: 0
     };
     const PRINT_LAYOUT_DEFAULTS_RIGHT = {
-      namePx: 32,
-      originalPx: 15,
-      locationPx: 12,
-      bcTextPx: 10,
+      namePx: 28,
+      originalPx: 13,
+      locationPx: 10,
+      bcTextPx: 11,
       nameXmm: -1.07,
-      nameYmm: 0.54,
+      nameYmm: 0.47,
       nameWmm: 56.81,
-      nameHmm: 10.15,
+      nameHmm: 8.87,
       origXmm: -1.61,
-      origYmm: 9.83,
+      origYmm: 8.59,
       origWmm: 36.51,
-      origHmm: 5.43,
+      origHmm: 4.75,
       locXmm: 35.86,
-      locYmm: 10.99,
+      locYmm: 9.61,
       locWmm: 19.53,
-      locHmm: 4.11,
+      locHmm: 3.59,
       bcXmm: -1.61,
-      bcYmm: 15.44,
+      bcYmm: 13.5,
       bcWmm: 55.03,
-      bcHmm: 13.16,
-      nameHeightMm: 10.15,
-      metaHeightMm: 5.43,
-      bcHeightMm: 13.16,
+      bcHmm: 11.3,
+      nameHeightMm: 8.87,
+      metaHeightMm: 4.75,
+      bcHeightMm: 11.3,
       origWidthPct: 65.1,
       bcShiftXmm: 0,
       bcShiftYmm: 0
@@ -10080,7 +10105,7 @@ def home() -> HTMLResponse:
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 4,
+        version: 5,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10279,7 +10304,7 @@ def home() -> HTMLResponse:
         namePx: clampPrintNum(raw.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
         originalPx: clampPrintNum(raw.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(raw.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: clampPrintNum(raw.bcTextPx, 4.5, 12, PRINT_LAYOUT_DEFAULTS.bcTextPx),
+        bcTextPx: clampPrintNum(raw.bcTextPx, 6.5, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx),
         nameXmm: clampPrintNum(raw.nameXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.nameXmm),
         nameYmm: clampPrintNum(raw.nameYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.nameYmm),
         nameWmm: clampPrintNum(raw.nameWmm, 8, 90, PRINT_LAYOUT_DEFAULTS.nameWmm),
@@ -10315,15 +10340,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v4 = قياسات GUI المعتمدة (يسار/يمين منفصلين)
-        if (ver < 4) {
+        // v5 = قياسات GUI المعتمدة مضبوطة للزقة 50×25 مم + رقم باركود أوضح
+        if (ver < 5) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 4,
+            version: 5,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10335,7 +10360,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 4,
+        version: 5,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10466,7 +10491,7 @@ def home() -> HTMLResponse:
         renderPrintSideLabelMock('right');
       } catch (_) {}
       const el = document.getElementById('printDesignerReadout');
-      if (el) el.textContent = 'تمت إعادة القياسات المعتمدة (يسار/يمين من GUI)';
+      if (el) el.textContent = 'تمت إعادة القياسات للزقة 50×25 مم (GUI معتمد + رقم باركود أوضح)';
     }
     function fitTextIntoBox(el, maxPx, minPx) {
       if (!el) return minPx;
@@ -10546,7 +10571,9 @@ def home() -> HTMLResponse:
       if (bcText) {
         const bc = printBarcodeExactValue(sample.barcode || '');
         bcText.textContent = bc || '—';
-        fitTextIntoBox(bcText, layout.bcTextPx, 4.5);
+        bcText.style.fontWeight = '900';
+        bcText.style.letterSpacing = '0.04em';
+        fitTextIntoBox(bcText, layout.bcTextPx, 6.5);
       }
     }
     function deriveMaxFontsFromZones(layout) {
@@ -10555,7 +10582,7 @@ def home() -> HTMLResponse:
         namePx: clampPrintNum(Math.round(layout.nameHmm * 3.35), 14, 64, PRINT_LAYOUT_DEFAULTS.namePx),
         originalPx: clampPrintNum(Math.round(layout.origHmm * 2.95), 6, 22, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(Math.round(layout.locHmm * 2.95), 6, 20, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: clampPrintNum(Math.round(layout.bcHmm * 0.82), 4.5, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx)
+        bcTextPx: clampPrintNum(Math.round(Math.max(10, layout.bcHmm * 0.98)), 8, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx)
       };
     }
     let printDesignerDrag = null;
@@ -10825,9 +10852,15 @@ def home() -> HTMLResponse:
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
         wrap.style.justifyContent = 'flex-start';
+        wrap.style.gap = '0.35mm';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
+        bcText.style.flex = '0 0 auto';
+        bcText.style.minHeight = '2.8mm';
+        bcText.style.fontWeight = '900';
+        bcText.style.letterSpacing = '0.05em';
+        bcText.style.color = '#000';
       }
     }
     function fitPrintNameDynamic(el) {
