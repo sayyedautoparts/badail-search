@@ -8108,7 +8108,7 @@ def home() -> HTMLResponse:
           <summary>شكل الليبل · تصميم GUI — اسحب للنقل · المربعات الزرقا للتكبير/التصغير</summary>
           <div class="print-designer-body">
             <p class="print-designer-hint">
-              الورقة <strong>106×31 مم</strong> · كل لزقة <strong>50×30 مم</strong> · هامش <strong>0.5 مم</strong> · فجوة <strong>5 مم</strong> · محتوى اليمين بإزاحة <strong>+2 مم</strong>.
+              الورقة <strong>106×31 مم</strong> · كل لزقة <strong>50×30 مم</strong> · هامش <strong>0.5 مم</strong> · فجوة <strong>5 مم</strong> · القياسات الافتراضية من <strong>GUI المعتمد</strong> (اليسار واليمين مستقلين مع إزاحة اليمين).
               <strong>اليسار واليمين مستقلين</strong> — اسحب وسط الخانة لنقلها، وامسك المربعات الزرقا:
               <strong>زاوية</strong> = كبّر/صغّر الكل · <strong>يمين</strong> = العرض · <strong>تحت</strong> = الارتفاع.
               اللي تثبّته يصير القياس الرسمي للطباعة، والخط بيتصغّر لحاله جوّا مساحتو.
@@ -10013,43 +10013,81 @@ def home() -> HTMLResponse:
       margin: 0.5,
       gap: 5,
       labelW: 50,
-      labelH: 30, // ارتفاع اللزقة (+3 مم عن 27)
+      labelH: 30,
       padY: 0.5,
       contentH: 29.0,
-      rightContentShiftXmm: 2 // إزاحة معلومات لزقة اليمين باتجاه اليمين
+      // إزاحة اليمين مدمجة داخل PRINT_LAYOUT_DEFAULTS_RIGHT (قياسات GUI المعتمدة)
+      rightContentShiftXmm: 0
     };
     // مقياس GUI أكبر ليتناسب مع لزقة 50×30 مم
     const PRINT_DESIGNER_PX_PER_MM = 5.6;
     const PRINT_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 1.4;
     const PRINT_CONTENT_H_MM = PRINT_SHEET_MM.labelH - 0.65;
-    const PRINT_LAYOUT_DEFAULTS = {
-      namePx: 36,
-      originalPx: 9,
-      locationPx: 9,
-      bcTextPx: 7,
-      nameXmm: 0,
-      nameYmm: 0,
-      nameWmm: 48.6,
-      nameHmm: 12.0,
-      origXmm: 0,
-      origYmm: 12.0,
-      origWmm: 24.0,
-      origHmm: 3.2,
-      locXmm: 24.6,
-      locYmm: 12.0,
-      locWmm: 24.0,
-      locHmm: 3.2,
-      bcXmm: 0,
-      bcYmm: 15.2,
-      bcWmm: 48.6,
-      bcHmm: 13.8, // يستغل المساحة تحت الباركود بعد زيادة الارتفاع
-      nameHeightMm: 12.0,
-      metaHeightMm: 3.2,
-      bcHeightMm: 13.8,
-      origWidthPct: 50,
+    // قياسات معتمدة من GUI المستخدم (2026-10-18)
+    const PRINT_LAYOUT_DEFAULTS_LEFT = {
+      namePx: 30,
+      originalPx: 17,
+      locationPx: 13,
+      bcTextPx: 10,
+      nameXmm: -3.04,
+      nameYmm: 0.41,
+      nameWmm: 54.14,
+      nameHmm: 9.43,
+      origXmm: -3.75,
+      origYmm: 9.83,
+      origWmm: 31.72,
+      origHmm: 5.93,
+      locXmm: 28.62,
+      locYmm: 10.82,
+      locWmm: 22.48,
+      locHmm: 4.57,
+      bcXmm: -3.93,
+      bcYmm: 15.89,
+      bcWmm: 54.49,
+      bcHmm: 13.46,
+      nameHeightMm: 9.43,
+      metaHeightMm: 5.93,
+      bcHeightMm: 13.46,
+      origWidthPct: 58.5,
       bcShiftXmm: 0,
       bcShiftYmm: 0
     };
+    const PRINT_LAYOUT_DEFAULTS_RIGHT = {
+      namePx: 32,
+      originalPx: 15,
+      locationPx: 12,
+      bcTextPx: 10,
+      nameXmm: -1.07,
+      nameYmm: 0.54,
+      nameWmm: 56.81,
+      nameHmm: 10.15,
+      origXmm: -1.61,
+      origYmm: 9.83,
+      origWmm: 36.51,
+      origHmm: 5.43,
+      locXmm: 35.86,
+      locYmm: 10.99,
+      locWmm: 19.53,
+      locHmm: 4.11,
+      bcXmm: -1.61,
+      bcYmm: 15.44,
+      bcWmm: 55.03,
+      bcHmm: 13.16,
+      nameHeightMm: 10.15,
+      metaHeightMm: 5.43,
+      bcHeightMm: 13.16,
+      origWidthPct: 65.1,
+      bcShiftXmm: 0,
+      bcShiftYmm: 0
+    };
+    const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
+    function defaultPrintLayoutBundle() {
+      return {
+        version: 4,
+        left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
+        right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
+      };
+    }
     const PRINT_ZONE_MIN = {
       name: { w: 12, h: 4 },
       orig: { w: 6, h: 1.8 },
@@ -10181,34 +10219,29 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
-          let left = coercePrintLayoutSide(parsed.left);
-          let right = coercePrintLayoutSide(parsed.right);
-          if (ver < 3) {
-            left = migratePrintLayoutSideHeightV3(left);
-            right = migratePrintLayoutSideHeightV3(right);
-            const b = { version: 3, left: left, right: right };
-            try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
-            return b;
-          }
-          return { version: 3, left: left, right: right };
+        // v4 = قياسات GUI المعتمدة (يسار/يمين منفصلين)
+        if (ver < 4) {
+          const b = defaultPrintLayoutBundle();
+          try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
+          return b;
         }
-        const shared = coercePrintLayoutSide(parsed || {});
-        return {
-          version: 3,
-          left: Object.assign({}, shared),
-          right: Object.assign({}, shared)
-        };
+        if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
+          return {
+            version: 4,
+            left: coercePrintLayoutSide(parsed.left),
+            right: coercePrintLayoutSide(parsed.right)
+          };
+        }
+        return defaultPrintLayoutBundle();
       } catch (_) {
-        const d = coercePrintLayoutSide({});
-        return { version: 3, left: Object.assign({}, d), right: Object.assign({}, d) };
+        return defaultPrintLayoutBundle();
       }
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 3,
-        left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS),
-        right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS)
+        version: 4,
+        left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
+        right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
       try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
       try { scheduleUploadPrintLayoutPrefs(); } catch (_) {}
@@ -10323,14 +10356,15 @@ def home() -> HTMLResponse:
       refreshPrintDesignerBoard();
     }
     function resetPrintLayoutSettings() {
-      const d = coercePrintLayoutSide({});
-      savePrintLayoutBundle({ left: Object.assign({}, d), right: Object.assign({}, d) });
+      savePrintLayoutBundle(defaultPrintLayoutBundle());
       syncPrintLayoutSettingsUi(null);
       refreshPrintDesignerBoard();
       try {
         renderPrintSideLabelMock('left');
         renderPrintSideLabelMock('right');
       } catch (_) {}
+      const el = document.getElementById('printDesignerReadout');
+      if (el) el.textContent = 'تمت إعادة القياسات المعتمدة (يسار/يمين من GUI)';
     }
     function fitTextIntoBox(el, maxPx, minPx) {
       if (!el) return minPx;
@@ -10527,9 +10561,8 @@ def home() -> HTMLResponse:
         const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
         const s = getPrintLayoutSettings(side);
         const padX = 0.7 * ppm;
-        const xShift = (side === 'right')
-          ? (Number(PRINT_SHEET_MM.rightContentShiftXmm) || 2)
-          : 0;
+        const rawShift = Number(PRINT_SHEET_MM.rightContentShiftXmm);
+        const xShift = (side === 'right' && Number.isFinite(rawShift)) ? rawShift : 0;
         ['name', 'orig', 'loc', 'bc'].forEach((zone) => {
           const zEl = labelEl.querySelector('.pdg-zone[data-zone="' + zone + '"]');
           if (!zEl) return;
@@ -10650,10 +10683,9 @@ def home() -> HTMLResponse:
         || 'left'
       );
       const s = getPrintLayoutSettings(side);
-      // إزاحة معلومات لزقة اليمين 2 مم يمين (العناصر absolute ما بتتأثر بالـ padding)
-      const xShift = (side === 'right')
-        ? (Number(PRINT_SHEET_MM.rightContentShiftXmm) || 2)
-        : 0;
+      // إزاحة إضافية لليمين إن وُجدت (0 = الإزاحة مدمجة بقياسات اليمين المعتمدة)
+      const rawShift = Number(PRINT_SHEET_MM.rightContentShiftXmm);
+      const xShift = (side === 'right' && Number.isFinite(rawShift)) ? rawShift : 0;
       const nameEl = label.querySelector('.pl-name');
       const metaEl = label.querySelector('.pl-meta');
       const origEl = label.querySelector('.pl-orig');
