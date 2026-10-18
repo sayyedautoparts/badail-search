@@ -9424,8 +9424,6 @@ def home() -> HTMLResponse:
       const MAX_DOTS = cfg.maxModuleDots;
       const availMm = Math.max(20, cfg.labelWmm - 2 * cfg.marginMm);
       const availDots = Math.floor(availMm * dotsPerMm);
-      const barHmm = cfg.barHMinMm;
-      const heightDots = Math.max(48, Math.round(barHmm * dotsPerMm));
 
       function probeSymbolMods(val) {
         const c = document.createElement('canvas');
@@ -9456,7 +9454,7 @@ def home() -> HTMLResponse:
       if (moduleDots > MAX_DOTS) moduleDots = MAX_DOTS;
       let thinWarn = '';
       if (moduleDots < MIN_DOTS) {
-        // آخر حل: وحدة 1 نقطة مع رسم 1:1 وارتفاع كامل — بدون تشويه/قص
+        // آخر حل: وحدة 1 نقطة مع رسم 1:1 — بدون تشويه/قص
         if (totalMods > availDots) {
           const needMm = (totalMods * MIN_DOTS) / dotsPerMm;
           const msg = 'الباركود أطول من اللزقة للقراءة (يحتاج ≈'
@@ -9473,6 +9471,13 @@ def home() -> HTMLResponse:
         moduleDots = 1;
         thinWarn = 'وحدة دقيقة (1 نقطة) — قرّب الماسح وزد التباين إن لزم';
       }
+
+      // الطويل (وحدة أضيق) → ارتفاع أعمدة أقل؛ القصير يظل بارتفاع أوضح
+      let barHmm = cfg.barHMinMm;
+      if (moduleDots <= 1) barHmm = 5.0;
+      else if (moduleDots === 2) barHmm = 6.5;
+      else barHmm = Math.min(cfg.barHMaxMm || 12, 8);
+      const heightDots = Math.max(36, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
