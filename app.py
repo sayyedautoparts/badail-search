@@ -7297,12 +7297,27 @@ def home() -> HTMLResponse:
       gap: 0.35mm;
       padding: 0 0.2mm;
     }
+    .print-label-mock-host .pl-bc-wrap.is-bc-unreliable {
+      outline: 1px solid #b00020;
+      background: #fff5f5;
+    }
+    .print-label-mock-host .pl-bc-warn {
+      flex: 0 0 auto;
+      max-width: 100%;
+      font-size: 7.5px;
+      font-weight: 800;
+      color: #b00020;
+      line-height: 1.15;
+      text-align: center;
+      white-space: normal;
+    }
     .print-label-mock-host .pl-bc-wrap img.pl-bc,
     .print-label-mock-host .pl-bc-wrap svg {
       display: block;
       margin: 0 auto;
-      max-width: 100%;
+      max-width: none;
       image-rendering: pixelated;
+      object-fit: none;
     }
     .print-label-mock-host .pl-bc-text {
       flex: 0 0 auto;
@@ -7459,6 +7474,21 @@ def home() -> HTMLResponse:
         gap: 0.35mm;
         padding: 0 0.2mm;
       }
+      .print-label .pl-bc-wrap.is-bc-unreliable {
+        outline: 1px solid #b00020;
+        background: #fff5f5;
+      }
+      .print-label .pl-bc-warn {
+        flex: 0 0 auto;
+        max-width: 100%;
+        font-size: 7.5px;
+        font-weight: 800;
+        color: #b00020;
+        line-height: 1.15;
+        text-align: center;
+        white-space: normal;
+        padding: 0 0.4mm;
+      }
       .print-label .pl-bc-wrap svg,
       .print-label .pl-bc-wrap img.pl-bc {
         display: block;
@@ -7467,6 +7497,8 @@ def home() -> HTMLResponse:
         image-rendering: pixelated;
         image-rendering: crisp-edges;
         -ms-interpolation-mode: nearest-neighbor;
+        /* ممنوع ضغط العرض بـ CSS — يكسر وحدات Code128 */
+        object-fit: none;
       }
       .print-label .pl-bc-wrap svg {
         shape-rendering: crispEdges;
@@ -9323,21 +9355,37 @@ def home() -> HTMLResponse:
         }
       }
     }
+    function clearPrintBarcodeWarn(wrap) {
+      if (!wrap) return;
+      wrap.classList.remove('is-bc-unreliable');
+      wrap.querySelectorAll('.pl-bc-warn').forEach((n) => n.remove());
+    }
+    function showPrintBarcodeWarn(wrap, msg) {
+      if (!wrap) return;
+      wrap.classList.add('is-bc-unreliable');
+      let w = wrap.querySelector('.pl-bc-warn');
+      if (!w) {
+        w = document.createElement('div');
+        w.className = 'pl-bc-warn';
+        wrap.appendChild(w);
+      }
+      w.textContent = msg || '';
+    }
     function fitPrintBarcodeDynamic(targetEl, code, opts) {
       if (!targetEl || typeof JsBarcode === 'undefined') return false;
-      // الترميز والنص بنفس القيمة حرفاً بحرف مع كل الفراغات (لا ضغط مسافات)
+      // القيمة الأصلية كما هي (مع المسافات) — Code128 · طابعة Rongta 203dpi
       const displayCode = printBarcodeExactValue(code);
-      const encodeList = [];
-      if (displayCode && /[A-Za-z0-9]/.test(displayCode)) encodeList.push(displayCode);
-      if (!encodeList.length) return false;
+      if (!displayCode || !/[A-Za-z0-9]/.test(displayCode)) return false;
       const inLabel = !!(targetEl.closest && targetEl.closest('.print-label'));
+      const wrap = targetEl.closest ? targetEl.closest('.pl-bc-wrap') : null;
+      clearPrintBarcodeWarn(wrap);
 
       if (!inLabel) {
         const svgEl = targetEl.tagName && targetEl.tagName.toLowerCase() === 'svg'
           ? targetEl
           : null;
         if (!svgEl) return false;
-        const okPrev = renderPrintBarcodeSvg(svgEl, encodeList[0], Object.assign({
+        const okPrev = renderPrintBarcodeSvg(svgEl, displayCode, Object.assign({
           format: 'CODE128',
           height: (opts && opts.height) || 40,
           width: 2,
@@ -9354,9 +9402,22 @@ def home() -> HTMLResponse:
         return okPrev;
       }
 
-      // —— NiceLabel-style: خط الباركود ثابت حجم 10 · للطويل نضيّق العرض فقط ——
-      const DPI = 203;
+      /*
+       * السبب السابق للفشل عند الباركود الطويل:
+       * كان يُرسم الباركود ثم يُضغط عرضه بـ CSS (width + object-fit:fill)
+       * فتصبح وحدة Code128 أضيق من نقطة الطابعة 203dpi → خطوط تندمج وغير قابلة للمسح.
+       * NiceLabel لا يعمل Resize لصورة؛ يعيد حساب X-dimension على نقاط الطابعة.
+       */
+      const DPI = 203; // Rongta RP4xx Series
       const dotsPerMm = DPI / 25.4;
+      // ISO/IEC 15417 Code128: Quiet Zone ≥ 10× عرض الوحدة
+      const QUIET_MODULES = 10;
+      const MIN_MODULE_DOTS = 1; // ≈0.125 مم @203dpi — الحد الأدنى المسموح على الحراري
+      const PREFERRED_MODULE_DOTS = [3, 2, 1];
+      const TEXT_RESERVE_MM = 2.9;
+      const MIN_BAR_HMM = 5.0; // للطويل: نقلّل الارتفاع لا العرض العشوائي
+      const PREFERRED_BAR_HMM = 10;
+
       const layoutSide = (typeof printLayoutSideFromEl === 'function')
         ? printLayoutSideFromEl(targetEl)
         : 'left';
@@ -9369,16 +9430,13 @@ def home() -> HTMLResponse:
           ? PRINT_CONTENT_W_MM
           : 50);
       const boxWmm = Number(layoutS.bcWmm || layoutS.bcWidthMm || contentWmm);
-      const usableMm = Math.max(22, Math.min(contentWmm - 0.15, Math.max(boxWmm - 0.15, contentWmm - 0.15)));
       const boxHmm = Number(layoutS.bcHmm || layoutS.bcHeightMm || 11.2);
-      // رقم تحت الباركود خط 10 ≈ 2.9 مم · ارتفاع أعمدة الباركود ثابت ~10 مم (ما يتصغّر مع الطويل)
-      const textReserveMm = 2.9;
-      const BAR_LINE_HMM = 10;
-      const barHmm = Math.min(BAR_LINE_HMM, Math.max(7.2, boxHmm - textReserveMm));
-      const usableDots = Math.max(140, Math.floor(usableMm * dotsPerMm));
-      const heightDots = Math.max(56, Math.round(barHmm * dotsPerMm));
+      // عرض منطقة الباركود باللزقة (مع الـ quiet zones داخل الصورة)
+      const maxWmm = Math.max(18, Math.min(contentWmm - 0.3, (boxWmm > 8 ? boxWmm : contentWmm) - 0.3));
+      const maxBarHmm = Math.max(MIN_BAR_HMM, Math.min(PREFERRED_BAR_HMM, boxHmm - TEXT_RESERVE_MM));
+      const maxWdots = Math.max(80, Math.floor(maxWmm * dotsPerMm));
 
-      function probe(encodeVal, quietMods) {
+      function probeSymbol(encodeVal) {
         const probeCanvas = document.createElement('canvas');
         const formats = ['CODE128', 'CODE128B'];
         for (let fi = 0; fi < formats.length; fi++) {
@@ -9388,59 +9446,100 @@ def home() -> HTMLResponse:
               width: 1,
               height: 8,
               margin: 0,
-              marginLeft: quietMods,
-              marginRight: quietMods,
+              marginLeft: 0,
+              marginRight: 0,
               marginTop: 0,
               marginBottom: 0,
               displayValue: false,
               background: '#ffffff',
               lineColor: '#000000'
             });
-            return { units: probeCanvas.width || 0, format: formats[fi] };
+            return { symbolModules: probeCanvas.width || 0, format: formats[fi] };
           } catch (_) {}
         }
         return null;
       }
 
-      // أكبر سماكة وحدة تدخل بالعرض — الطويل: وحدات أضيق، الارتفاع يبقى خط 10
+      const probed = probeSymbol(displayCode);
+      if (!probed || !probed.symbolModules) return false;
+      const symbolModules = probed.symbolModules;
+      const totalModulesAt = (quiet) => symbolModules + quiet * 2;
+
+      // هل يدخل بالحد الأدنى الموثوق؟ وحدة 1 نقطة + Quiet Zone 10
+      const minReliableDots = totalModulesAt(QUIET_MODULES) * MIN_MODULE_DOTS;
+      if (minReliableDots > maxWdots) {
+        // لا نُنتج باركود مضغوط غير مقرؤ — تنبيه واضح
+        const neededMm = (minReliableDots / dotsPerMm).toFixed(1);
+        const msg = 'الباركود أطول من اللزقة بشكل موثوق (يحتاج ≈'
+          + neededMm + ' مم بعرض وحدة آمن + Quiet Zone). استخدم لزقة أعرض أو اختصر التباعد في المصدر — لن يُطبع باركود غير قابل للمسح.';
+        if (wrap) {
+          const old = wrap.querySelector('img.pl-bc, svg.pl-bc');
+          if (old) old.remove();
+          showPrintBarcodeWarn(wrap, msg);
+        }
+        try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
+        const label = targetEl.closest && targetEl.closest('.print-label');
+        if (label) label.dataset.bcUnreliable = '1';
+        return false;
+      }
+
+      // جرّب أولاً وحدات أعرض وارتفاع كامل، ثم للطويل: وحدة أضيق ثم تقليل الارتفاع (إعادة توليد — لا Resize)
+      const heightCandidates = [];
+      heightCandidates.push(maxBarHmm);
+      if (maxBarHmm > 8) heightCandidates.push(8);
+      if (maxBarHmm > 6.5) heightCandidates.push(6.5);
+      heightCandidates.push(MIN_BAR_HMM);
+      const uniqH = [];
+      heightCandidates.forEach((h) => {
+        const v = Math.round(h * 100) / 100;
+        if (v >= MIN_BAR_HMM && uniqH.indexOf(v) < 0) uniqH.push(v);
+      });
+
       let best = null;
-      for (let ci = 0; ci < encodeList.length; ci++) {
-        const enc = encodeList[ci];
-        for (let q = 4; q >= 0; q--) {
-          const probed = probe(enc, q);
-          if (!probed || !probed.units) continue;
-          let moduleDots = Math.floor(usableDots / probed.units);
-          if (moduleDots < 1) moduleDots = 1;
-          if (moduleDots > 3) moduleDots = 3;
-          const total = probed.units * moduleDots;
-          const fits = total <= usableDots;
-          const overflow = Math.max(0, total - usableDots);
+      for (let mi = 0; mi < PREFERRED_MODULE_DOTS.length; mi++) {
+        const moduleDots = PREFERRED_MODULE_DOTS[mi];
+        const totalDots = totalModulesAt(QUIET_MODULES) * moduleDots;
+        if (totalDots > maxWdots) continue;
+        for (let hi = 0; hi < uniqH.length; hi++) {
+          const barHmm = uniqH[hi];
           const candidate = {
-            encodeVal: enc,
             format: probed.format,
-            quietMods: q,
             moduleDots: moduleDots,
-            units: probed.units,
-            total: total,
-            fits: fits,
-            score: (fits ? 1000 : 0) + moduleDots * 50 + q * 2 - overflow * 0.02 - enc.length * 0.001
+            quietMods: QUIET_MODULES,
+            barHmm: barHmm,
+            totalDots: totalDots,
+            // فضّل وحدة أعرض ثم ارتفاعاً أعلى (مثل NiceLabel)
+            score: moduleDots * 1000 + barHmm * 10
           };
           if (!best || candidate.score > best.score) best = candidate;
-          if (candidate.fits && candidate.moduleDots >= 2) break;
+          break; // أول ارتفاع (الأعلى) كافٍ لهذه السماكة
         }
-        if (best && best.fits && best.moduleDots >= 2) break;
+        if (best && best.moduleDots >= 2) break;
       }
-      if (!best) return false;
+      if (!best) {
+        // يدخل نظرياً بوحدة 1 — خذه بأقل ارتفاع إن لزم
+        best = {
+          format: probed.format,
+          moduleDots: MIN_MODULE_DOTS,
+          quietMods: QUIET_MODULES,
+          barHmm: MIN_BAR_HMM,
+          totalDots: minReliableDots,
+          score: 0
+        };
+      }
 
+      const heightDots = Math.max(40, Math.round(best.barHmm * dotsPerMm));
+      // JsBarcode: marginLeft/Right بالبكسل = عدد وحدات Quiet Zone × عرض الوحدة بالنقاط
+      const quietPx = best.quietMods * best.moduleDots;
       const canvas = document.createElement('canvas');
       try {
-        JsBarcode(canvas, best.encodeVal, {
+        JsBarcode(canvas, displayCode, {
           format: best.format,
           width: best.moduleDots,
           height: heightDots,
           margin: 0,
-          marginLeft: best.quietMods * best.moduleDots,
-          marginRight: best.quietMods * best.moduleDots,
+          marginLeft: quietPx,
+          marginRight: quietPx,
           marginTop: 0,
           marginBottom: 0,
           displayValue: false,
@@ -9448,32 +9547,76 @@ def home() -> HTMLResponse:
           lineColor: '#000000'
         });
       } catch (_) {
-        return false;
+        try {
+          JsBarcode(canvas, displayCode, {
+            format: 'CODE128B',
+            width: best.moduleDots,
+            height: heightDots,
+            margin: 0,
+            marginLeft: quietPx,
+            marginRight: quietPx,
+            marginTop: 0,
+            marginBottom: 0,
+            displayValue: false,
+            background: '#ffffff',
+            lineColor: '#000000'
+          });
+        } catch (__) {
+          return false;
+        }
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // العرض فقط يتضيّق للطويل — ارتفاع خط الباركود يبقى 10 (ثابت)
-      const natWmm = canvas.width / dotsPerMm;
-      let widthMm = Math.min(usableMm, natWmm);
-      const drawHmm = barHmm;
+      // عرض/ارتفاع العرض = نقاط حقيقية @203dpi — بدون أي ضغط CSS
+      const widthMm = canvas.width / dotsPerMm;
+      const drawHmm = canvas.height / dotsPerMm;
+      if (canvas.width > maxWdots + 1) {
+        // حماية: لا نعرض رمزاً أعرض من المنطقة بضغطه
+        const msg = 'تعذر ملاءمة الباركود دون كسر وحدات الطباعة. جرّب لزقة أعرض.';
+        if (wrap) {
+          const old = wrap.querySelector('img.pl-bc, svg.pl-bc');
+          if (old) old.remove();
+          showPrintBarcodeWarn(wrap, msg);
+        }
+        try { setPrintFetchStatus(msg, layoutSide); } catch (_) {}
+        const label = targetEl.closest && targetEl.closest('.print-label');
+        if (label) label.dataset.bcUnreliable = '1';
+        return false;
+      }
 
       const img = document.createElement('img');
       img.className = 'pl-bc';
-      img.alt = best.encodeVal;
-      img.title = displayCode || best.encodeVal;
+      img.alt = displayCode;
+      img.title = displayCode
+        + ' · Code128 · X=' + best.moduleDots + 'dot'
+        + ' · H=' + best.barHmm.toFixed(1) + 'mm'
+        + ' · QZ=' + best.quietMods
+        + ' · ' + DPI + 'dpi';
       img.src = canvas.toDataURL('image/png');
       img.width = canvas.width;
       img.height = canvas.height;
-      img.style.width = widthMm.toFixed(3) + 'mm';
-      img.style.height = drawHmm.toFixed(3) + 'mm';
-      img.style.maxWidth = '100%';
+      img.style.width = widthMm.toFixed(4) + 'mm';
+      img.style.height = drawHmm.toFixed(4) + 'mm';
+      img.style.maxWidth = 'none';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.imageRendering = 'pixelated';
       img.style.flex = '0 0 auto';
-      img.style.objectFit = 'fill';
+      img.style.objectFit = 'none';
       img.style.objectPosition = 'center center';
       targetEl.replaceWith(img);
+      const labelOk = img.closest && img.closest('.print-label');
+      if (labelOk) labelOk.dataset.bcUnreliable = '0';
+      if (best.moduleDots === 1 || best.barHmm < maxBarHmm - 0.2) {
+        try {
+          setPrintFetchStatus(
+            'باركود طويل: X=' + best.moduleDots + ' نقطة · ارتفاع '
+            + best.barHmm.toFixed(1) + ' مم · Quiet Zone '
+            + best.quietMods + ' · يبقى قابلاً للمسح على Rongta 203dpi',
+            layoutSide
+          );
+        } catch (_) {}
+      }
       return true;
     }
     function fitPrintBarcodeText(el, code) {
@@ -10994,9 +11137,20 @@ def home() -> HTMLResponse:
         applyPrintLayoutToLabel(right);
       }
       sheet.className = 'print-label-sheet';
+      const badLeft = !!(sheet.querySelector('.print-label-left[data-bc-unreliable="1"]'));
+      const badRight = !!(sheet.querySelector('.print-label-right[data-bc-unreliable="1"]'));
+      if (badLeft || badRight) {
+        setPrintFetchStatus(
+          'توقف الطباعة: باركود أطول من اللزقة بشكل موثوق (Code128 @203dpi + Quiet Zone). '
+          + 'استخدم لزقة أعرض بدل طباعة باركود غير قابل للمسح.'
+        );
+        sheet.innerHTML = '';
+        sheet.className = 'print-label-sheet';
+        return;
+      }
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
       setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · حجم من GUI`
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 203dpi`
       );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       try { savePrintFormState(); } catch (_) {}
