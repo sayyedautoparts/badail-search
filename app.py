@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import re
+import socket
 import sqlite3
 import threading
 import time
@@ -19,7 +20,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 logger = logging.getLogger("hesabate_sync")
 from openpyxl import load_workbook
@@ -171,6 +172,36 @@ _hesabate_usage_pending: dict[str, Any] = {
 }
 
 
+class DatabaseUnavailable(Exception):
+    """Neon/Postgres down — must not become an uncaught 500."""
+
+
+DB_QUOTA_MSG = (
+    "قاعدة البيانات Neon متوقفة لأن الحساب تجاوز الحصة (Quota). "
+    "افتح https://console.neon.tech وارفع الخطة أو انتظر تجديد الحصة، ثم أعد البحث."
+)
+
+
+def _postgres_connect():
+    if psycopg is None:
+        raise RuntimeError("psycopg is not installed; add it to requirements first.")
+    extra: dict[str, Any] = {"row_factory": dict_row, "connect_timeout": 8}
+    # Vercel has no outbound IPv6; force IPv4 hostaddr when possible.
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(POSTGRES_DB_URL)
+        host = parsed.hostname
+        port = parsed.port or 5432
+        if host:
+            infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if infos:
+                extra["hostaddr"] = infos[0][4][0]
+    except Exception:
+        extra.pop("hostaddr", None)
+    return psycopg.connect(POSTGRES_DB_URL, **extra)
+
+
 class DBConnection:
     def __init__(self, conn: Any, postgres: bool):
         self._conn = conn
@@ -254,14 +285,17 @@ def _json_safe_value(v: Any) -> Any:
 
 def get_db() -> DBConnection:
     if USE_POSTGRES:
-        if psycopg is None:
-            raise RuntimeError("psycopg is not installed; add it to requirements first.")
-        # connect_timeout: serverless cold start must not hang the whole function.
-        conn = psycopg.connect(
-            POSTGRES_DB_URL,
-            row_factory=dict_row,
-            connect_timeout=8,
-        )
+        try:
+            conn = _postgres_connect()
+        except DatabaseUnavailable:
+            raise
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "quota" in msg or "exceeded" in msg:
+                raise DatabaseUnavailable(DB_QUOTA_MSG) from exc
+            raise DatabaseUnavailable(
+                "تعذر الاتصال بقاعدة البيانات. أعد المحاولة بعد قليل."
+            ) from exc
         return DBConnection(conn, postgres=True)
 
     conn = sqlite3.connect(DB_PATH, timeout=120)
@@ -6943,6 +6977,11 @@ try:
     init_db()
 except Exception:
     logger.exception("init_db failed at startup; app will still serve HTML")
+
+
+@app.exception_handler(DatabaseUnavailable)
+def database_unavailable_handler(_request: Request, exc: DatabaseUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"ok": False, "detail": str(exc)})
 
 
 @app.get("/app-icon.png")
