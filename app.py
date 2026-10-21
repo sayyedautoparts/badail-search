@@ -137,17 +137,17 @@ HESABATE_API_VERIFY_SSL = os.getenv("HESABATE_API_VERIFY_SSL", "").strip().lower
     "yes",
 )
 try:
-    # افتراضي ساعة — GitHub يتأخر أحياناً؛ مع طلب من الواجهة يكتمل التحديث وحده
+    # افتراضي 4 ساعات — GitHub يطرق المجدول؛ السيرفر يفرض الفاصل
     # (نافذة صمت ليلاً: انظر hesabate_auto_sync_allowed_now)
     HESABATE_SYNC_MIN_INTERVAL_SEC = max(
-        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "3600")
+        60, int(os.getenv("HESABATE_SYNC_MIN_INTERVAL_SEC") or "14400")
     )
 except (TypeError, ValueError):
-    HESABATE_SYNC_MIN_INTERVAL_SEC = 3600
-# صمت المزامنة التلقائية: 21:00–06:00 بتوقيت فلسطين (Asia/Jerusalem)
+    HESABATE_SYNC_MIN_INTERVAL_SEC = 14400
+# صمت المزامنة التلقائية: 20:00–08:00 بتوقيت فلسطين — التشغيل 8 صباحًا حتى 8 مساءً
 HESABATE_AUTO_SYNC_TZ = os.getenv("HESABATE_AUTO_SYNC_TZ") or "Asia/Jerusalem"
-HESABATE_AUTO_SYNC_QUIET_START_HOUR = 21  # 9 مساءً
-HESABATE_AUTO_SYNC_QUIET_END_HOUR = 6  # 6 صباحاً
+HESABATE_AUTO_SYNC_QUIET_START_HOUR = 21  # بعد آخر دفعة 8 مساءً
+HESABATE_AUTO_SYNC_QUIET_END_HOUR = 8  # 8 صباحاً
 # قفل مزامنة مشترك بين نسخ Vercel (session advisory lock)
 _HESABATE_SYNC_ADVISORY_LOCK_KEY = 87233401
 try:
@@ -5822,8 +5822,8 @@ def palestine_now() -> datetime:
 
 def hesabate_auto_sync_allowed_now() -> tuple[bool, dict[str, Any]]:
     """
-    المزامنة التلقائية متاحة من 06:00 حتى قبل 21:00 بتوقيت فلسطين.
-    من 9 مساءً إلى 6 صباحاً: صمت (لا fetch تلقائي).
+    المزامنة التلقائية متاحة من 08:00 حتى 20:59 بتوقيت فلسطين (كل 4 ساعات).
+    من 9 مساءً إلى 8 صباحاً: صمت (لا fetch تلقائي).
     """
     now = palestine_now()
     hour = int(now.hour)
@@ -8373,7 +8373,7 @@ def home() -> HTMLResponse:
             <p id="hesabateRequestCounter" class="sync-meta"><strong>طلبات API:</strong> —</p>
             <p id="hesabateAutoSyncCounter" class="sync-meta"><strong>تحديث تلقائي:</strong> —</p>
             <p class="sync-meta muted" style="margin:6px 0 0;font-size:12px;line-height:1.4;">
-              مزامنة تلقائية كل ساعة ونصف والتطبيق مغلق (6 صباحاً–9 مساءً بتوقيت فلسطين) · ليلاً متوقفة · بيانات حساباتي هي المعروضة · الزر اليدوي يعمل دائماً
+              مزامنة تلقائية كل 4 ساعات والتطبيق مغلق (8 صباحاً–8 مساءً بتوقيت فلسطين) · ليلاً متوقفة · بيانات حساباتي هي المعروضة · الزر اليدوي يعمل دائماً
             </p>
             <div class="btn-row" style="margin-top:10px;">
               <button type="button" class="btn-success" onclick="forceHesabateFullImport()" title="تنزيل كل الأصناف وتحديث التعديلات الآن">تحديث الكل الآن</button>
@@ -15483,8 +15483,8 @@ def hesabate_sync_force() -> dict:
 @app.api_route("/hesabate/cron_sync", methods=["GET", "POST"])
 def hesabate_cron_sync(request: Request) -> dict:
     """
-    مزامنة مجدولة كل ~ساعة ونصف (GitHub Actions) — تعمل والتطبيق مغلق.
-    صمت تلقائي 21:00–06:00 بتوقيت فلسطين. الزر اليدوي لا يتأثر.
+    مزامنة مجدولة كل 4 ساعات (GitHub Actions) — تعمل والتطبيق مغلق.
+    صمت تلقائي 21:00–08:00 بتوقيت فلسطين. الزر اليدوي لا يتأثر.
     احمِها بـ CRON_SECRET أو HESABATE_CRON_SECRET إن وُجد.
     """
     secret = (os.getenv("CRON_SECRET") or os.getenv("HESABATE_CRON_SECRET") or "").strip()
@@ -15508,7 +15508,7 @@ def hesabate_cron_sync(request: Request) -> dict:
             "scheduled": True,
             "interval_hint_min": interval_min,
             "message": (
-                "توقفت المزامنة التلقائية ليلاً (9 مساءً – 6 صباحاً بتوقيت فلسطين). "
+                "توقفت المزامنة التلقائية ليلاً (9 مساءً – 8 صباحاً بتوقيت فلسطين). "
                 f"الوقت المحلي: {schedule_meta.get('local_time')}"
             ),
             "schedule": schedule_meta,

@@ -1,5 +1,6 @@
 ﻿#Requires -Version 5.1
-# Create Windows scheduled task: daily 09:00 Excel upload
+# Create Windows scheduled task: Excel upload every 10 days at 09:00
+# First run: tomorrow 09:00
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -17,13 +18,12 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
   exit 1
 }
 
-# نافذة مخفية — بدون شاشة بايثون زرقاء
 $action = New-ScheduledTaskAction `
   -Execute "powershell.exe" `
   -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" `
   -WorkingDirectory $Root
 
-$trigger = New-ScheduledTaskTrigger -Daily -At 9:00am
+$startAt = [datetime]::Today.AddDays(1).AddHours(9)
 
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
@@ -35,6 +35,12 @@ $settings = New-ScheduledTaskSettingsSet `
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
 try {
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+} catch {}
+
+$registered = $false
+try {
+  $trigger = New-ScheduledTaskTrigger -Once -At $startAt -RepetitionInterval (New-TimeSpan -Days 10) -RepetitionDuration (New-TimeSpan -Days 9999)
   Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
@@ -42,14 +48,24 @@ try {
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null
+  $registered = $true
 } catch {
-  $tr = "09:00"
-  schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /ST $tr /F /RL LIMITED | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw }
+  $registered = $false
+}
+
+if (-not $registered) {
+  $sd = $startAt.ToString("dd/MM/yyyy")
+  schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /MO 10 /ST 09:00 /SD $sd /F /RL LIMITED | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    $sdUs = $startAt.ToString("MM/dd/yyyy")
+    schtasks /Create /TN $TaskName /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" /SC DAILY /MO 10 /ST 09:00 /SD $sdUs /F /RL LIMITED | Out-Null
+  }
+  if ($LASTEXITCODE -ne 0) { throw "Failed to create scheduled task $TaskName" }
 }
 
 Write-Host "Scheduled task ready: $TaskName"
-Write-Host "Time: every day 09:00"
+Write-Host ("First run: {0:yyyy-MM-dd} 09:00" -f $startAt)
+Write-Host "Repeat: every 10 days at 09:00"
 Write-Host ("PC: {0} / User: {1}" -f $env:COMPUTERNAME, $env:USERNAME)
 Write-Host ("Manual: powershell -NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $Runner)
 Write-Host ("Or: Start-ScheduledTask -TaskName '{0}'" -f $TaskName)

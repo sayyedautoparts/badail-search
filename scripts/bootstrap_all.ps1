@@ -90,7 +90,7 @@ $envText = Set-EnvKey $envText "BADAIL_UPLOAD_HOSTS" ""
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
 [System.IO.File]::WriteAllText($EnvFile, $envText, $utf8Bom)
 
-Write-Host "Creating daily scheduled task (09:00)..."
+Write-Host "Creating 10-day scheduled task (09:00, first run tomorrow)..."
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $InstallTask
 if ($LASTEXITCODE -ne 0) { throw "Scheduled task failed" }
 
@@ -101,6 +101,6 @@ Write-Host "This can take many minutes. Leave window open."
 $code = $LASTEXITCODE
 Write-Host ""
 Write-Host ("Finished upload exit code: {0}" -f $code)
-Write-Host "Daily auto upload is set for 09:00 on this PC."
+Write-Host "Auto Excel upload is set every 10 days at 09:00 (first run tomorrow)."
 if ($code -ne 0) { exit $code }
 exit 0

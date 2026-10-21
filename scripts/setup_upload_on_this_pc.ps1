@@ -140,6 +140,6 @@ if ($doUpload) {
 }
 
 Write-Host ""
-Write-Host "Done. Daily upload at 09:00 on this PC:"
+Write-Host "Done. Excel upload every 10 days at 09:00 on this PC (first run tomorrow):"
 Write-Host "  cars + fsb + orders (+ wiper)"
 Write-Host ("Manual run: powershell -NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $Runner)
