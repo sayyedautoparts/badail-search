@@ -256,7 +256,12 @@ def get_db() -> DBConnection:
     if USE_POSTGRES:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed; add it to requirements first.")
-        conn = psycopg.connect(POSTGRES_DB_URL, row_factory=dict_row)
+        # connect_timeout: serverless cold start must not hang the whole function.
+        conn = psycopg.connect(
+            POSTGRES_DB_URL,
+            row_factory=dict_row,
+            connect_timeout=8,
+        )
         return DBConnection(conn, postgres=True)
 
     conn = sqlite3.connect(DB_PATH, timeout=120)
@@ -6932,7 +6937,12 @@ def live_lookup_locations_from_hesabate(
 
 
 app = FastAPI(title="Advanced Excel Search")
-init_db()
+# Do not crash the serverless process if Postgres (Neon) is down/over-quota.
+# Import-time failure here is what produced Vercel 500 FUNCTION_INVOCATION_FAILED.
+try:
+    init_db()
+except Exception:
+    logger.exception("init_db failed at startup; app will still serve HTML")
 
 
 @app.get("/app-icon.png")
@@ -15680,7 +15690,27 @@ self.addEventListener('fetch', (event) => {{
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "app_version": APP_VERSION, "db_backend": DB_BACKEND}
+    db_ok = False
+    db_error = ""
+    try:
+        conn = get_db()
+        try:
+            conn.execute("SELECT 1")
+            db_ok = True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        db_error = f"{type(exc).__name__}: {exc}"
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "app_version": APP_VERSION,
+        "db_backend": DB_BACKEND,
+        "db_ok": db_ok,
+        "db_error": db_error[:500],
+    }
 
 
 @app.get("/print_layout_prefs")
