@@ -9492,16 +9492,15 @@ def home() -> HTMLResponse:
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
         : null;
-      const labelWmm = PRINT_SHEET_MM.labelW;
-      const boxX = layoutS ? (Number(layoutS.bcXmm) + (Number(layoutS.bcShiftXmm) || 0)) : PRINT_ZONE_INSET_MM;
-      const boxW = layoutS && Number(layoutS.bcWmm) > 0
-        ? Number(layoutS.bcWmm)
-        : PRINT_ZONE_CONTENT_W_MM;
-      const visL = Math.max(0, boxX);
-      const visR = Math.min(labelWmm, boxX + boxW);
-      let availMm = visR - visL;
-      if (!(availMm > 0)) availMm = PRINT_ZONE_CONTENT_W_MM;
-      availMm = Math.max(18, Math.min(availMm, labelWmm));
+      const bcBox = clampBarcodeBoxToLabelMm(layoutSide, {
+        x: layoutS ? (Number(layoutS.bcXmm) + (Number(layoutS.bcShiftXmm) || 0)) : PRINT_ZONE_INSET_MM,
+        y: layoutS ? (Number(layoutS.bcYmm) + (Number(layoutS.bcShiftYmm) || 0)) : 0,
+        w: layoutS && Number(layoutS.bcWmm) > 0 ? Number(layoutS.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
+        h: layoutS && Number(layoutS.bcHmm) > 0 ? Number(layoutS.bcHmm) : PRINT_ZONE_BC_H_MM
+      });
+      // هامش أمان داخل الصندوق حتى لا تُقصّ المنطقة البيضاء على حافة القصّ
+      const bleedMm = 0.6;
+      let availMm = Math.max(18, bcBox.w - 2 * bleedMm);
       const availDots = Math.floor(availMm * dotsPerMm);
 
       function probeSymbolMods(val) {
@@ -9539,9 +9538,7 @@ def home() -> HTMLResponse:
       }
 
       const textBandMm = 3.2;
-      const zoneH = (layoutS && Number(layoutS.bcHmm) > 0)
-        ? Number(layoutS.bcHmm)
-        : ((typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 15);
+      const zoneH = bcBox.h;
       const barHMin = 6;
       const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
       let barHmm = zoneH - textBandMm;
@@ -9598,6 +9595,7 @@ def home() -> HTMLResponse:
       img.style.imageRendering = 'pixelated';
       img.style.position = 'relative';
       img.style.zIndex = '1';
+      img.style.direction = 'ltr';
       targetEl.replaceWith(img);
       if (wrap) {
         wrap.style.justifyContent = 'flex-start';
@@ -11060,6 +11058,34 @@ def home() -> HTMLResponse:
         || 'left'
       );
     }
+    function clampBarcodeBoxToLabelMm(side, box) {
+      // لا يغيّر إعدادات GUI المحفوظة — يضبط الصندوق عند الرسم حتى لا يُقصّ Quiet Zone
+      const labelW = PRINT_SHEET_MM.labelW;
+      const labelH = PRINT_SHEET_MM.labelH;
+      const sideKey = printSideKey(side || 'left');
+      const padL = (sideKey === 'left') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
+      const padR = (sideKey === 'right') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
+      let x = Number(box && box.x);
+      let y = Number(box && box.y);
+      let w = Number(box && box.w);
+      let h = Number(box && box.h);
+      if (!Number.isFinite(x)) x = padL;
+      if (!Number.isFinite(y)) y = PRINT_ZONE_NAME_H_MM + PRINT_ZONE_META_H_MM;
+      if (!Number.isFinite(w) || w < 18) w = labelW - padL - padR;
+      if (!Number.isFinite(h) || h < 6) h = PRINT_ZONE_BC_H_MM;
+      if (x < padL) {
+        w -= (padL - x);
+        x = padL;
+      }
+      if (x + w > labelW - padR) w = labelW - padR - x;
+      if (w < 18) {
+        x = padL;
+        w = Math.max(18, labelW - padL - padR);
+      }
+      if (y < 0) y = 0;
+      if (y + h > labelH) h = Math.max(8, labelH - y);
+      return { x: x, y: y, w: w, h: h };
+    }
     function applyPrintLayoutToLabel(label) {
       if (!label) return;
       const side = printSideKey(
@@ -11092,19 +11118,20 @@ def home() -> HTMLResponse:
         applyPrintBoxStyle(locEl, { x: s.locXmm, y: s.locYmm, w: s.locWmm, h: s.locHmm });
       }
       if (wrap) {
-        // باركود داخل اللزقة — اليسار inset أكبر من حافة الورقة حتى لا يُقصّ Quiet Zone
-        applyPrintBoxStyle(wrap, {
+        const bcBox = clampBarcodeBoxToLabelMm(side, {
           x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
           y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
           w: Number(s.bcWmm) || 47,
           h: Number(s.bcHmm) || PRINT_ZONE_BC_H_MM
         });
+        applyPrintBoxStyle(wrap, bcBox);
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
         wrap.style.justifyContent = 'flex-start';
         wrap.style.gap = '0';
         wrap.style.overflow = 'hidden';
+        wrap.style.direction = 'ltr';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
