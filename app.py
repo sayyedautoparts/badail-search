@@ -8195,6 +8195,20 @@ def home() -> HTMLResponse:
       max-height: 96vw;
       overflow: auto;
     }
+    .print-sheet-img {
+      display: block;
+      width: 105mm;
+      height: 28mm;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      page-break-after: always;
+      break-after: page;
+    }
+    .print-sheet-img:last-child { page-break-after: auto; break-after: auto; }
+    .print-designer-label { border: none; outline: 1px solid #1a2744; background-color: #fff; }
+    .pdg-zone { background: transparent; border: 1px dashed rgba(45,95,255,.55); }
+    .pdg-zone.is-active { background: rgba(45,95,255,.08); }
+    .pdg-zone-inner { display: none; }
   </style>
 </head>
 <body>
@@ -11273,6 +11287,258 @@ def home() -> HTMLResponse:
           restoreTitle();
           setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن درايفر Rongta RP4xx Series مثبت.');
         }
+      }, 50);
+    }
+
+    /* ===== NiceLabel-style engine: one mm model, one bitmap, 1:1 dots ===== */
+    const NL_BC = { maxX: 2, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
+    function nlDpi() { return PRINT_BARCODE_CFG.dpi || 203; }
+    function nlDots(mm) { return Math.round(mm * nlDpi() / 25.4); }
+    function nlHasArabic(s) {
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 1536 && c <= 1791) return true;
+      }
+      return false;
+    }
+    function nlWrapLines(ctx, text, maxW) {
+      const words = String(text).split(' ').filter(Boolean);
+      const lines = [];
+      let cur = '';
+      words.forEach((w) => {
+        const t = cur ? cur + ' ' + w : w;
+        if (cur && ctx.measureText(t).width > maxW) { lines.push(cur); cur = w; }
+        else cur = t;
+        if (ctx.measureText(cur).width > maxW && cur.indexOf(' ') < 0) {
+          let part = '';
+          for (const ch of cur) {
+            if (part && ctx.measureText(part + ch).width > maxW) { lines.push(part); part = ch; }
+            else part += ch;
+          }
+          cur = part;
+        }
+      });
+      if (cur) lines.push(cur);
+      return lines;
+    }
+    function nlDrawText(ctx, text, bx, by, bw, bh, o) {
+      text = String(text == null ? '' : text);
+      if (!text || bw <= 0 || bh <= 0) return;
+      const fam = o.family || '"Segoe UI", Arial, Tahoma, sans-serif';
+      ctx.save();
+      ctx.beginPath(); ctx.rect(bx, by, bw, bh); ctx.clip();
+      ctx.fillStyle = '#000';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.direction = nlHasArabic(text) ? 'rtl' : 'ltr';
+      let lo = o.minDot, hi = Math.max(o.minDot, o.maxDot), best = lo;
+      for (let i = 0; i < 14; i++) {
+        const mid = (lo + hi) / 2;
+        ctx.font = o.weight + ' ' + mid + 'px ' + fam;
+        const lines = o.wrap ? nlWrapLines(ctx, text, bw) : [text];
+        let widest = 0;
+        lines.forEach((l) => { widest = Math.max(widest, ctx.measureText(l).width); });
+        if (lines.length * mid * 1.05 <= bh && widest <= bw) { best = mid; lo = mid; } else hi = mid;
+      }
+      ctx.font = o.weight + ' ' + best + 'px ' + fam;
+      const lines = o.wrap ? nlWrapLines(ctx, text, bw) : [text];
+      const lh = best * 1.05;
+      let y = by + (bh - lines.length * lh) / 2 + lh / 2;
+      lines.forEach((l) => { ctx.fillText(l, bx + bw / 2, y); y += lh; });
+      ctx.restore();
+    }
+    function nlBarcodeBits(value) {
+      if (typeof JsBarcode === 'undefined') return '';
+      const c = document.createElement('canvas');
+      try {
+        JsBarcode(c, value, {
+          format: 'CODE128', width: 1, height: 8, margin: 0, displayValue: false,
+          background: '#ffffff', lineColor: '#000000'
+        });
+      } catch (_) {
+        try {
+          JsBarcode(c, value, {
+            format: 'CODE128B', width: 1, height: 8, margin: 0, displayValue: false,
+            background: '#ffffff', lineColor: '#000000'
+          });
+        } catch (__) { return ''; }
+      }
+      const ctx = c.getContext('2d');
+      if (!ctx || !c.width) return '';
+      const d = ctx.getImageData(0, 0, c.width, 1).data;
+      let bits = '';
+      for (let x = 0; x < c.width; x++) bits += (d[x * 4] < 128) ? '1' : '0';
+      return bits;
+    }
+    function nlPlanBarcode(modules, boxDots) {
+      for (let x = NL_BC.maxX; x >= 2; x--) {
+        for (let i = 0; i < NL_BC.quiet.length; i++) {
+          const q = NL_BC.quiet[i];
+          if ((modules + 2 * q) * x <= boxDots) return { x: x, q: q, ok: true };
+        }
+      }
+      return { x: 2, q: NL_BC.quiet[NL_BC.quiet.length - 1], ok: false };
+    }
+    function nlDrawBarcode(ctx, value, ox, oy, box) {
+      const bits = nlBarcodeBits(value);
+      if (!bits) return { ok: false, msg: 'تعذر ترميز الباركود' };
+      const bx = ox + nlDots(box.x), by = oy + nlDots(box.y);
+      const bw = nlDots(box.w);
+      const plan = nlPlanBarcode(bits.length, bw);
+      const hrD = nlDots(NL_BC.hrBandMm);
+      const barMm = Math.max(NL_BC.barHMinMm, Math.min(NL_BC.barHMaxMm, box.h - NL_BC.hrBandMm));
+      const barH = nlDots(barMm);
+      const barW = bits.length * plan.x;
+      const startX = bx + Math.floor((bw - barW) / 2);
+      ctx.fillStyle = '#000';
+      let i = 0;
+      while (i < bits.length) {
+        if (bits.charAt(i) === '1') {
+          let j = i;
+          while (j < bits.length && bits.charAt(j) === '1') j++;
+          ctx.fillRect(startX + i * plan.x, by, (j - i) * plan.x, barH);
+          i = j;
+        } else i++;
+      }
+      nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
+        maxDot: hrD * 0.85, minDot: 6, weight: '700', wrap: false,
+        family: 'Consolas, "Courier New", monospace'
+      });
+      const needMm = (bits.length + 2 * NL_BC.quiet[NL_BC.quiet.length - 1]) * plan.x * 25.4 / nlDpi();
+      return {
+        ok: plan.ok, x: plan.x,
+        msg: plan.ok ? '' : 'الباركود يحتاج ' + needMm.toFixed(1) + 'مم والخانة ' + box.w.toFixed(1) + 'مم — وسّع خانة الباركود أو قصّر الكود'
+      };
+    }
+    function nlDrawLabel(ctx, ox, oy, payload, side) {
+      const s = getPrintLayoutSettings(side);
+      const k = nlDpi() / 96;
+      const T = (txt, x, y, w, h, maxPx, wrap, weight) => nlDrawText(
+        ctx, txt, ox + nlDots(x), oy + nlDots(y), nlDots(w), nlDots(h),
+        { maxDot: maxPx * k, minDot: 5 * k, weight: weight, wrap: wrap });
+      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, '900');
+      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, '800');
+      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, '800');
+      const box = clampBarcodeBoxToLabelMm(side, {
+        x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
+        y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
+        w: Number(s.bcWmm) || PRINT_ZONE_CONTENT_W_MM,
+        h: Number(s.bcHmm) || PRINT_ZONE_BC_H_MM
+      });
+      return nlDrawBarcode(ctx, printBarcodeEncodeValue(payload.barcode), ox, oy, box);
+    }
+    function nlNewCanvas(wMm, hMm) {
+      const c = document.createElement('canvas');
+      c.width = nlDots(wMm); c.height = nlDots(hMm);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      return { c: c, ctx: ctx };
+    }
+    function nlRenderSide(payload, side) {
+      const g = nlNewCanvas(PRINT_SHEET_MM.labelW, PRINT_SHEET_MM.labelH);
+      const r = nlDrawLabel(g.ctx, 0, 0, payload, side);
+      return { canvas: g.c, info: r };
+    }
+    function nlRenderSheet(pl, pr) {
+      const g = nlNewCanvas(PRINT_SHEET_MM.sheetW, PRINT_SHEET_MM.sheetH);
+      const m = PRINT_SHEET_MM.margin;
+      const rl = nlDrawLabel(g.ctx, nlDots(m), nlDots(m), pl, 'left');
+      const rr = nlDrawLabel(g.ctx, nlDots(m + PRINT_SHEET_MM.labelW + PRINT_SHEET_MM.gap), nlDots(m), pr, 'right');
+      const warns = [];
+      if (!rl.ok) warns.push('يسار: ' + rl.msg);
+      if (!rr.ok) warns.push('يمين: ' + rr.msg);
+      return { canvas: g.c, ok: warns.length === 0, warns: warns };
+    }
+
+    /* preview: the exact bitmap that gets printed */
+    function renderPrintSideLabelMock(side) {
+      const s = printSideKey(side);
+      const cap = printSideCap(s);
+      const card = document.getElementById('printPreview' + cap);
+      const host = document.getElementById('printLabelMock' + cap);
+      if (!card || !host) return;
+      const payload = buildPrintPayloadForSide(s);
+      if (!isPrintPayloadReady(payload)) { card.style.display = 'none'; host.innerHTML = ''; return; }
+      card.style.display = 'block';
+      ensureJsBarcodeLib().then(() => {
+        const r = nlRenderSide(payload, s);
+        const img = new Image();
+        img.src = r.canvas.toDataURL('image/png');
+        img.style.cssText = 'display:block;width:' + PRINT_SHEET_MM.labelW + 'mm;height:' + PRINT_SHEET_MM.labelH
+          + 'mm;image-rendering:pixelated;';
+        host.innerHTML = '';
+        host.appendChild(img);
+        setPrintFetchStatus(r.info.ok ? ('Code128 X=' + r.info.x + ' نقطة · جاهز') : ('تحذير: ' + r.info.msg), s);
+      }).catch(() => {});
+    }
+
+    /* designer: same bitmap as the label background, zones are just drag handles */
+    function fitDesignerZoneFonts(labelEl, layout, sample) {
+      if (!labelEl) return;
+      if (typeof JsBarcode === 'undefined') {
+        ensureJsBarcodeLib().then(() => paintPrintDesignerZones(null)).catch(() => {});
+        return;
+      }
+      const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
+      const r = nlRenderSide(sample, side);
+      labelEl.style.backgroundImage = 'url(' + r.canvas.toDataURL('image/png') + ')';
+      labelEl.style.backgroundSize = '100% 100%';
+      labelEl.style.backgroundRepeat = 'no-repeat';
+      labelEl.style.imageRendering = 'pixelated';
+    }
+
+    /* print */
+    async function printBarcodeLabels() {
+      const { pages } = updatePrintQtyHint();
+      const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
+      const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
+      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length) && leftQ) {
+        await resolvePrintItemFromLocal('left', false);
+      }
+      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length) && rightQ) {
+        await resolvePrintItemFromLocal('right', false);
+      }
+      let pl = buildPrintPayloadForSide('left');
+      let pr = buildPrintPayloadForSide('right');
+      const lOk = isPrintPayloadReady(pl), rOk = isPrintPayloadReady(pr);
+      if (!lOk && !rOk) { setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
+      if (lOk && !rOk) pr = Object.assign({}, pl);
+      else if (rOk && !lOk) pl = Object.assign({}, pr);
+      try { await ensureJsBarcodeLib(); } catch (_) { setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
+      const res = nlRenderSheet(pl, pr);
+      if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
+      const url = res.canvas.toDataURL('image/png');
+      let sheet = document.getElementById('printLabelSheet');
+      if (!sheet) {
+        sheet = document.createElement('div');
+        sheet.id = 'printLabelSheet';
+        document.body.appendChild(sheet);
+      }
+      sheet.className = 'print-label-sheet';
+      sheet.innerHTML = '';
+      const imgs = [];
+      for (let p = 0; p < pages; p++) {
+        const img = new Image();
+        img.className = 'print-sheet-img';
+        img.src = url;
+        sheet.appendChild(img);
+        imgs.push(img);
+      }
+      try { await Promise.all(imgs.map((i) => (i.decode ? i.decode() : Promise.resolve()))); } catch (_) {}
+      setPrintFetchStatus('جاهز · ' + pages + ' ورقة · ' + nlDpi() + 'dpi · «' + RONGTA_PRINTER_NAME + '»');
+      try { savePrintFormState(); } catch (_) {}
+      printJobTitleRestore = document.title;
+      document.title = 'Barcode-' + (pl.barcode || pr.barcode || 'labels');
+      const restoreTitle = () => {
+        document.body.classList.remove('printing-labels');
+        if (printJobTitleRestore != null) { document.title = printJobTitleRestore; printJobTitleRestore = null; }
+        window.removeEventListener('afterprint', restoreTitle);
+      };
+      window.addEventListener('afterprint', restoreTitle);
+      document.body.classList.add('printing-labels');
+      setTimeout(() => {
+        try { window.print(); }
+        catch (_) { restoreTitle(); setPrintFetchStatus('تعذر فتح نافذة الطباعة.'); }
       }, 50);
     }
 
