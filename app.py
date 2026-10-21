@@ -7369,9 +7369,9 @@ def home() -> HTMLResponse:
       object-fit: none;
     }
     .print-label-mock-host .pl-bc-text {
-      flex: 0 0 2.8mm;
-      height: 2.8mm;
-      min-height: 2.8mm;
+      flex: 0 0 3.2mm;
+      height: 3.2mm;
+      min-height: 3.2mm;
       width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
       font-weight: 900;
@@ -7379,8 +7379,7 @@ def home() -> HTMLResponse:
       background: #fff;
       letter-spacing: 0.04em;
       white-space: pre;
-      line-height: 2.8mm;
-      font-size: 9px;
+      line-height: 3.2mm;
       text-align: center;
       max-width: 100%;
       overflow: hidden;
@@ -7570,9 +7569,9 @@ def home() -> HTMLResponse:
         shape-rendering: crispEdges;
       }
       .print-label .pl-bc-text {
-        flex: 0 0 2.8mm;
-        height: 2.8mm;
-        min-height: 2.8mm;
+        flex: 0 0 3.2mm;
+        height: 3.2mm;
+        min-height: 3.2mm;
         max-width: 100%;
         width: 100%;
         font-family: Consolas, "Courier New", "Segoe UI", monospace;
@@ -7583,7 +7582,7 @@ def home() -> HTMLResponse:
         letter-spacing: .05em;
         margin: 0;
         padding: 0;
-        line-height: 2.8mm;
+        line-height: 3.2mm;
         overflow: hidden !important;
         text-overflow: clip;
         white-space: pre !important;
@@ -7685,12 +7684,11 @@ def home() -> HTMLResponse:
       shape-rendering: crispEdges;
     }
     .print-label-sheet.print-measure .pl-bc-text {
-      flex: 0 0 2.8mm;
-      height: 2.8mm;
-      min-height: 2.8mm;
+      flex: 0 0 3.2mm;
+      height: 3.2mm;
+      min-height: 3.2mm;
       width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
-      font-size: 9px;
       font-weight: 900;
       color: #000;
       background: #fff;
@@ -9500,7 +9498,6 @@ def home() -> HTMLResponse:
         w: layoutS && Number(layoutS.bcWmm) > 0 ? Number(layoutS.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
         h: layoutS && Number(layoutS.bcHmm) > 0 ? Number(layoutS.bcHmm) : PRINT_ZONE_BC_H_MM
       });
-      // هامش أمان داخل الصندوق حتى لا تُقصّ المنطقة البيضاء على حافة القصّ
       let availMm = Math.max(18, bcBox.w);
       const availDots = Math.floor(availMm * dotsPerMm);
 
@@ -9538,7 +9535,7 @@ def home() -> HTMLResponse:
         unreliable = true;
       }
 
-      const textBandMm = 2.8;
+      const textBandMm = 3.2;
       const zoneH = bcBox.h;
       const barHMin = 6;
       const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
@@ -9607,10 +9604,9 @@ def home() -> HTMLResponse:
           txt.style.zIndex = '3';
           txt.style.background = '#fff';
           txt.style.width = '100%';
-          txt.style.flex = '0 0 2.8mm';
-          txt.style.height = '2.8mm';
-          txt.style.minHeight = '2.8mm';
-          txt.style.fontSize = '9px';
+          txt.style.flex = '0 0 ' + textBandMm + 'mm';
+          txt.style.height = textBandMm + 'mm';
+          txt.style.minHeight = textBandMm + 'mm';
         }
       }
 
@@ -9652,9 +9648,9 @@ def home() -> HTMLResponse:
       el.style.color = '#000';
       el.style.background = '#fff';
       el.style.lineHeight = '1';
-      el.style.flex = '0 0 2.8mm';
-      el.style.minHeight = '2.8mm';
-      el.style.height = '2.8mm';
+      el.style.flex = '0 0 3.2mm';
+      el.style.minHeight = '3.2mm';
+      el.style.height = '3.2mm';
       el.style.width = '100%';
       el.style.position = 'relative';
       el.style.zIndex = '3';
@@ -10304,7 +10300,7 @@ def home() -> HTMLResponse:
     function buildFixedPrintLayoutSide(fontTweaks, side) {
       const f = fontTweaks || {};
       const inset = PRINT_ZONE_INSET_MM;
-      const cw = PRINT_SHEET_MM.labelW - 2 * inset; // 48 — كامل مساحة اللزقة مع 1مم يمين/يسار
+      const cw = PRINT_ZONE_CONTENT_W_MM;
       const nameH = PRINT_ZONE_NAME_H_MM;
       const metaH = PRINT_ZONE_META_H_MM;
       const bcH = PRINT_ZONE_BC_H_MM;
@@ -10343,7 +10339,7 @@ def home() -> HTMLResponse:
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 12,
+        version: 11,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10586,15 +10582,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v12 = مساحة اللزقة كاملة 1مم يمين/يسار بدون إزاحة الحافة
-        if (ver < 12) {
+        // v11 = ملء اللزقة 50×26 بهامش 1مم من دون إزاحة خارجية زائدة
+        if (ver < 11) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 12,
+            version: 11,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10606,7 +10602,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 12,
+        version: 11,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -11057,20 +11053,29 @@ def home() -> HTMLResponse:
       );
     }
     function clampBarcodeBoxToLabelMm(side, box) {
+      // لا يغيّر إعدادات GUI المحفوظة — يضبط الصندوق عند الرسم حتى لا يُقصّ Quiet Zone
       const labelW = PRINT_SHEET_MM.labelW;
       const labelH = PRINT_SHEET_MM.labelH;
-      const inset = PRINT_ZONE_INSET_MM;
+      const sideKey = printSideKey(side || 'left');
+      const padL = PRINT_ZONE_INSET_MM;
+      const padR = PRINT_ZONE_INSET_MM;
       let x = Number(box && box.x);
       let y = Number(box && box.y);
       let w = Number(box && box.w);
       let h = Number(box && box.h);
-      if (!Number.isFinite(x)) x = inset;
+      if (!Number.isFinite(x)) x = padL;
       if (!Number.isFinite(y)) y = PRINT_ZONE_NAME_H_MM + PRINT_ZONE_META_H_MM;
-      if (!Number.isFinite(w) || w < 18) w = labelW - 2 * inset;
+      if (!Number.isFinite(w) || w < 18) w = labelW - padL - padR;
       if (!Number.isFinite(h) || h < 6) h = PRINT_ZONE_BC_H_MM;
-      if (x < 0) { w += x; x = 0; }
-      if (x + w > labelW) w = labelW - x;
-      if (w < 18) { x = inset; w = labelW - 2 * inset; }
+      if (x < padL) {
+        w -= (padL - x);
+        x = padL;
+      }
+      if (x + w > labelW - padR) w = labelW - padR - x;
+      if (w < 18) {
+        x = padL;
+        w = Math.max(18, labelW - padL - padR);
+      }
       if (y < 0) y = 0;
       if (y + h > labelH) h = Math.max(8, labelH - y);
       return { x: x, y: y, w: w, h: h };
@@ -11124,8 +11129,9 @@ def home() -> HTMLResponse:
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
-        bcText.style.flex = '0 0 auto';
-        bcText.style.minHeight = '2.8mm';
+        bcText.style.flex = '0 0 3.2mm';
+        bcText.style.minHeight = '3.2mm';
+        bcText.style.fontSize = (s.bcTextPx || 9) + 'px';
         bcText.style.fontWeight = '900';
         bcText.style.letterSpacing = '0.05em';
         bcText.style.color = '#000';
