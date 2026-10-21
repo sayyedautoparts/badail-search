@@ -7280,7 +7280,7 @@ def home() -> HTMLResponse:
     }
     .print-label-mock-host {
       /* قياسات اللزقة 50×26 مم داخل حامل 105×28 */
-      --mock-scale: 2.0;
+      --mock-scale: 1;
       --print-label-w: 50mm;
       --print-label-h: 26mm;
       width: var(--print-label-w);
@@ -7492,7 +7492,7 @@ def home() -> HTMLResponse:
       .print-label .pl-bc-wrap {
         position: absolute;
         box-sizing: border-box;
-        overflow: visible !important;
+        overflow: hidden !important;
         margin: 0;
         padding: 0;
       }
@@ -7528,7 +7528,7 @@ def home() -> HTMLResponse:
         justify-content: flex-end;
         gap: 0.35mm;
         padding: 0;
-        overflow: visible !important;
+        overflow: hidden !important;
       }
       .print-label .pl-bc-wrap.is-bc-unreliable {
         outline: 1px solid #b00020;
@@ -7664,6 +7664,9 @@ def home() -> HTMLResponse:
     .print-label-sheet.print-measure .pl-bc-wrap svg,
     .print-label-sheet.print-measure .pl-bc-wrap img.pl-bc {
       margin: 0 auto;
+      max-width: none;
+      max-height: none;
+      object-fit: none;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
@@ -9460,33 +9463,30 @@ def home() -> HTMLResponse:
       }
 
       /*
-       * أسلوب NiceLabel Code128 (حراري 203dpi):
-       * - X-dimension = عدد صحيح من نقاط الطابعة (لا كسور)
-       * - Quiet Zone ≥ 10×X من كل جهة
-       * - Auto-fit = اختر أكبر X يدخل عرض المنطقة (3→2→1)
-       * - لا Resize لصورة / لا object-fit:fill — العرض المعروض = نقاط الرسم × مم/نقطة
-       * - لزقة اليسار: عرض المنطقة أضيق من جهة حافة الورقة حتى لا يُقصّ الـ Quiet Zone
+       * Code128 @ 203dpi:
+       * - X عدد صحيح من نقاط الطابعة (3 ثم 2 ثم 1)
+       * - Quiet Zone 10× من كل جهة
+       * - العرض المعروض = canvas.dots / (203/25.4) مم فقط — ممنوع HTML width بالبكسل (96dpi)
+       * - ممنوع object-fit/fill أو تصغير CSS بعد الرسم
+       * - اليسار واليمين يستخدمان تقاطع منطقة الباركود مع حدود اللزقة 50مم
        */
       const cfg = PRINT_BARCODE_CFG;
       const DPI = cfg.dpi || 203;
       const dotsPerMm = DPI / 25.4;
       const QUIET = (cfg.quietModulesEach != null) ? cfg.quietModulesEach : 10;
-      const maxDots = (cfg.maxModuleDots != null) ? cfg.maxModuleDots : 3;
-      const isLeftLabel = !!(labelEl && labelEl.classList.contains('print-label-left'));
       const layoutS = (typeof getPrintLayoutSettings === 'function')
         ? getPrintLayoutSettings(layoutSide)
         : null;
-      let availMm = (layoutS && Number(layoutS.bcWmm) > 0)
+      const labelWmm = PRINT_SHEET_MM.labelW;
+      const boxX = layoutS ? (Number(layoutS.bcXmm) + (Number(layoutS.bcShiftXmm) || 0)) : PRINT_ZONE_INSET_MM;
+      const boxW = layoutS && Number(layoutS.bcWmm) > 0
         ? Number(layoutS.bcWmm)
-        : ((typeof PRINT_ZONE_CONTENT_W_MM === 'number')
-          ? PRINT_ZONE_CONTENT_W_MM
-          : Math.max(20, (cfg.labelWmm || 50) - 2 * (cfg.marginMm || 1)));
-      // حماية إضافية لحافة الورقة على اليسار (حتى لو الـ GUI رجّع عرضًا واسعًا)
-      if (isLeftLabel) {
-        const safeMax = PRINT_SHEET_MM.labelW - PRINT_ZONE_OUTER_EDGE_MM - PRINT_ZONE_INSET_MM;
-        if (availMm > safeMax) availMm = safeMax;
-      }
-      availMm = Math.max(18, availMm);
+        : PRINT_ZONE_CONTENT_W_MM;
+      const visL = Math.max(0, boxX);
+      const visR = Math.min(labelWmm, boxX + boxW);
+      let availMm = visR - visL;
+      if (!(availMm > 0)) availMm = PRINT_ZONE_CONTENT_W_MM;
+      availMm = Math.max(18, Math.min(availMm, labelWmm));
       const availDots = Math.floor(availMm * dotsPerMm);
 
       function probeSymbolMods(val) {
@@ -9514,24 +9514,19 @@ def home() -> HTMLResponse:
       const probed = probeSymbolMods(displayCode);
       if (!probed || !probed.mods) return false;
       const totalMods = probed.mods + QUIET * 2;
-
-      // أكبر X يدخل العرض (مثل Auto size / X dimension في NiceLabel)
-      let moduleDots = 0;
-      for (let d = maxDots; d >= 1; d--) {
-        if (totalMods * d <= availDots) {
-          moduleDots = d;
-          break;
-        }
-      }
+      let moduleDots = pickModuleDotsForAvail(totalMods, availDots, cfg);
       let unreliable = false;
       if (!moduleDots) {
-        // أطول من عرض المنطقة حتى بوحدة نقطة واحدة — لا نسحق الصورة
-        moduleDots = 1;
+        unreliable = true;
+        moduleDots = cfg.absoluteMinModuleDots || 1;
+      } else if (moduleDots < (cfg.minModuleDots || 2)) {
         unreliable = true;
       }
 
       const textReserve = (cfg.textReserveMm != null) ? cfg.textReserveMm : 2.4;
-      const zoneH = (typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 15;
+      const zoneH = (layoutS && Number(layoutS.bcHmm) > 0)
+        ? Number(layoutS.bcHmm)
+        : ((typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 15);
       const barHMin = (cfg.barHMinMm != null) ? cfg.barHMinMm : 8;
       const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
       let barHmm = zoneH - textReserve;
@@ -9560,24 +9555,26 @@ def home() -> HTMLResponse:
       }
       if (!canvas.width || !canvas.height) return false;
 
-      // عرض/ارتفاع طبيعي 1:1 مع نقاط الطابعة — ممنوع ضغط CSS
+      // 1:1 مع شبكة 203dpi. لا تضع HTML width/height بالبكسل — المتصفح يفسرها @96dpi فيشوّه الأعمدة.
       const wMm = canvas.width / dotsPerMm;
       const hMm = canvas.height / dotsPerMm;
-      if (wMm > availMm + 0.05) unreliable = true;
+      if (wMm > availMm + 0.08) unreliable = true;
 
       const xMm = moduleDots / dotsPerMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
       img.alt = displayCode;
-      img.title = 'NiceLabel-style Code128 · X=' + xMm.toFixed(3)
-        + 'mm (' + moduleDots + 'dot@' + DPI + 'dpi) · H=' + hMm.toFixed(2) + 'mm';
+      img.title = 'Code128 · X=' + xMm.toFixed(3) + 'mm (' + moduleDots
+        + 'dot@' + DPI + 'dpi) · native ' + wMm.toFixed(2) + '×' + hMm.toFixed(2) + 'mm · scale=1';
       img.src = canvas.toDataURL('image/png');
-      img.width = canvas.width;
-      img.height = canvas.height;
+      img.removeAttribute('width');
+      img.removeAttribute('height');
       img.style.width = wMm.toFixed(4) + 'mm';
       img.style.height = hMm.toFixed(4) + 'mm';
       img.style.maxWidth = 'none';
       img.style.maxHeight = 'none';
+      img.style.minWidth = wMm.toFixed(4) + 'mm';
+      img.style.minHeight = hMm.toFixed(4) + 'mm';
       img.style.display = 'block';
       img.style.margin = '0 auto';
       img.style.flex = '0 0 auto';
@@ -9590,11 +9587,13 @@ def home() -> HTMLResponse:
         if (labelEl) labelEl.dataset.bcUnreliable = '1';
         showPrintBarcodeWarn(
           wrap,
-          'الباركود أطول من عرض المنطقة — لن يُضغط. قصّر القيمة أو وسّع المنطقة.'
+          'الباركود لا يتسع بـ X≥' + (cfg.minModuleDots || 2)
+            + ' نقطة داخل المنطقة. لن يُضغط. وسّع خانة الباركود في GUI.'
         );
         try {
           setPrintFetchStatus(
-            'تحذير: Code128 لا يتسع بـ X≥1 نقطة بدون ضغط (NiceLabel لا يعمل Resize)',
+            'تحذير: X=' + moduleDots + ' نقطة · native ' + wMm.toFixed(1)
+              + 'مم داخل ' + availMm.toFixed(1) + 'مم · بدون تصغير صورة',
             layoutSide
           );
         } catch (_) {}
@@ -9603,8 +9602,8 @@ def home() -> HTMLResponse:
         clearPrintBarcodeWarn(wrap);
         try {
           setPrintFetchStatus(
-            'Code128 · X=' + moduleDots + ' نقطة (' + xMm.toFixed(3)
-              + 'مم) · H=' + hMm.toFixed(1) + 'مم · Quiet 10× · بدون ضغط',
+            'Code128 · X=' + moduleDots + ' نقطة · H=' + hMm.toFixed(1)
+              + 'مم · ' + wMm.toFixed(1) + 'مم · بدون ضغط',
             layoutSide
           );
         } catch (_) {}
@@ -10169,65 +10168,86 @@ def home() -> HTMLResponse:
       contentH: 26,
       rightContentShiftXmm: 0
     };
-    /** إعدادات الباركود — أسلوب NiceLabel · Rongta 203dpi · لزقة 50×26 */
+    /** إعدادات الباركود — Rongta 203dpi · لزقة 50×26 · بدون ضغط CSS */
     const PRINT_BARCODE_CFG = {
       dpi: 203,
       labelWmm: PRINT_SHEET_MM.labelW,
       labelHmm: PRINT_SHEET_MM.labelH,
       marginMm: 1.0,
-      minModuleMm: 0.125, // 1 نقطة @203dpi (حد NiceLabel/حراري)
+      minModuleMm: 0.25, // 2 نقاط @203dpi — حد المسح الموثوق
       maxModuleMm: 0.375, // 3 نقاط
-      minModuleDots: 1,
+      minModuleDots: 2,
+      absoluteMinModuleDots: 1,
       maxModuleDots: 3,
       barHMinMm: 8,
       barHMaxMm: 12,
       quietModulesEach: 10,
       textReserveMm: 2.4
     };
+    function code128SymbolModulesCount(text) {
+      const s = String(text || '');
+      if (!s) return 11 * 2 + 13;
+      let digitsOnly = true;
+      for (let i = 0; i < s.length; i++) {
+        if (s.charCodeAt(i) < 48 || s.charCodeAt(i) > 57) { digitsOnly = false; break; }
+      }
+      if (digitsOnly) {
+        const dataSymbols = Math.floor(s.length / 2) + (s.length % 2);
+        return 11 * (dataSymbols + 2) + 13;
+      }
+      return 11 * (s.length + 2) + 13;
+    }
     function code128ModulesCount(n) {
-      // تقدير أسوأ حالة Code128B + Quiet 10× من كل جهة
       const nn = Math.max(0, Number(n) || 0);
       return 11 * (nn + 2) + 13 + 20;
     }
+    function pickModuleDotsForAvail(totalMods, availDots, cfg) {
+      const maxD = (cfg && cfg.maxModuleDots) || 3;
+      const absMin = (cfg && cfg.absoluteMinModuleDots) || 1;
+      for (let d = maxD; d >= absMin; d--) {
+        if (totalMods * d <= availDots) return d;
+      }
+      return 0;
+    }
     function computePrintBarcodeFit(value, opts) {
-      // تقدير X-dimension مثل NiceLabel (الرسم الفعلي يقيس JsBarcode)
       const cfg = PRINT_BARCODE_CFG;
       const lw = (opts && opts.labelWmm) || cfg.labelWmm;
       const margin = (opts && opts.marginMm != null) ? opts.marginMm : cfg.marginMm;
       const text = printBarcodeExactValue(value);
       const n = text.length;
-      const modules = code128ModulesCount(n);
-      const availW = (typeof PRINT_ZONE_CONTENT_W_MM === 'number')
-        ? PRINT_ZONE_CONTENT_W_MM
-        : (lw - 2 * margin);
+      const quiet = cfg.quietModulesEach;
+      const modules = code128SymbolModulesCount(text) + quiet * 2;
+      const availW = (opts && opts.availableMm != null)
+        ? opts.availableMm
+        : ((typeof PRINT_ZONE_CONTENT_W_MM === 'number') ? PRINT_ZONE_CONTENT_W_MM : (lw - 2 * margin));
       const dotsPerMm = cfg.dpi / 25.4;
       const availDots = Math.floor(availW * dotsPerMm);
       if (!text || !/[A-Za-z0-9]/.test(text)) {
         return {
           ok: false, mode: 'fail', value: text, n: n, modules: modules,
           moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
-          availableMm: availW, warning: 'قيمة باركود غير صالحة للطباعة'
+          availableMm: availW, warning: 'قيمة باركود غير صالحة للطباعة', scale: 1
         };
       }
-      let moduleDots = 0;
-      for (let d = cfg.maxModuleDots; d >= 1; d--) {
-        if (modules * d <= availDots) { moduleDots = d; break; }
-      }
+      const moduleDots = pickModuleDotsForAvail(modules, availDots, cfg);
       if (!moduleDots) {
         return {
           ok: false, mode: 'fail', value: text, n: n, modules: modules,
           moduleMm: 0, moduleDots: 0, barHmm: 0, symbolWmm: 0, symbolHmm: 0,
-          availableMm: availW,
-          warning: 'أطول من عرض المنطقة حتى بوحدة نقطة واحدة — لن يُضغط كصورة'
+          availableMm: availW, scale: 1,
+          warning: 'لا يتسع حتى عند X=1 نقطة — وسّع منطقة الباركود. لن يُضغط كصورة.'
         };
       }
       const moduleMm = moduleDots / dotsPerMm;
-      const barHmm = cfg.barHMinMm;
+      let warning = '';
+      if (moduleDots < cfg.minModuleDots) {
+        warning = 'X=' + moduleDots + ' نقطة (أقل من الحد الموثوق ' + cfg.minModuleDots + ') — بدون ضغط صورة';
+      }
       return {
         ok: true, mode: 'horizontal', value: text, n: n, modules: modules,
         moduleMm: moduleMm, moduleDots: moduleDots,
-        barHmm: barHmm, symbolWmm: modules * moduleMm, symbolHmm: barHmm,
-        availableMm: availW, warning: ''
+        barHmm: cfg.barHMinMm, symbolWmm: modules * moduleMm, symbolHmm: cfg.barHMinMm,
+        availableMm: availW, warning: warning, scale: 1
       };
     }
     // مقياس شاشة — حامل 105×28 مم
@@ -11049,8 +11069,7 @@ def home() -> HTMLResponse:
         wrap.style.alignItems = 'center';
         wrap.style.justifyContent = 'flex-end';
         wrap.style.gap = '0.3mm';
-        // visible: لا تقصّ أشرطة الباركود؛ الضبط يتم بإعادة توليد X وليس بالـ clip
-        wrap.style.overflow = 'visible';
+        wrap.style.overflow = 'hidden';
       }
       if (bcText) {
         bcText.dataset.maxBcTextPx = String(s.bcTextPx);
