@@ -7288,11 +7288,11 @@ def home() -> HTMLResponse:
       max-width: none;
       margin: 0 auto calc(var(--print-label-h) * (var(--mock-scale) - 1) + 8px);
       box-sizing: border-box;
-      border: 1px solid #222;
+      border: none;
       background: #fff;
       overflow: hidden;
       position: relative;
-      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      box-shadow: 0 0 0 1px #222, 0 1px 3px rgba(0,0,0,.08);
       transform: scale(var(--mock-scale));
       transform-origin: top center;
     }
@@ -7830,7 +7830,7 @@ def home() -> HTMLResponse:
       align-items: center;
       justify-content: center;
       text-align: center;
-      padding: 1px 3px;
+      padding: 0;
       overflow: hidden;
       border-radius: 1px;
       font-weight: 800;
@@ -7852,9 +7852,9 @@ def home() -> HTMLResponse:
     }
     .pdg-zone[data-zone="bc"] .pdg-zone-inner {
       flex-direction: column;
-      justify-content: flex-end;
-      gap: 1px;
-      padding: 1px 2px 0;
+      justify-content: flex-start;
+      gap: 0;
+      padding: 0;
     }
     .pdg-bc-bars {
       width: 92%;
@@ -9384,6 +9384,74 @@ def home() -> HTMLResponse:
       }
       return out;
     }
+    function printBarcodeEncodeValue(code) {
+      return PRINT_BARCODE_CFG.stripSpaces
+        ? printBarcodeCompactValue(code)
+        : printBarcodeScanValue(code);
+    }
+    const PRINT_REAL_PX_PER_MM = 96 / 25.4;
+
+    function renderPrintBarcodeCanvas(code, side) {
+      if (typeof JsBarcode === 'undefined') return null;
+      const value = printBarcodeEncodeValue(code);
+      if (!value || !/[A-Za-z0-9]/.test(value)) return null;
+      const cfg = PRINT_BARCODE_CFG;
+      const dotsPerMm = cfg.dpi / 25.4;
+      const s = getPrintLayoutSettings(side);
+      const box = clampBarcodeBoxToLabelMm(side, {
+        x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
+        y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
+        w: Number(s.bcWmm) > 0 ? Number(s.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
+        h: Number(s.bcHmm) > 0 ? Number(s.bcHmm) : PRINT_ZONE_BC_H_MM
+      });
+      const availDots = Math.floor(box.w * dotsPerMm);
+
+      let probe = null;
+      const c0 = document.createElement('canvas');
+      ['CODE128', 'CODE128B'].forEach((fmt) => {
+        if (probe) return;
+        try {
+          JsBarcode(c0, value, { format: fmt, width: 1, height: 8, margin: 0, displayValue: false });
+          probe = { mods: c0.width, format: fmt };
+        } catch (_) {}
+      });
+      if (!probe || !probe.mods) return null;
+
+      const tries = [
+        { d: 2, q: cfg.quietModulesEach },
+        { d: 2, q: cfg.quietModulesMin },
+        { d: 1, q: cfg.quietModulesMin, weak: true }
+      ];
+      let pick = null;
+      for (let i = 0; i < tries.length; i++) {
+        if ((probe.mods + tries[i].q * 2) * tries[i].d <= availDots) { pick = tries[i]; break; }
+      }
+      let unreliable = false;
+      if (!pick) { pick = { d: 1, q: cfg.quietModulesMin }; unreliable = true; }
+      else if (pick.weak) unreliable = true;
+
+      const textBandMm = 3.2;
+      let barHmm = Math.min(cfg.barHMaxMm, box.h - textBandMm);
+      barHmm = Math.max(6, barHmm);
+      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
+      const quietPx = pick.q * pick.d;
+
+      const canvas = document.createElement('canvas');
+      try {
+        JsBarcode(canvas, value, {
+          format: probe.format, width: pick.d, height: heightDots, margin: 0,
+          marginLeft: quietPx, marginRight: quietPx, marginTop: 0, marginBottom: 0,
+          displayValue: false, background: '#ffffff', lineColor: '#000000'
+        });
+      } catch (_) { return null; }
+      if (!canvas.width) return null;
+
+      const wMm = canvas.width / dotsPerMm;
+      const hMm = canvas.height / dotsPerMm;
+      if (wMm > box.w + 0.08) unreliable = true;
+      return { canvas: canvas, value: value, moduleDots: pick.d, wMm: wMm, hMm: hMm,
+               availMm: box.w, unreliable: unreliable, textBandMm: textBandMm };
+    }
     function renderPrintBarcodeSvg(svgEl, code, opts) {
       if (!svgEl || typeof JsBarcode === 'undefined') return false;
       // القيمة كما في المصدر مع كل الفراغات — لا دمج/حذف مسافات
@@ -9445,201 +9513,70 @@ def home() -> HTMLResponse:
     }
     async function fitPrintBarcodeDynamic(targetEl, code, opts) {
       if (!targetEl) return false;
-      const displayCode = printBarcodeExactValue(code);
-      if (!displayCode || !/[A-Za-z0-9]/.test(displayCode)) return false;
+      const raw = printBarcodeExactValue(code);
+      if (!raw || !/[A-Za-z0-9]/.test(raw)) return false;
       const inLabel = !!(targetEl.closest && targetEl.closest('.print-label'));
       const wrap = targetEl.closest ? targetEl.closest('.pl-bc-wrap') : null;
       clearPrintBarcodeWarn(wrap);
-      const layoutSide = (typeof printLayoutSideFromEl === 'function')
-        ? printLayoutSideFromEl(targetEl)
-        : 'left';
+      const layoutSide = printLayoutSideFromEl(targetEl);
       const labelEl = targetEl.closest && targetEl.closest('.print-label');
-
       try { await ensureJsBarcodeLib(); } catch (_) { return false; }
 
       if (!inLabel) {
-        const svgEl = targetEl.tagName && targetEl.tagName.toLowerCase() === 'svg'
-          ? targetEl
-          : null;
+        const svgEl = targetEl.tagName && targetEl.tagName.toLowerCase() === 'svg' ? targetEl : null;
         if (!svgEl) return false;
-        const okPrev = renderPrintBarcodeSvg(svgEl, displayCode, Object.assign({
-          format: 'CODE128',
-          height: (opts && opts.height) || 40,
-          width: 2,
-          margin: 10,
-          displayValue: false
-        }, opts || {}));
-        if (okPrev) {
-          svgEl.style.width = 'auto';
-          svgEl.style.height = 'auto';
-          svgEl.style.maxWidth = '100%';
-        }
-        return okPrev;
+        return renderPrintBarcodeSvg(svgEl, printBarcodeEncodeValue(code),
+          Object.assign({ height: 40, width: 2, margin: 10 }, opts || {}));
       }
 
-      /*
-       * Code128 @ 203dpi:
-       * - X عدد صحيح من نقاط الطابعة (3 ثم 2 ثم 1)
-       * - Quiet Zone 10× من كل جهة
-       * - العرض المعروض = canvas.dots / (203/25.4) مم فقط — ممنوع HTML width بالبكسل (96dpi)
-       * - ممنوع object-fit/fill أو تصغير CSS بعد الرسم
-       * - اليسار واليمين يستخدمان تقاطع منطقة الباركود مع حدود اللزقة 50مم
-       */
-      const cfg = PRINT_BARCODE_CFG;
-      const DPI = cfg.dpi || 203;
-      const dotsPerMm = DPI / 25.4;
-      const QUIET = (cfg.quietModulesEach != null) ? cfg.quietModulesEach : 10;
-      const layoutS = (typeof getPrintLayoutSettings === 'function')
-        ? getPrintLayoutSettings(layoutSide)
-        : null;
-      const bcBox = clampBarcodeBoxToLabelMm(layoutSide, {
-        x: layoutS ? (Number(layoutS.bcXmm) + (Number(layoutS.bcShiftXmm) || 0)) : PRINT_ZONE_INSET_MM,
-        y: layoutS ? (Number(layoutS.bcYmm) + (Number(layoutS.bcShiftYmm) || 0)) : 0,
-        w: layoutS && Number(layoutS.bcWmm) > 0 ? Number(layoutS.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
-        h: layoutS && Number(layoutS.bcHmm) > 0 ? Number(layoutS.bcHmm) : PRINT_ZONE_BC_H_MM
-      });
-      let availMm = Math.max(18, bcBox.w);
-      const availDots = Math.floor(availMm * dotsPerMm);
+      const r = renderPrintBarcodeCanvas(code, layoutSide);
+      if (!r) return false;
 
-      function probeSymbolMods(val) {
-        const c = document.createElement('canvas');
-        const formats = ['CODE128', 'CODE128B'];
-        for (let i = 0; i < formats.length; i++) {
-          try {
-            JsBarcode(c, val, {
-              format: formats[i],
-              width: 1,
-              height: 8,
-              margin: 0,
-              marginLeft: 0,
-              marginRight: 0,
-              displayValue: false,
-              background: '#ffffff',
-              lineColor: '#000000'
-            });
-            return { mods: c.width || 0, format: formats[i] };
-          } catch (_) {}
-        }
-        return null;
-      }
-
-      const probed = probeSymbolMods(displayCode);
-      if (!probed || !probed.mods) return false;
-      const totalMods = probed.mods + QUIET * 2;
-      let moduleDots = pickModuleDotsForAvail(totalMods, availDots, cfg);
-      let unreliable = false;
-      if (!moduleDots) {
-        unreliable = true;
-        moduleDots = cfg.absoluteMinModuleDots || 1;
-      } else if (moduleDots < (cfg.minModuleDots || 2)) {
-        unreliable = true;
-      }
-
-      const textBandMm = 3.2;
-      const zoneH = bcBox.h;
-      const barHMin = 6;
-      const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
-      let barHmm = zoneH - textBandMm;
-      if (barHmm > barHMax) barHmm = barHMax;
-      if (barHmm < barHMin) barHmm = barHMin;
-      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
-
-      const quietPx = QUIET * moduleDots;
-      const canvas = document.createElement('canvas');
-      try {
-        JsBarcode(canvas, displayCode, {
-          format: probed.format,
-          width: moduleDots,
-          height: heightDots,
-          margin: 0,
-          marginLeft: quietPx,
-          marginRight: quietPx,
-          marginTop: 0,
-          marginBottom: 0,
-          displayValue: false,
-          background: '#ffffff',
-          lineColor: '#000000'
-        });
-      } catch (_) {
-        return false;
-      }
-      if (!canvas.width || !canvas.height) return false;
-
-      // 1:1 مع شبكة 203dpi. لا تضع HTML width/height بالبكسل — المتصفح يفسرها @96dpi فيشوّه الأعمدة.
-      const wMm = canvas.width / dotsPerMm;
-      const hMm = canvas.height / dotsPerMm;
-      if (wMm > availMm + 0.08) unreliable = true;
-
-      const xMm = moduleDots / dotsPerMm;
       const img = document.createElement('img');
       img.className = 'pl-bc';
-      img.alt = displayCode;
-      img.title = 'Code128 · X=' + xMm.toFixed(3) + 'mm (' + moduleDots
-        + 'dot@' + DPI + 'dpi) · native ' + wMm.toFixed(2) + '×' + hMm.toFixed(2) + 'mm · scale=1';
-      img.src = canvas.toDataURL('image/png');
+      img.alt = r.value;
+      img.title = 'Code128 X=' + r.moduleDots + 'dot · ' + r.wMm.toFixed(2) + 'x' + r.hMm.toFixed(2) + 'mm';
+      img.src = r.canvas.toDataURL('image/png');
       img.removeAttribute('width');
       img.removeAttribute('height');
-      img.style.width = wMm.toFixed(4) + 'mm';
-      img.style.height = hMm.toFixed(4) + 'mm';
+      img.style.width = r.wMm.toFixed(4) + 'mm';
+      img.style.height = r.hMm.toFixed(4) + 'mm';
       img.style.maxWidth = 'none';
       img.style.maxHeight = 'none';
-      img.style.minWidth = '0';
-      img.style.minHeight = '0';
       img.style.display = 'block';
       img.style.margin = '0 auto';
-      img.style.flex = '0 0 ' + hMm.toFixed(4) + 'mm';
+      img.style.flex = '0 0 ' + r.hMm.toFixed(4) + 'mm';
       img.style.objectFit = 'none';
-      img.style.objectPosition = 'center top';
       img.style.imageRendering = 'pixelated';
-      img.style.position = 'relative';
-      img.style.zIndex = '1';
       img.style.direction = 'ltr';
       targetEl.replaceWith(img);
+
       if (wrap) {
         wrap.style.justifyContent = 'flex-start';
-        wrap.style.overflow = 'hidden';
         const txt = wrap.querySelector('.pl-bc-text');
         if (txt) {
-          txt.style.position = 'relative';
-          txt.style.zIndex = '3';
-          txt.style.background = '#fff';
-          txt.style.width = '100%';
-          txt.style.flex = '0 0 ' + textBandMm + 'mm';
-          txt.style.height = textBandMm + 'mm';
-          txt.style.minHeight = textBandMm + 'mm';
+          txt.style.flex = '0 0 ' + r.textBandMm + 'mm';
+          txt.style.height = r.textBandMm + 'mm';
+          txt.style.minHeight = r.textBandMm + 'mm';
         }
       }
-
-      if (unreliable) {
+      if (r.unreliable) {
         if (labelEl) labelEl.dataset.bcUnreliable = '1';
-        showPrintBarcodeWarn(
-          wrap,
-          'الباركود لا يتسع بـ X≥' + (cfg.minModuleDots || 2)
-            + ' نقطة داخل المنطقة. لن يُضغط. وسّع خانة الباركود في GUI.'
-        );
+        showPrintBarcodeWarn(wrap, 'الباركود طويل جداً على عرض الخانة — وسّع خانة الباركود في GUI');
         try {
-          setPrintFetchStatus(
-            'تحذير: X=' + moduleDots + ' نقطة · native ' + wMm.toFixed(1)
-              + 'مم داخل ' + availMm.toFixed(1) + 'مم · بدون تصغير صورة',
-            layoutSide
-          );
+          setPrintFetchStatus('تحذير: الباركود ' + r.wMm.toFixed(1) + 'مم داخل ' + r.availMm.toFixed(1) + 'مم', layoutSide);
         } catch (_) {}
       } else {
         if (labelEl) labelEl.dataset.bcUnreliable = '0';
-        clearPrintBarcodeWarn(wrap);
         try {
-          setPrintFetchStatus(
-            'Code128 · X=' + moduleDots + ' نقطة · H=' + hMm.toFixed(1)
-              + 'مم · ' + wMm.toFixed(1) + 'مم · بدون ضغط',
-            layoutSide
-          );
+          setPrintFetchStatus('Code128 · X=' + r.moduleDots + ' نقطة · ' + r.wMm.toFixed(1) + 'x' + r.hMm.toFixed(1) + 'مم · بدون قص', layoutSide);
         } catch (_) {}
       }
       return true;
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      const display = printBarcodeExactValue(code);
+      const display = printBarcodeEncodeValue(code);
       el.textContent = display;
       el.style.display = 'block';
       el.style.whiteSpace = 'pre';
@@ -10209,10 +10146,12 @@ def home() -> HTMLResponse:
       maxModuleMm: 0.375, // 3 نقاط
       minModuleDots: 2,
       absoluteMinModuleDots: 1,
-      maxModuleDots: 3,
+      maxModuleDots: 2,
       barHMinMm: 8,
-      barHMaxMm: 12,
+      barHMaxMm: 10,
       quietModulesEach: 10,
+      quietModulesMin: 6,
+      stripSpaces: true,
       textReserveMm: 2.4
     };
     function code128SymbolModulesCount(text) {
@@ -10794,28 +10733,44 @@ def home() -> HTMLResponse:
     }
     function fitDesignerZoneFonts(labelEl, layout, sample) {
       if (!labelEl || !layout) return;
+      const k = PRINT_DESIGNER_PX_PER_MM / PRINT_REAL_PX_PER_MM;
+      const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
       const nameInner = labelEl.querySelector('.pdg-zone[data-zone="name"] .pdg-zone-inner');
       const origInner = labelEl.querySelector('.pdg-zone[data-zone="orig"] .pdg-zone-inner');
       const locInner = labelEl.querySelector('.pdg-zone[data-zone="loc"] .pdg-zone-inner');
-      const bcText = labelEl.querySelector('.pdg-bc-text');
+      const bcInner = labelEl.querySelector('.pdg-zone[data-zone="bc"] .pdg-zone-inner');
       if (nameInner) {
         nameInner.textContent = sanitizePrintItemName(sample.name || '—') || '—';
-        fitTextIntoBox(nameInner, layout.namePx, Math.max(9, Math.round(layout.namePx * 0.32)));
+        const minN = Math.min(14, Math.max(9, Math.round(layout.namePx * 0.32)));
+        nameInner.style.lineHeight = '1.02';
+        fitTextIntoBox(nameInner, layout.namePx * k, minN * k);
       }
       if (origInner) {
         origInner.textContent = sample.original || '—';
-        fitTextIntoBox(origInner, layout.originalPx, Math.max(6, Math.round(layout.originalPx * 0.55)));
+        fitTextIntoBox(origInner, layout.originalPx * k, Math.max(6, Math.round(layout.originalPx * 0.55)) * k);
       }
       if (locInner) {
         locInner.textContent = sample.location || '—';
-        fitTextIntoBox(locInner, layout.locationPx, Math.max(6, Math.round(layout.locationPx * 0.55)));
+        fitTextIntoBox(locInner, layout.locationPx * k, Math.max(6, Math.round(layout.locationPx * 0.55)) * k);
       }
-      if (bcText) {
-        const bc = printBarcodeExactValue(sample.barcode || '');
-        bcText.textContent = bc || '—';
-        bcText.style.fontWeight = '900';
-        bcText.style.letterSpacing = '0.04em';
-        bcText.style.fontSize = '10px';
+      if (bcInner) {
+        const ppm = PRINT_DESIGNER_PX_PER_MM;
+        bcInner.innerHTML = '';
+        const r = renderPrintBarcodeCanvas(sample.barcode, side);
+        if (r) {
+          const img = document.createElement('img');
+          img.src = r.canvas.toDataURL('image/png');
+          img.style.cssText = 'display:block;margin:0 auto;max-width:none;image-rendering:pixelated;'
+            + 'width:' + (r.wMm * ppm) + 'px;height:' + (r.hMm * ppm) + 'px;flex:0 0 ' + (r.hMm * ppm) + 'px;';
+          bcInner.appendChild(img);
+        }
+        const t = document.createElement('div');
+        t.className = 'pdg-bc-text';
+        t.textContent = printBarcodeEncodeValue(sample.barcode || '') || '—';
+        t.style.cssText = 'flex:0 0 ' + (3.2 * ppm) + 'px;height:' + (3.2 * ppm) + 'px;width:100%;'
+          + 'line-height:' + (3.2 * ppm) + 'px;font-size:' + ((layout.bcTextPx || 9) * k) + 'px;'
+          + 'font-weight:900;letter-spacing:0.05em;text-align:center;white-space:pre;overflow:hidden;';
+        bcInner.appendChild(t);
       }
     }
     function deriveMaxFontsFromZones(layout) {
@@ -11151,6 +11106,7 @@ def home() -> HTMLResponse:
       el.style.overflow = 'hidden';
       el.style.textAlign = 'center';
       el.style.lineHeight = '1.02';
+      el.style.alignContent = 'center';
       el.style.webkitLineClamp = 'unset';
       el.style.lineClamp = 'unset';
       fitTextIntoBox(el, maxPx, minPx);
