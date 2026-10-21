@@ -9404,8 +9404,8 @@ def home() -> HTMLResponse:
         w: Number(s.bcWmm) > 0 ? Number(s.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
         h: Number(s.bcHmm) > 0 ? Number(s.bcHmm) : PRINT_ZONE_BC_H_MM
       });
-      const padMm = (cfg.fitPadMm != null) ? cfg.fitPadMm : 6;
-      const capMm = (cfg.maxWidthMm != null) ? cfg.maxWidthMm : 36;
+      const padMm = (cfg.fitPadMm != null) ? cfg.fitPadMm : 1.2;
+      const capMm = (cfg.maxWidthMm != null) ? cfg.maxWidthMm : 48;
       const maxWmm = Math.min(capMm, Math.max(22, box.w - padMm * 2));
       const availDots = Math.floor(maxWmm * dotsPerMm);
 
@@ -9420,9 +9420,9 @@ def home() -> HTMLResponse:
       });
       if (!probe || !probe.mods) return null;
 
-      const q = (cfg.quietModulesMin != null) ? cfg.quietModulesMin : 6;
       const tries = [
-        { d: 2, q: q },
+        { d: 2, q: cfg.quietModulesEach },
+        { d: 2, q: cfg.quietModulesMin },
         { d: 2, q: 4 }
       ];
       let pick = null;
@@ -9434,8 +9434,8 @@ def home() -> HTMLResponse:
 
       const textBandMm = 3.2;
       let barHmm = Math.min(cfg.barHMaxMm, box.h - textBandMm);
-      barHmm = Math.max(6, barHmm);
-      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
+      barHmm = Math.max(8, barHmm);
+      const heightDots = Math.max(48, Math.round(barHmm * dotsPerMm));
       const quietPx = pick.q * pick.d;
 
       const canvas = document.createElement('canvas');
@@ -9450,7 +9450,7 @@ def home() -> HTMLResponse:
 
       let wMm = canvas.width / dotsPerMm;
       let hMm = canvas.height / dotsPerMm;
-      if (wMm > maxWmm + 0.04) {
+      if (wMm > maxWmm + 0.08) {
         const k = maxWmm / wMm;
         wMm = maxWmm;
         hMm = hMm * k;
@@ -10156,11 +10156,11 @@ def home() -> HTMLResponse:
       absoluteMinModuleDots: 1,
       maxModuleDots: 2,
       barHMinMm: 8,
-      barHMaxMm: 9,
-      quietModulesEach: 6,
+      barHMaxMm: 11.5,
+      quietModulesEach: 10,
       quietModulesMin: 6,
-      fitPadMm: 6,
-      maxWidthMm: 36,
+      fitPadMm: 1.2,
+      maxWidthMm: 48,
       stripSpaces: true,
       textReserveMm: 2.4
     };
