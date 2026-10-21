@@ -7369,9 +7369,9 @@ def home() -> HTMLResponse:
       object-fit: none;
     }
     .print-label-mock-host .pl-bc-text {
-      flex: 0 0 3.2mm;
-      height: 3.2mm;
-      min-height: 3.2mm;
+      flex: 0 0 2.8mm;
+      height: 2.8mm;
+      min-height: 2.8mm;
       width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
       font-weight: 900;
@@ -7379,7 +7379,8 @@ def home() -> HTMLResponse:
       background: #fff;
       letter-spacing: 0.04em;
       white-space: pre;
-      line-height: 3.2mm;
+      line-height: 2.8mm;
+      font-size: 9px;
       text-align: center;
       max-width: 100%;
       overflow: hidden;
@@ -7569,20 +7570,20 @@ def home() -> HTMLResponse:
         shape-rendering: crispEdges;
       }
       .print-label .pl-bc-text {
-        flex: 0 0 3.2mm;
-        height: 3.2mm;
-        min-height: 3.2mm;
+        flex: 0 0 2.8mm;
+        height: 2.8mm;
+        min-height: 2.8mm;
         max-width: 100%;
         width: 100%;
         font-family: Consolas, "Courier New", "Segoe UI", monospace;
-        font-size: 8px;
+        font-size: 9px;
         font-weight: 900;
         color: #000;
         background: #fff;
         letter-spacing: .05em;
         margin: 0;
         padding: 0;
-        line-height: 3.2mm;
+        line-height: 2.8mm;
         overflow: hidden !important;
         text-overflow: clip;
         white-space: pre !important;
@@ -7684,11 +7685,12 @@ def home() -> HTMLResponse:
       shape-rendering: crispEdges;
     }
     .print-label-sheet.print-measure .pl-bc-text {
-      flex: 0 0 3.2mm;
-      height: 3.2mm;
-      min-height: 3.2mm;
+      flex: 0 0 2.8mm;
+      height: 2.8mm;
+      min-height: 2.8mm;
       width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-size: 9px;
       font-weight: 900;
       color: #000;
       background: #fff;
@@ -9499,8 +9501,7 @@ def home() -> HTMLResponse:
         h: layoutS && Number(layoutS.bcHmm) > 0 ? Number(layoutS.bcHmm) : PRINT_ZONE_BC_H_MM
       });
       // هامش أمان داخل الصندوق حتى لا تُقصّ المنطقة البيضاء على حافة القصّ
-      const bleedMm = 0.6;
-      let availMm = Math.max(18, bcBox.w - 2 * bleedMm);
+      let availMm = Math.max(18, bcBox.w);
       const availDots = Math.floor(availMm * dotsPerMm);
 
       function probeSymbolMods(val) {
@@ -9537,7 +9538,7 @@ def home() -> HTMLResponse:
         unreliable = true;
       }
 
-      const textBandMm = 3.2;
+      const textBandMm = 2.8;
       const zoneH = bcBox.h;
       const barHMin = 6;
       const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
@@ -9606,9 +9607,10 @@ def home() -> HTMLResponse:
           txt.style.zIndex = '3';
           txt.style.background = '#fff';
           txt.style.width = '100%';
-          txt.style.flex = '0 0 ' + textBandMm + 'mm';
-          txt.style.height = textBandMm + 'mm';
-          txt.style.minHeight = textBandMm + 'mm';
+          txt.style.flex = '0 0 2.8mm';
+          txt.style.height = '2.8mm';
+          txt.style.minHeight = '2.8mm';
+          txt.style.fontSize = '9px';
         }
       }
 
@@ -9650,9 +9652,9 @@ def home() -> HTMLResponse:
       el.style.color = '#000';
       el.style.background = '#fff';
       el.style.lineHeight = '1';
-      el.style.flex = '0 0 3.2mm';
-      el.style.minHeight = '3.2mm';
-      el.style.height = '3.2mm';
+      el.style.flex = '0 0 2.8mm';
+      el.style.minHeight = '2.8mm';
+      el.style.height = '2.8mm';
       el.style.width = '100%';
       el.style.position = 'relative';
       el.style.zIndex = '3';
@@ -9660,7 +9662,7 @@ def home() -> HTMLResponse:
       el.style.textOverflow = 'clip';
       const n = display.length;
       el.style.letterSpacing = n > 28 ? '0' : (n > 20 ? '0.02em' : '0.04em');
-      el.style.fontSize = '8px';
+      el.style.fontSize = '9px';
       el.style.fontWeight = '900';
     }
     function toEnglishDigits(raw) {
@@ -10293,8 +10295,7 @@ def home() -> HTMLResponse:
      * داخل اللزقة: هامش محتوى 1 مم يمين/يسار · اسم 9 مم · أصلي+موقع 2 مم · باركود الباقي (15 مم)
      */
     const PRINT_ZONE_INSET_MM = 1;
-    /** هامش إضافي من حافة الورقة (لزقة اليسار يسارًا / لزقة اليمين يمينًا) حتى لا يُقصّ Quiet Zone */
-    const PRINT_ZONE_OUTER_EDGE_MM = 2;
+    const PRINT_ZONE_OUTER_EDGE_MM = 1;
     const PRINT_ZONE_NAME_H_MM = 9;
     const PRINT_ZONE_META_H_MM = 2;
     const PRINT_ZONE_CONTENT_W_MM = PRINT_SHEET_MM.labelW - 2 * PRINT_ZONE_INSET_MM; // 48
@@ -10302,11 +10303,8 @@ def home() -> HTMLResponse:
     const PRINT_ZONE_META_W_MM = PRINT_ZONE_CONTENT_W_MM / 2; // 24 + 24
     function buildFixedPrintLayoutSide(fontTweaks, side) {
       const f = fontTweaks || {};
-      const sideKey = (side === 'right') ? 'right' : 'left';
-      // حافة الورقة تحتاج inset أكبر من جهة الوسط (الفجوة) — سبب فشل مسح اليسار سابقًا
-      const leftInset = (sideKey === 'left') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
-      const rightInset = (sideKey === 'right') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
-      const cw = PRINT_SHEET_MM.labelW - leftInset - rightInset; // 47
+      const inset = PRINT_ZONE_INSET_MM;
+      const cw = PRINT_SHEET_MM.labelW - 2 * inset; // 48 — كامل مساحة اللزقة مع 1مم يمين/يسار
       const nameH = PRINT_ZONE_NAME_H_MM;
       const metaH = PRINT_ZONE_META_H_MM;
       const bcH = PRINT_ZONE_BC_H_MM;
@@ -10315,20 +10313,20 @@ def home() -> HTMLResponse:
         namePx: f.namePx != null ? f.namePx : 24,
         originalPx: f.originalPx != null ? f.originalPx : 7,
         locationPx: f.locationPx != null ? f.locationPx : 7,
-        bcTextPx: f.bcTextPx != null ? f.bcTextPx : 8,
-        nameXmm: leftInset,
+        bcTextPx: f.bcTextPx != null ? f.bcTextPx : 9,
+        nameXmm: inset,
         nameYmm: 0,
         nameWmm: cw,
         nameHmm: nameH,
-        origXmm: leftInset,
+        origXmm: inset,
         origYmm: nameH,
         origWmm: metaW,
         origHmm: metaH,
-        locXmm: leftInset + metaW,
+        locXmm: inset + metaW,
         locYmm: nameH,
         locWmm: metaW,
         locHmm: metaH,
-        bcXmm: leftInset,
+        bcXmm: inset,
         bcYmm: nameH + metaH,
         bcWmm: cw,
         bcHmm: bcH,
@@ -10340,12 +10338,12 @@ def home() -> HTMLResponse:
         bcShiftYmm: 0
       };
     }
-    const PRINT_LAYOUT_DEFAULTS_LEFT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 }, 'left');
-    const PRINT_LAYOUT_DEFAULTS_RIGHT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 8 }, 'right');
+    const PRINT_LAYOUT_DEFAULTS_LEFT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 9 }, 'left');
+    const PRINT_LAYOUT_DEFAULTS_RIGHT = buildFixedPrintLayoutSide({ namePx: 24, originalPx: 7, locationPx: 7, bcTextPx: 9 }, 'right');
     const PRINT_LAYOUT_DEFAULTS = PRINT_LAYOUT_DEFAULTS_LEFT;
     function defaultPrintLayoutBundle() {
       return {
-        version: 10,
+        version: 12,
         left: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide(PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10588,15 +10586,15 @@ def home() -> HTMLResponse:
         const raw = localStorage.getItem('printLayoutSettings');
         const parsed = raw ? JSON.parse(raw) : {};
         const ver = Number(parsed && parsed.version) || 0;
-        // v10 = حماية حافة الورقة لليسار/اليمين (Quiet Zone) · حامل 105×28 · لزقة 50×26
-        if (ver < 10) {
+        // v12 = مساحة اللزقة كاملة 1مم يمين/يسار بدون إزاحة الحافة
+        if (ver < 12) {
           const b = defaultPrintLayoutBundle();
           try { localStorage.setItem('printLayoutSettings', JSON.stringify(b)); } catch (_) {}
           return b;
         }
         if (parsed && typeof parsed === 'object' && parsed.left && parsed.right) {
           return {
-            version: 10,
+            version: 12,
             left: coercePrintLayoutSide(parsed.left),
             right: coercePrintLayoutSide(parsed.right)
           };
@@ -10608,7 +10606,7 @@ def home() -> HTMLResponse:
     }
     function savePrintLayoutBundle(bundle) {
       const b = {
-        version: 10,
+        version: 12,
         left: coercePrintLayoutSide((bundle && bundle.left) || PRINT_LAYOUT_DEFAULTS_LEFT),
         right: coercePrintLayoutSide((bundle && bundle.right) || PRINT_LAYOUT_DEFAULTS_RIGHT)
       };
@@ -10830,7 +10828,7 @@ def home() -> HTMLResponse:
         namePx: clampPrintNum(Math.round(layout.nameHmm * 3.35), 14, 64, PRINT_LAYOUT_DEFAULTS.namePx),
         originalPx: clampPrintNum(Math.round(layout.origHmm * 2.95), 6, 22, PRINT_LAYOUT_DEFAULTS.originalPx),
         locationPx: clampPrintNum(Math.round(layout.locHmm * 2.95), 6, 20, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: 8
+        bcTextPx: 9
       };
     }
     let printDesignerDrag = null;
@@ -11059,29 +11057,20 @@ def home() -> HTMLResponse:
       );
     }
     function clampBarcodeBoxToLabelMm(side, box) {
-      // لا يغيّر إعدادات GUI المحفوظة — يضبط الصندوق عند الرسم حتى لا يُقصّ Quiet Zone
       const labelW = PRINT_SHEET_MM.labelW;
       const labelH = PRINT_SHEET_MM.labelH;
-      const sideKey = printSideKey(side || 'left');
-      const padL = (sideKey === 'left') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
-      const padR = (sideKey === 'right') ? PRINT_ZONE_OUTER_EDGE_MM : PRINT_ZONE_INSET_MM;
+      const inset = PRINT_ZONE_INSET_MM;
       let x = Number(box && box.x);
       let y = Number(box && box.y);
       let w = Number(box && box.w);
       let h = Number(box && box.h);
-      if (!Number.isFinite(x)) x = padL;
+      if (!Number.isFinite(x)) x = inset;
       if (!Number.isFinite(y)) y = PRINT_ZONE_NAME_H_MM + PRINT_ZONE_META_H_MM;
-      if (!Number.isFinite(w) || w < 18) w = labelW - padL - padR;
+      if (!Number.isFinite(w) || w < 18) w = labelW - 2 * inset;
       if (!Number.isFinite(h) || h < 6) h = PRINT_ZONE_BC_H_MM;
-      if (x < padL) {
-        w -= (padL - x);
-        x = padL;
-      }
-      if (x + w > labelW - padR) w = labelW - padR - x;
-      if (w < 18) {
-        x = padL;
-        w = Math.max(18, labelW - padL - padR);
-      }
+      if (x < 0) { w += x; x = 0; }
+      if (x + w > labelW) w = labelW - x;
+      if (w < 18) { x = inset; w = labelW - 2 * inset; }
       if (y < 0) y = 0;
       if (y + h > labelH) h = Math.max(8, labelH - y);
       return { x: x, y: y, w: w, h: h };
