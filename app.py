@@ -9404,7 +9404,10 @@ def home() -> HTMLResponse:
         w: Number(s.bcWmm) > 0 ? Number(s.bcWmm) : PRINT_ZONE_CONTENT_W_MM,
         h: Number(s.bcHmm) > 0 ? Number(s.bcHmm) : PRINT_ZONE_BC_H_MM
       });
-      const availDots = Math.floor(box.w * dotsPerMm);
+      const padMm = (cfg.fitPadMm != null) ? cfg.fitPadMm : 6;
+      const capMm = (cfg.maxWidthMm != null) ? cfg.maxWidthMm : 36;
+      const maxWmm = Math.min(capMm, Math.max(22, box.w - padMm * 2));
+      const availDots = Math.floor(maxWmm * dotsPerMm);
 
       let probe = null;
       const c0 = document.createElement('canvas');
@@ -9417,18 +9420,17 @@ def home() -> HTMLResponse:
       });
       if (!probe || !probe.mods) return null;
 
+      const q = (cfg.quietModulesMin != null) ? cfg.quietModulesMin : 6;
       const tries = [
-        { d: 2, q: cfg.quietModulesEach },
-        { d: 2, q: cfg.quietModulesMin },
-        { d: 1, q: cfg.quietModulesMin, weak: true }
+        { d: 2, q: q },
+        { d: 2, q: 4 }
       ];
       let pick = null;
       for (let i = 0; i < tries.length; i++) {
         if ((probe.mods + tries[i].q * 2) * tries[i].d <= availDots) { pick = tries[i]; break; }
       }
       let unreliable = false;
-      if (!pick) { pick = { d: 1, q: cfg.quietModulesMin }; unreliable = true; }
-      else if (pick.weak) unreliable = true;
+      if (!pick) { pick = { d: 2, q: 4 }; }
 
       const textBandMm = 3.2;
       let barHmm = Math.min(cfg.barHMaxMm, box.h - textBandMm);
@@ -9446,8 +9448,14 @@ def home() -> HTMLResponse:
       } catch (_) { return null; }
       if (!canvas.width) return null;
 
-      const wMm = canvas.width / dotsPerMm;
-      const hMm = canvas.height / dotsPerMm;
+      let wMm = canvas.width / dotsPerMm;
+      let hMm = canvas.height / dotsPerMm;
+      if (wMm > maxWmm + 0.04) {
+        const k = maxWmm / wMm;
+        wMm = maxWmm;
+        hMm = hMm * k;
+        if (pick.d * k < 1.5) unreliable = true;
+      }
       if (wMm > box.w + 0.08) unreliable = true;
       return { canvas: canvas, value: value, moduleDots: pick.d, wMm: wMm, hMm: hMm,
                availMm: box.w, unreliable: unreliable, textBandMm: textBandMm };
@@ -10148,9 +10156,11 @@ def home() -> HTMLResponse:
       absoluteMinModuleDots: 1,
       maxModuleDots: 2,
       barHMinMm: 8,
-      barHMaxMm: 10,
-      quietModulesEach: 10,
+      barHMaxMm: 9,
+      quietModulesEach: 6,
       quietModulesMin: 6,
+      fitPadMm: 6,
+      maxWidthMm: 36,
       stripSpaces: true,
       textReserveMm: 2.4
     };
