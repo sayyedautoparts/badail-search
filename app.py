@@ -7343,8 +7343,8 @@ def home() -> HTMLResponse:
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 0.35mm;
-      padding: 0 0.2mm;
+      gap: 0;
+      padding: 0;
     }
     .print-label-mock-host .pl-bc-wrap.is-bc-unreliable {
       outline: 1px solid #b00020;
@@ -7369,17 +7369,22 @@ def home() -> HTMLResponse:
       object-fit: none;
     }
     .print-label-mock-host .pl-bc-text {
-      flex: 0 0 auto;
-      min-height: 2.8mm;
+      flex: 0 0 3.2mm;
+      height: 3.2mm;
+      min-height: 3.2mm;
+      width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
       font-weight: 900;
       color: #000;
+      background: #fff;
       letter-spacing: 0.04em;
       white-space: pre;
-      line-height: 1;
+      line-height: 3.2mm;
       text-align: center;
       max-width: 100%;
       overflow: hidden;
+      position: relative;
+      z-index: 3;
     }
     .print-side-preview .pv-compat { display: none !important; }
     .print-side-status {
@@ -7525,8 +7530,8 @@ def home() -> HTMLResponse:
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: flex-end;
-        gap: 0.35mm;
+        justify-content: flex-start;
+        gap: 0;
         padding: 0;
         overflow: hidden !important;
       }
@@ -7564,23 +7569,28 @@ def home() -> HTMLResponse:
         shape-rendering: crispEdges;
       }
       .print-label .pl-bc-text {
-        flex: 0 0 auto;
-        min-height: 2.8mm;
+        flex: 0 0 3.2mm;
+        height: 3.2mm;
+        min-height: 3.2mm;
         max-width: 100%;
+        width: 100%;
         font-family: Consolas, "Courier New", "Segoe UI", monospace;
         font-size: 8px;
         font-weight: 900;
         color: #000;
+        background: #fff;
         letter-spacing: .05em;
         margin: 0;
         padding: 0;
-        line-height: 1;
+        line-height: 3.2mm;
         overflow: hidden !important;
         text-overflow: clip;
         white-space: pre !important;
         direction: ltr;
         box-sizing: border-box;
         text-align: center;
+        position: relative;
+        z-index: 3;
       }
     }
     /* قياس مؤقت قبل الطباعة حتى يشتغل تكبير/تصغير الاسم */
@@ -7658,8 +7668,8 @@ def home() -> HTMLResponse:
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 0.35mm;
-      padding: 0 0.2mm;
+      gap: 0;
+      padding: 0;
     }
     .print-label-sheet.print-measure .pl-bc-wrap svg,
     .print-label-sheet.print-measure .pl-bc-wrap img.pl-bc {
@@ -7674,16 +7684,21 @@ def home() -> HTMLResponse:
       shape-rendering: crispEdges;
     }
     .print-label-sheet.print-measure .pl-bc-text {
-      flex: 0 0 auto;
-      min-height: 2.8mm;
+      flex: 0 0 3.2mm;
+      height: 3.2mm;
+      min-height: 3.2mm;
+      width: 100%;
       font-family: Consolas, "Courier New", "Segoe UI", monospace;
       font-weight: 900;
       color: #000;
+      background: #fff;
       letter-spacing: .05em;
       white-space: pre;
       text-align: center;
       max-width: 100%;
       overflow: hidden;
+      position: relative;
+      z-index: 3;
     }
     /* محرر GUI للزقتين — مقياس شاشة (مم→بكسل) */
     .print-designer-wrap {
@@ -9523,16 +9538,16 @@ def home() -> HTMLResponse:
         unreliable = true;
       }
 
-      const textReserve = (cfg.textReserveMm != null) ? cfg.textReserveMm : 2.4;
+      const textBandMm = 3.2;
       const zoneH = (layoutS && Number(layoutS.bcHmm) > 0)
         ? Number(layoutS.bcHmm)
         : ((typeof PRINT_ZONE_BC_H_MM === 'number') ? PRINT_ZONE_BC_H_MM : 15);
-      const barHMin = (cfg.barHMinMm != null) ? cfg.barHMinMm : 8;
+      const barHMin = 6;
       const barHMax = (cfg.barHMaxMm != null) ? cfg.barHMaxMm : 12;
-      let barHmm = zoneH - textReserve;
+      let barHmm = zoneH - textBandMm;
       if (barHmm > barHMax) barHmm = barHMax;
       if (barHmm < barHMin) barHmm = barHMin;
-      const heightDots = Math.max(32, Math.round(barHmm * dotsPerMm));
+      const heightDots = Math.max(40, Math.round(barHmm * dotsPerMm));
 
       const quietPx = QUIET * moduleDots;
       const canvas = document.createElement('canvas');
@@ -9573,15 +9588,31 @@ def home() -> HTMLResponse:
       img.style.height = hMm.toFixed(4) + 'mm';
       img.style.maxWidth = 'none';
       img.style.maxHeight = 'none';
-      img.style.minWidth = wMm.toFixed(4) + 'mm';
-      img.style.minHeight = hMm.toFixed(4) + 'mm';
+      img.style.minWidth = '0';
+      img.style.minHeight = '0';
       img.style.display = 'block';
       img.style.margin = '0 auto';
-      img.style.flex = '0 0 auto';
+      img.style.flex = '0 0 ' + hMm.toFixed(4) + 'mm';
       img.style.objectFit = 'none';
-      img.style.objectPosition = 'center';
+      img.style.objectPosition = 'center top';
       img.style.imageRendering = 'pixelated';
+      img.style.position = 'relative';
+      img.style.zIndex = '1';
       targetEl.replaceWith(img);
+      if (wrap) {
+        wrap.style.justifyContent = 'flex-start';
+        wrap.style.overflow = 'hidden';
+        const txt = wrap.querySelector('.pl-bc-text');
+        if (txt) {
+          txt.style.position = 'relative';
+          txt.style.zIndex = '3';
+          txt.style.background = '#fff';
+          txt.style.width = '100%';
+          txt.style.flex = '0 0 ' + textBandMm + 'mm';
+          txt.style.height = textBandMm + 'mm';
+          txt.style.minHeight = textBandMm + 'mm';
+        }
+      }
 
       if (unreliable) {
         if (labelEl) labelEl.dataset.bcUnreliable = '1';
@@ -9612,17 +9643,21 @@ def home() -> HTMLResponse:
     }
     function fitPrintBarcodeText(el, code) {
       if (!el) return;
-      // خط الرقم تحت الباركود = 8
       const display = printBarcodeExactValue(code);
       el.textContent = display;
+      el.style.display = 'block';
       el.style.whiteSpace = 'pre';
       el.style.fontFamily = 'Consolas, "Courier New", "Segoe UI", monospace';
       el.style.fontWeight = '900';
       el.style.color = '#000';
+      el.style.background = '#fff';
       el.style.lineHeight = '1';
-      el.style.flex = '0 0 auto';
-      el.style.minHeight = '2.4mm';
-      el.style.height = '2.4mm';
+      el.style.flex = '0 0 3.2mm';
+      el.style.minHeight = '3.2mm';
+      el.style.height = '3.2mm';
+      el.style.width = '100%';
+      el.style.position = 'relative';
+      el.style.zIndex = '3';
       el.style.overflow = 'hidden';
       el.style.textOverflow = 'clip';
       const n = display.length;
@@ -11067,8 +11102,8 @@ def home() -> HTMLResponse:
         wrap.style.display = 'flex';
         wrap.style.flexDirection = 'column';
         wrap.style.alignItems = 'center';
-        wrap.style.justifyContent = 'flex-end';
-        wrap.style.gap = '0.3mm';
+        wrap.style.justifyContent = 'flex-start';
+        wrap.style.gap = '0';
         wrap.style.overflow = 'hidden';
       }
       if (bcText) {
