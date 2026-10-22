@@ -11321,31 +11321,59 @@ def home() -> HTMLResponse:
       if (cur) lines.push(cur);
       return lines;
     }
+    const NL_TEXT = { ss: 3, strokeEm: 0.05, thresh: 205 };
     function nlDrawText(ctx, text, bx, by, bw, bh, o) {
       text = String(text == null ? '' : text);
       if (!text || bw <= 0 || bh <= 0) return;
+      const S = NL_TEXT.ss;
+      const tc = document.createElement('canvas');
+      tc.width = Math.max(1, Math.round(bw * S));
+      tc.height = Math.max(1, Math.round(bh * S));
+      const t = tc.getContext('2d');
+      const W = tc.width, H = tc.height;
       const fam = o.family || '"Segoe UI", Arial, Tahoma, sans-serif';
-      ctx.save();
-      ctx.beginPath(); ctx.rect(bx, by, bw, bh); ctx.clip();
-      ctx.fillStyle = '#000';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'center';
-      ctx.direction = nlHasArabic(text) ? 'rtl' : 'ltr';
-      let lo = o.minDot, hi = Math.max(o.minDot, o.maxDot), best = lo;
+      t.fillStyle = '#000';
+      t.strokeStyle = '#000';
+      t.lineJoin = 'round';
+      t.textBaseline = 'middle';
+      t.textAlign = 'center';
+      t.direction = nlHasArabic(text) ? 'rtl' : 'ltr';
+      const pad = 2 * S;
+      let lo = o.minDot * S, hi = Math.max(o.minDot, o.maxDot) * S, best = lo;
       for (let i = 0; i < 14; i++) {
         const mid = (lo + hi) / 2;
-        ctx.font = o.weight + ' ' + mid + 'px ' + fam;
-        const lines = o.wrap ? nlWrapLines(ctx, text, bw) : [text];
+        t.font = o.weight + ' ' + mid + 'px ' + fam;
+        const lines = o.wrap ? nlWrapLines(t, text, W - pad) : [text];
         let widest = 0;
-        lines.forEach((l) => { widest = Math.max(widest, ctx.measureText(l).width); });
-        if (lines.length * mid * 1.05 <= bh && widest <= bw) { best = mid; lo = mid; } else hi = mid;
+        lines.forEach((l) => { widest = Math.max(widest, t.measureText(l).width); });
+        if (lines.length * mid * 1.05 <= H && widest <= W - pad) { best = mid; lo = mid; } else hi = mid;
       }
-      ctx.font = o.weight + ' ' + best + 'px ' + fam;
-      const lines = o.wrap ? nlWrapLines(ctx, text, bw) : [text];
+      t.font = o.weight + ' ' + best + 'px ' + fam;
+      t.lineWidth = best * NL_TEXT.strokeEm;
+      const lines = o.wrap ? nlWrapLines(t, text, W - pad) : [text];
       const lh = best * 1.05;
-      let y = by + (bh - lines.length * lh) / 2 + lh / 2;
-      lines.forEach((l) => { ctx.fillText(l, bx + bw / 2, y); y += lh; });
+      let y = (H - lines.length * lh) / 2 + lh / 2;
+      lines.forEach((l) => {
+        t.strokeText(l, W / 2, y);
+        t.fillText(l, W / 2, y);
+        y += lh;
+      });
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(tc, bx, by, bw, bh);
       ctx.restore();
+    }
+    function nlBinarize(c) {
+      const ctx = c.getContext('2d');
+      const img = ctx.getImageData(0, 0, c.width, c.height);
+      const d = img.data;
+      const th = NL_TEXT.thresh;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) < th ? 0 : 255;
+        d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
     }
     function nlBarcodeBits(value) {
       if (typeof JsBarcode === 'undefined') return '';
@@ -11437,6 +11465,7 @@ def home() -> HTMLResponse:
     function nlRenderSide(payload, side) {
       const g = nlNewCanvas(PRINT_SHEET_MM.labelW, PRINT_SHEET_MM.labelH);
       const r = nlDrawLabel(g.ctx, 0, 0, payload, side);
+      nlBinarize(g.c);
       return { canvas: g.c, info: r };
     }
     function nlRenderSheet(pl, pr) {
@@ -11447,6 +11476,7 @@ def home() -> HTMLResponse:
       const warns = [];
       if (!rl.ok) warns.push('يسار: ' + rl.msg);
       if (!rr.ok) warns.push('يمين: ' + rr.msg);
+      nlBinarize(g.c);
       return { canvas: g.c, ok: warns.length === 0, warns: warns };
     }
 
