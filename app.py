@@ -7744,6 +7744,48 @@ def home() -> HTMLResponse:
       padding: 8px 12px;
       font-size: 12px;
     }
+    .print-font-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border: 1px solid #c5d4e8;
+      border-radius: 10px;
+      background: #fff;
+    }
+    .print-font-tools label {
+      font-size: 12px;
+      font-weight: 800;
+      margin: 0;
+    }
+    #printFontSize {
+      min-width: 64px;
+      height: 32px;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 2px 6px;
+    }
+    #printFontBold {
+      width: 34px;
+      min-width: 34px;
+      height: 32px;
+      padding: 0;
+      font-family: "Times New Roman", serif;
+      font-size: 16px;
+      font-weight: 900;
+      font-style: italic;
+    }
+    #printFontBold.is-on {
+      background: #1e3a5f;
+      color: #fff;
+      border-color: #1e3a5f;
+    }
+    #printFontTarget {
+      font-size: 12px;
+      font-weight: 700;
+      color: #4a5b73;
+    }
     #printDesignerReadout {
       font-size: 12px;
       font-weight: 700;
@@ -8251,7 +8293,7 @@ def home() -> HTMLResponse:
             <p class="print-designer-hint">
               حامل الليبل <strong>105×28 مم</strong> · هامش <strong>1 مم</strong> من كل الجهات ·
               لزقة <strong>50×26 مم</strong> · فجوة <strong>3 مم</strong> ·
-              اسم <strong>9 مم</strong> · أصلي+موقع <strong>2 مم</strong> · باركود <strong>15 مم</strong>.
+              انقر خانة في الليبل ثم غيّر <strong>حجم الخط</strong> أو <strong>B</strong> (ثخين).
             </p>
             <div class="print-designer-toolbar">
               <button type="button" class="btn-secondary" onclick="resetPrintLayoutSettings()">إعادة الافتراضي للاثنين</button>
@@ -8259,6 +8301,29 @@ def home() -> HTMLResponse:
               <button type="button" class="btn-secondary" onclick="copyPrintLayoutSide('right','left')">نسخ يمين → يسار</button>
               <button type="button" class="btn-secondary" onclick="refreshPrintDesignerBoard()">تحديث من الأصناف الحالية</button>
               <button type="button" class="btn-secondary" onclick="uploadPrintLayoutPrefsToServer(true)">اعتماد قياسات GUI على السيرفر</button>
+              <div class="print-font-tools">
+                <label for="printFontSize">حجم الخط</label>
+                <select id="printFontSize" onchange="onPrintFontSizeChange()" disabled>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="14">14</option>
+                  <option value="16">16</option>
+                  <option value="18">18</option>
+                  <option value="20">20</option>
+                  <option value="22">22</option>
+                  <option value="24">24</option>
+                  <option value="26">26</option>
+                  <option value="28">28</option>
+                  <option value="32">32</option>
+                  <option value="36">36</option>
+                  <option value="48">48</option>
+                </select>
+                <button type="button" id="printFontBold" class="btn-secondary" onclick="onPrintFontBoldToggle()" title="ثخين" disabled>B</button>
+                <span id="printFontTarget">حدد عنصراً في الليبل</span>
+              </div>
               <div id="printDesignerReadout">—</div>
             </div>
             <div class="print-designer-scroll">
@@ -10273,6 +10338,10 @@ def home() -> HTMLResponse:
         originalPx: f.originalPx != null ? f.originalPx : 7,
         locationPx: f.locationPx != null ? f.locationPx : 7,
         bcTextPx: f.bcTextPx != null ? f.bcTextPx : 9,
+        nameBold: f.nameBold !== false,
+        origBold: f.origBold !== false,
+        locBold: f.locBold !== false,
+        bcTextBold: f.bcTextBold !== false,
         nameXmm: inset,
         nameYmm: 0,
         nameWmm: cw,
@@ -10506,10 +10575,14 @@ def home() -> HTMLResponse:
     function coercePrintLayoutSide(o) {
       const raw = migrateLegacyPrintLayout(o || {});
       const base = {
-        namePx: clampPrintNum(raw.namePx, 14, 56, PRINT_LAYOUT_DEFAULTS.namePx),
-        originalPx: clampPrintNum(raw.originalPx, 6, 18, PRINT_LAYOUT_DEFAULTS.originalPx),
-        locationPx: clampPrintNum(raw.locationPx, 6, 18, PRINT_LAYOUT_DEFAULTS.locationPx),
-        bcTextPx: clampPrintNum(raw.bcTextPx, 6.5, 14, PRINT_LAYOUT_DEFAULTS.bcTextPx),
+        namePx: clampPrintNum(raw.namePx, 8, 72, PRINT_LAYOUT_DEFAULTS.namePx),
+        originalPx: clampPrintNum(raw.originalPx, 6, 48, PRINT_LAYOUT_DEFAULTS.originalPx),
+        locationPx: clampPrintNum(raw.locationPx, 6, 48, PRINT_LAYOUT_DEFAULTS.locationPx),
+        bcTextPx: clampPrintNum(raw.bcTextPx, 6, 36, PRINT_LAYOUT_DEFAULTS.bcTextPx),
+        nameBold: raw.nameBold !== false,
+        origBold: raw.origBold !== false,
+        locBold: raw.locBold !== false,
+        bcTextBold: raw.bcTextBold !== false,
         nameXmm: clampPrintNum(raw.nameXmm, -45, 90, PRINT_LAYOUT_DEFAULTS.nameXmm),
         nameYmm: clampPrintNum(raw.nameYmm, -45, 60, PRINT_LAYOUT_DEFAULTS.nameYmm),
         nameWmm: clampPrintNum(raw.nameWmm, 8, 90, PRINT_LAYOUT_DEFAULTS.nameWmm),
@@ -10807,6 +10880,104 @@ def home() -> HTMLResponse:
       };
     }
     let printDesignerDrag = null;
+    let printDesignerSel = null;
+    function printZoneFontKey(zone) {
+      if (zone === 'name') return { px: 'namePx', bold: 'nameBold', defPx: 24 };
+      if (zone === 'orig') return { px: 'originalPx', bold: 'origBold', defPx: 7 };
+      if (zone === 'loc') return { px: 'locationPx', bold: 'locBold', defPx: 7 };
+      return { px: 'bcTextPx', bold: 'bcTextBold', defPx: 9 };
+    }
+    function printZoneFontTitle(zone) {
+      if (zone === 'name') return 'الاسم';
+      if (zone === 'orig') return 'الأصلي';
+      if (zone === 'loc') return 'الموقع';
+      return 'نص الباركود';
+    }
+    function ensurePrintFontSizeOption(sel, px) {
+      if (!sel) return;
+      const v = String(Math.round(Number(px) || 0));
+      if (!v || v === '0') return;
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === v) return;
+      }
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      sel.appendChild(opt);
+    }
+    function highlightPrintDesignerSelection() {
+      document.querySelectorAll('.pdg-zone.is-active').forEach((z) => z.classList.remove('is-active'));
+      if (!printDesignerSel || !printDesignerSel.zone) return;
+      const label = document.querySelector('.print-designer-label[data-side="' + printDesignerSel.side + '"]');
+      if (!label) return;
+      const zEl = label.querySelector('.pdg-zone[data-zone="' + printDesignerSel.zone + '"]');
+      if (zEl) zEl.classList.add('is-active');
+    }
+    function syncPrintFontToolbar() {
+      const sizeEl = document.getElementById('printFontSize');
+      const boldEl = document.getElementById('printFontBold');
+      const tgt = document.getElementById('printFontTarget');
+      const sel = printDesignerSel;
+      if (!sel || !sel.zone) {
+        if (sizeEl) sizeEl.disabled = true;
+        if (boldEl) { boldEl.disabled = true; boldEl.classList.remove('is-on'); }
+        if (tgt) tgt.textContent = 'حدد عنصراً في الليبل';
+        return;
+      }
+      const s = getPrintLayoutSettings(sel.side);
+      const k = printZoneFontKey(sel.zone);
+      const px = Number(s[k.px]) || k.defPx;
+      const bold = s[k.bold] !== false;
+      if (sizeEl) {
+        sizeEl.disabled = false;
+        ensurePrintFontSizeOption(sizeEl, px);
+        sizeEl.value = String(Math.round(px));
+      }
+      if (boldEl) {
+        boldEl.disabled = false;
+        boldEl.classList.toggle('is-on', bold);
+      }
+      if (tgt) tgt.textContent = ((sel.side === 'right') ? 'يمين' : 'يسار') + ' · ' + printZoneFontTitle(sel.zone);
+    }
+    function applyPrintFontToSelection(patch) {
+      const sel = printDesignerSel;
+      if (!sel || !sel.zone) return;
+      const s = Object.assign({}, getPrintLayoutSettings(sel.side), patch || {});
+      savePrintLayoutSettings(sel.side, s);
+      paintPrintDesignerZones(sel.side);
+      highlightPrintDesignerSelection();
+      syncPrintFontToolbar();
+      try { renderPrintSideLabelMock(sel.side); } catch (_) {}
+    }
+    function onPrintFontSizeChange() {
+      const sel = printDesignerSel;
+      const sizeEl = document.getElementById('printFontSize');
+      if (!sel || !sel.zone || !sizeEl) return;
+      const k = printZoneFontKey(sel.zone);
+      const patch = {};
+      patch[k.px] = Number(sizeEl.value);
+      applyPrintFontToSelection(patch);
+    }
+    function onPrintFontBoldToggle() {
+      const sel = printDesignerSel;
+      if (!sel || !sel.zone) return;
+      const s = getPrintLayoutSettings(sel.side);
+      const k = printZoneFontKey(sel.zone);
+      const patch = {};
+      patch[k.bold] = (s[k.bold] === false);
+      applyPrintFontToSelection(patch);
+    }
+    function bindPrintDesignerFontUi() {
+      const board = document.getElementById('printDesignerBoard');
+      if (!board || board.dataset.fontUi === '1') return;
+      board.dataset.fontUi = '1';
+      board.addEventListener('pointerdown', (ev) => {
+        if (ev.target && ev.target.closest && ev.target.closest('.pdg-zone')) return;
+        printDesignerSel = null;
+        highlightPrintDesignerSelection();
+        syncPrintFontToolbar();
+      });
+    }
     function applyDesignerDrag(clientY, clientX) {
       if (!printDesignerDrag) return;
       const d = printDesignerDrag;
@@ -10836,11 +11007,6 @@ def home() -> HTMLResponse:
           h: nh
         });
       }
-      const fonts = deriveMaxFontsFromZones(s);
-      s.namePx = fonts.namePx;
-      s.originalPx = fonts.originalPx;
-      s.locationPx = fonts.locationPx;
-      s.bcTextPx = fonts.bcTextPx;
       const saved = savePrintLayoutSettings(side, s);
       syncPrintLayoutSettingsUi(side);
       paintPrintDesignerZones(side);
@@ -10874,6 +11040,9 @@ def home() -> HTMLResponse:
       const sKey = printSideKey(side || 'left');
       const s = getPrintLayoutSettings(sKey);
       const dir = resizeDir || 'se';
+      printDesignerSel = { side: sKey, zone: zone };
+      highlightPrintDesignerSelection();
+      syncPrintFontToolbar();
       printDesignerDrag = {
         side: sKey,
         zone: zone,
@@ -10927,6 +11096,8 @@ def home() -> HTMLResponse:
         fitDesignerZoneFonts(labelEl, s, designerSamplePayload(side));
       });
       updatePrintDesignerReadout(activeSide || null);
+      highlightPrintDesignerSelection();
+      syncPrintFontToolbar();
     }
     function buildPrintDesignerLabelEl(side) {
       const ppm = PRINT_DESIGNER_PX_PER_MM;
@@ -11006,6 +11177,8 @@ def home() -> HTMLResponse:
       row.appendChild(buildPrintDesignerLabelEl('right'));
       board.appendChild(row);
       paintPrintDesignerZones(null);
+      highlightPrintDesignerSelection();
+      syncPrintFontToolbar();
       syncPrintLayoutSettingsUi(null);
     }
     function applyPrintBoxStyle(el, box) {
@@ -11407,7 +11580,7 @@ def home() -> HTMLResponse:
       }
       return { x: 2, q: NL_BC.quiet[NL_BC.quiet.length - 1], ok: false };
     }
-    function nlDrawBarcode(ctx, value, ox, oy, box) {
+    function nlDrawBarcode(ctx, value, ox, oy, box, s) {
       const bits = nlBarcodeBits(value);
       if (!bits) return { ok: false, msg: 'تعذر ترميز الباركود' };
       const bx = ox + nlDots(box.x), by = oy + nlDots(box.y);
@@ -11428,8 +11601,11 @@ def home() -> HTMLResponse:
           i = j;
         } else i++;
       }
+      const k = nlDpi() / 96;
+      const hrPx = Number(s && s.bcTextPx) > 0 ? Number(s.bcTextPx) : 9;
+      const hrWeight = (s && s.bcTextBold === false) ? '400' : '700';
       nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
-        maxDot: hrD * 0.85, minDot: 6, weight: '700', wrap: false,
+        maxDot: Math.max(6, hrPx * k), minDot: 6, weight: hrWeight, wrap: false,
         family: 'Consolas, "Courier New", monospace'
       });
       const needMm = (bits.length + 2 * NL_BC.quiet[NL_BC.quiet.length - 1]) * plan.x * 25.4 / nlDpi();
@@ -11444,16 +11620,16 @@ def home() -> HTMLResponse:
       const T = (txt, x, y, w, h, maxPx, wrap, weight) => nlDrawText(
         ctx, txt, ox + nlDots(x), oy + nlDots(y), nlDots(w), nlDots(h),
         { maxDot: maxPx * k, minDot: 5 * k, weight: weight, wrap: wrap });
-      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, '900');
-      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, '800');
-      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, '800');
+      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, (s.nameBold === false) ? '400' : '900');
+      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, (s.origBold === false) ? '400' : '800');
+      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, (s.locBold === false) ? '400' : '800');
       const box = clampBarcodeBoxToLabelMm(side, {
         x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
         y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
         w: Number(s.bcWmm) || PRINT_ZONE_CONTENT_W_MM,
         h: Number(s.bcHmm) || PRINT_ZONE_BC_H_MM
       });
-      return nlDrawBarcode(ctx, printBarcodeEncodeValue(payload.barcode), ox, oy, box);
+      return nlDrawBarcode(ctx, printBarcodeEncodeValue(payload.barcode), ox, oy, box, s);
     }
     function nlNewCanvas(wMm, hMm) {
       const c = document.createElement('canvas');
@@ -14620,7 +14796,7 @@ def home() -> HTMLResponse:
           desInit.open = false;
           desInit.addEventListener('toggle', () => {
             if (desInit.open) {
-              try { refreshPrintDesignerBoard(); } catch (_) {}
+              try { bindPrintDesignerFontUi(); refreshPrintDesignerBoard(); } catch (_) {}
             }
           });
         }
