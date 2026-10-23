@@ -11906,32 +11906,30 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const body = JSON.stringify({
-        image: dataUrl, copies: copies, printer: RONGTA_PRINTER_NAME, widthMm: w, heightMm: h
-      });
-      const headers = { 'Content-Type': 'application/json' };
       try {
-        if (navigator.permissions && navigator.permissions.query) {
-          await navigator.permissions.query({ name: 'loopback-network' }).catch(() => null);
-          await navigator.permissions.query({ name: 'local-network-access' }).catch(() => null);
+        const queued = await nlQueuePrintJob(dataUrl, copies, w, h);
+        const jobId = queued && queued.id;
+        setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '»...');
+        if (!jobId) return;
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          try {
+            const stRes = await fetch('/print_jobs/status?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
+            const st = await stRes.json().catch(() => ({}));
+            if (st && st.status === 'done') {
+              setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
+              return;
+            }
+            if (st && st.status === 'error') {
+              setPrintFetchStatus('فشلت الطباعة: ' + (st.message || ''));
+              return;
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
-      const urls = ['http://127.0.0.1:17891/print', 'http://127.0.0.1:8765/print_rongta'];
-      if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
-        urls.unshift('/print_rongta');
+        setPrintFetchStatus('الأمر واصل. انتظر ثانية — الطابعة بتسحب الطلب من جهاز المكتب.');
+      } catch (err) {
+        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + ((err && err.message) || ''));
       }
-      for (let i = 0; i < urls.length; i++) {
-        try {
-          const res = await nlLoopbackFetch(urls[i], { method: 'POST', headers: headers, body: body });
-          const data = await res.json().catch(() => ({}));
-          if (res.status === 501) continue;
-          if (res.ok && data && data.ok) {
-            setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-            return;
-          }
-        } catch (_) {}
-      }
-      setPrintFetchStatus('كروم منع الاتصال بالطابعة المحلية. اضغط Allow إذا ظهر طلب الشبكة المحلية، أو افتح http://127.0.0.1:8765 واطبع من هناك.');
     }
 
     async function forceHesabateFullImport() {
