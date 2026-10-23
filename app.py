@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import socket
-import subprocess
 import sqlite3
 import threading
 import time
@@ -89,7 +88,6 @@ ARABIC_LETTER_TRANS = str.maketrans(
     }
 )
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
-PRINT_AGENT_KEY = (os.getenv("PRINT_AGENT_KEY") or "badail-rongta").strip()
 APP_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = APP_DIR / "static" / "app-icon.png"
 APPLE_TOUCH_ICON_PATH = APP_DIR / "static" / "apple-touch-icon.png"
@@ -587,37 +585,6 @@ def init_db() -> None:
                 """
             )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_shelf_locations_location ON shelf_locations(location)")
-        if conn.postgres:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS print_jobs (
-                    id BIGSERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    copies INTEGER NOT NULL DEFAULT 1,
-                    width_mm DOUBLE PRECISION NOT NULL DEFAULT 105,
-                    height_mm DOUBLE PRECISION NOT NULL DEFAULT 28,
-                    image_b64 TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    message TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
-        else:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS print_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    copies INTEGER NOT NULL DEFAULT 1,
-                    width_mm REAL NOT NULL DEFAULT 105,
-                    height_mm REAL NOT NULL DEFAULT 28,
-                    image_b64 TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    message TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, id)")
         # كاش أصناف حساباتي + فهرس باركود للجلب الفوري لصنف واحد
         if conn.postgres:
             conn.execute(
@@ -7004,65 +6971,6 @@ def live_lookup_locations_from_hesabate(
 
 
 app = FastAPI(title="Advanced Excel Search")
-
-
-def _print_cors_headers(origin: str) -> dict[str, str]:
-    return {
-        "Access-Control-Allow-Origin": origin or "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Access-Control-Request-Private-Network, Access-Control-Request-Local-Network",
-        "Access-Control-Allow-Private-Network": "true",
-        "Access-Control-Allow-Local-Network": "true",
-        "Access-Control-Max-Age": "600",
-        "Vary": "Origin",
-    }
-
-
-def _print_png_on_windows(image_b64: str, copies: int, width_mm: float, height_mm: float) -> None:
-    if os.name != "nt":
-        raise RuntimeError("not-windows")
-    ps1 = Path(__file__).resolve().parent / "scripts" / "print_rongta_image.ps1"
-    if not ps1.is_file():
-        raise RuntimeError("missing print script")
-    if "," in image_b64:
-        image_b64 = image_b64.split(",", 1)[1]
-    blob = base64.b64decode(image_b64)
-    if len(blob) < 32:
-        raise RuntimeError("empty image")
-    tmp = Path(os.environ.get("TEMP") or ".") / ("badail-print-" + hashlib.sha1(blob[:200]).hexdigest()[:12] + ".png")
-    tmp.write_bytes(blob)
-    try:
-        proc = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(ps1),
-                "-ImagePath",
-                str(tmp),
-                "-PrinterName",
-                "Rongta RP4xx Series",
-                "-Copies",
-                str(max(1, min(50, copies))),
-                "-WidthMm",
-                str(width_mm),
-                "-HeightMm",
-                str(height_mm),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "print failed").strip()
-            raise RuntimeError(err[-800:])
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
 # Do not crash the serverless process if Postgres (Neon) is down/over-quota.
 # Import-time failure here is what produced Vercel 500 FUNCTION_INVOCATION_FAILED.
 try:
@@ -7528,19 +7436,6 @@ def home() -> HTMLResponse:
         margin: 0;
         padding: 0;
         background: #fff;
-      }
-      .print-label-sheet img {
-        display: block !important;
-        width: 105mm !important;
-        height: 28mm !important;
-        margin: 0 !important;
-        page-break-after: always;
-        break-after: page;
-        image-rendering: pixelated;
-      }
-      .print-label-sheet img:last-child {
-        page-break-after: auto !important;
-        break-after: auto !important;
       }
       .print-label-row {
         display: flex;
@@ -8288,12 +8183,6 @@ def home() -> HTMLResponse:
       #locationsTable .cell { min-height: 50px; padding: 10px 10px; }
       #locationsTable th .cell { min-height: 44px; }
     }
-    .print-qty-modal .barcode-modal-box { max-width: 380px; text-align: center; padding: 22px 18px 18px; }
-    .print-qty-modal input[type="text"] {
-      width: 100%; max-width: 160px; margin: 12px auto 0; display: block;
-      font-size: 28px; font-weight: 700; text-align: center; padding: 8px 10px;
-      font-variant-numeric: lining-nums; letter-spacing: 1px;
-    }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
     .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: min(98vw, 640px); width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); box-sizing: border-box; }
@@ -8512,13 +8401,16 @@ def home() -> HTMLResponse:
           </div>
         </div>
 
-        <input id="printQtyInput" type="hidden" value="1" />
+        <div class="print-unit-fields" style="margin-top:12px;">
+          <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
+          <input id="printQtyInput" type="text" inputmode="numeric" pattern="[0-9]*" lang="en" dir="ltr" autocomplete="off" value="1" placeholder="1" style="font-variant-numeric:lining-nums;font-feature-settings:'tnum';text-align:left;" onfocus="this.select()" onmouseup="event.preventDefault()" oninput="onPrintQtyInputChange()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
+          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
+        </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطباعة محلية من هذا الجهاز عبر نافذة المتصفح. اختر الطابعة الموصولة به (USB أو محلية). المقاس الموصى به: حامل 105×28 مم · لزقة 50×26 مم · Code128.
+          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · حامل 105×28 مم · هامش 1 مم · لزقة 50×26 مم · فجوة 3 مم.
         </p>
         <div class="btn-row" style="margin-top:10px;">
-          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة من هذا الجهاز</button>
-          <button type="button" class="btn-secondary" onclick="downloadPrintLabelSheet()" style="margin-right:8px;">تحميل الصورة للطباعة</button>
+          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
         </div>
         <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
       </div>
@@ -8637,18 +8529,6 @@ def home() -> HTMLResponse:
   </div>
 
   <div id="printLabelSheet" class="print-label-sheet" aria-hidden="true"></div>
-
-  <div id="printQtyModal" class="barcode-modal-overlay print-qty-modal" aria-hidden="true" onclick="if(event.target===this)closePrintQtyPopup()">
-    <div class="barcode-modal-box" role="dialog" aria-labelledby="printQtyModalTitle">
-      <strong id="printQtyModalTitle">عدد الأوراق</strong>
-      <p class="muted" style="margin:8px 0 0;">كل ورقة = لزق يسار + لزق يمين معاً</p>
-      <input id="printQtyPopupInput" type="text" inputmode="numeric" pattern="[0-9]*" lang="en" dir="ltr" autocomplete="off" value="1" maxlength="3" oninput="this.value=normalizePrintQtyValue(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmPrintQtyPopup();}" />
-      <div class="btn-row" style="margin-top:16px;justify-content:center;">
-        <button type="button" class="btn-success" onclick="confirmPrintQtyPopup()">طباعة</button>
-        <button type="button" class="btn-secondary" onclick="closePrintQtyPopup()">إلغاء</button>
-      </div>
-    </div>
-  </div>
 
   <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
@@ -11564,7 +11444,9 @@ def home() -> HTMLResponse:
         return;
       }
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
-      setPrintFetchStatus('جاهز · ' + pages + ' ورقة · اختر الطابعة المحلية في نافذة المتصفح');
+      setPrintFetchStatus(
+        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 203dpi`
+      );
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       try { savePrintFormState(); } catch (_) {}
       printJobTitleRestore = document.title;
@@ -11584,7 +11466,7 @@ def home() -> HTMLResponse:
           window.print();
         } catch (_) {
           restoreTitle();
-          setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
+          setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن درايفر Rongta RP4xx Series مثبت.');
         }
       }, 50);
     }
@@ -11823,54 +11705,7 @@ def home() -> HTMLResponse:
     }
 
     /* print */
-    const PRINT_AGENT_KEY = 'badail-rongta';
-    function closePrintQtyPopup() {
-      const modal = document.getElementById('printQtyModal');
-      if (!modal) return;
-      modal.classList.remove('active');
-      modal.setAttribute('aria-hidden', 'true');
-    }
-    function openPrintQtyPopup() {
-      const modal = document.getElementById('printQtyModal');
-      const inp = document.getElementById('printQtyPopupInput');
-      const hidden = document.getElementById('printQtyInput');
-      if (!modal || !inp) return;
-      inp.value = normalizePrintQtyValue((hidden && hidden.value) || '1') || '1';
-      modal.classList.add('active');
-      modal.setAttribute('aria-hidden', 'false');
-      setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 40);
-    }
-    function confirmPrintQtyPopup() {
-      const inp = document.getElementById('printQtyPopupInput');
-      const hidden = document.getElementById('printQtyInput');
-      const qty = normalizePrintQtyValue(inp ? inp.value : '1') || '1';
-      if (hidden) hidden.value = qty;
-      if (inp) inp.value = qty;
-      closePrintQtyPopup();
-      const popup = window.open('', 'labelPrint', 'width=980,height=420');
-      printBarcodeLabelsNow(popup);
-    }
     async function printBarcodeLabels() {
-      const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
-      const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
-      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length) && leftQ) {
-        await resolvePrintItemFromLocal('left', false);
-      }
-      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length) && rightQ) {
-        await resolvePrintItemFromLocal('right', false);
-      }
-      const pl = buildPrintPayloadForSide('left');
-      const pr = buildPrintPayloadForSide('right');
-      if (!isPrintPayloadReady(pl) && !isPrintPayloadReady(pr)) {
-        setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.');
-        return;
-      }
-      openPrintQtyPopup();
-    }
-    function closeRongtaPopup(popup) {
-      try { if (popup && !popup.closed) popup.close(); } catch (_) {}
-    }
-    async function printBarcodeLabelsNow(popup) {
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11883,126 +11718,62 @@ def home() -> HTMLResponse:
       let pl = buildPrintPayloadForSide('left');
       let pr = buildPrintPayloadForSide('right');
       const lOk = isPrintPayloadReady(pl), rOk = isPrintPayloadReady(pr);
-      if (!lOk && !rOk) { closeRongtaPopup(popup); setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
+      if (!lOk && !rOk) { setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
       if (lOk && !rOk) pr = Object.assign({}, pl);
       else if (rOk && !lOk) pl = Object.assign({}, pr);
-      try { await ensureJsBarcodeLib(); } catch (_) { closeRongtaPopup(popup); setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
+      try { await ensureJsBarcodeLib(); } catch (_) { setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
       const res = nlRenderSheet(pl, pr);
-      if (!res.ok) { closeRongtaPopup(popup); setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
+      if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      fillPrintLabelSheet(url, pages);
-      printSheetInBrowser(url, pages, popup);
+      setPrintFetchStatus('جاري الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» بدون كروم...');
+      await nlPrintDirectToRongta(url, pages);
     }
-    function fillPrintLabelSheet(dataUrl, pages) {
-      let sheet = document.getElementById('printLabelSheet');
-      if (!sheet) {
-        sheet = document.createElement('div');
-        sheet.id = 'printLabelSheet';
-        sheet.className = 'print-label-sheet';
-        document.body.appendChild(sheet);
-      }
-      sheet.innerHTML = '';
-      const n = Math.max(1, Number(pages) || 1);
-      for (let i = 0; i < n; i++) {
-        const img = document.createElement('img');
-        img.src = dataUrl;
-        img.alt = 'labels';
-        img.style.cssText = 'display:block;width:105mm;height:28mm;image-rendering:pixelated;';
-        sheet.appendChild(img);
-      }
-    }
-    function downloadPrintLabelSheet() {
-      const sheet = document.getElementById('printLabelSheet');
-      if (!sheet) { setPrintFetchStatus('لا يوجد ملصق جاهز للتحميل. اضغط طباعة أولاً أو جهّز الصنف.'); return; }
-      const img = sheet.querySelector('img');
-      if (!img || !img.src) { setPrintFetchStatus('لا توجد صورة ملصق للتحميل.'); return; }
-      try {
-        const a = document.createElement('a');
-        a.href = img.src;
-        a.download = 'labels-' + (Date.now()) + '.png';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setPrintFetchStatus('تم تحميل صورة الملصقات. افتحها من الجهاز واطبعها من أي برنامج.');
-      } catch (e) {
-        setPrintFetchStatus('تعذر التحميل: ' + (e && e.message ? e.message : e));
-      }
-    }
-    function printSheetInBrowser(dataUrl, pages, popup) {
-      const n = Math.max(1, Number(pages) || 1);
-      setPrintFetchStatus('جاهز · ' + n + ' ورقة · اختر الطابعة المحلية في نافذة المتصفح');
-      const imgs = Array.from({ length: n }, function () {
-        return '<img src="' + dataUrl + '" alt="labels">';
-      }).join('');
-      const html = '<!doctype html><html><head><meta charset="utf-8"><title>طباعة</title><style>'
-        + '@page{size:105mm 28mm;margin:0}'
-        + 'html,body{margin:0;padding:0;background:#fff}'
-        + 'img{display:block;width:105mm;height:28mm;image-rendering:pixelated;page-break-after:always;break-after:page}'
-        + 'img:last-child{page-break-after:auto}'
-        + '</style></head><body>' + imgs + '</body></html>';
-      let w = popup;
-      if (!w || w.closed) {
-        try { w = window.open('', 'labelPrint', 'width=980,height=420'); } catch (_) { w = null; }
-      }
-      if (!w) {
-        setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
-        return;
-      }
-      try {
-        w.document.open();
-        w.document.write(html);
-        w.document.close();
-        w.focus();
-        setTimeout(function () {
-          try { w.print(); } catch (_) {
-            setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
-          }
-        }, 200);
-      } catch (_) {
-        setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
-      }
-    }
-    async function nlQueuePrintJob(dataUrl, copies, w, h) {
-      const res = await fetch('/print_jobs', {
-        method: 'POST',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json', 'X-Print-Key': PRINT_AGENT_KEY },
-        body: JSON.stringify({ image: dataUrl, copies: copies, widthMm: w, heightMm: h })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        throw new Error((data && (data.message || data.detail)) || ('HTTP ' + res.status));
-      }
-      return data;
-    }
-    async function nlLoopbackFetch(url, opts) {
-      const o = Object.assign({ mode: 'cors', cache: 'no-store' }, opts || {});
-      if (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url)) {
-        o.targetAddressSpace = 'loopback';
-      }
-      try {
-        return await fetch(new Request(url, o));
-      } catch (_) {
-        return await fetch(url, o);
-      }
-    }
-    async function nlPrintDirectToRongta(dataUrl, pages, popup) {
+    async function nlPrintDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      try {
-        await nlQueuePrintJob(dataUrl, copies, w, h);
-        const go = 'http://127.0.0.1:17891/go';
-        if (popup && !popup.closed) {
-          try { popup.location.replace(go); } catch (_) { window.open(go, 'rongtaPrint'); }
-        } else {
-          window.open(go, 'rongtaPrint', 'width=420,height=220');
+      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
+      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store' };
+      let base = '';
+      let lastErr = null;
+      for (let i = 0; i < bases.length; i++) {
+        try {
+          const ping = await fetch(bases[i] + '/ping', fetchOpts);
+          if (ping.ok) { base = bases[i]; break; }
+          lastErr = new Error('ping HTTP ' + ping.status);
+        } catch (e) {
+          lastErr = e;
         }
-        setPrintFetchStatus('الطباعة تتم على Rongta في هذا الجهاز فقط (USB هنا).');
+      }
+      if (!base) {
+        setPrintFetchStatus(
+          'خدمة الطباعة المحلية غير شغّالة على هذا الجهاز. إذا ظهر في كروم طلب السماح بالشبكة المحلية اضغط Allow ثم أعد الطباعة. أو شغّل scripts/install_rongta_print_agent.ps1'
+        );
+        return;
+      }
+      try {
+        const res = await fetch(base + '/print', {
+          method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: dataUrl,
+            copies: copies,
+            printer: RONGTA_PRINTER_NAME,
+            widthMm: w,
+            heightMm: h
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error((data && data.message) || ('HTTP ' + res.status));
+        }
+        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة · بدون نافذة كروم');
       } catch (err) {
-        closeRongtaPopup(popup);
-        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + ((err && err.message) || ''));
+        const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
+        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
       }
     }
 
@@ -15089,10 +14860,7 @@ def home() -> HTMLResponse:
     ).replace("{APP_VERSION}", APP_VERSION)
     return HTMLResponse(
         content=html,
-        headers={
-            "Cache-Control": "public, max-age=60, stale-while-revalidate=86400",
-            "Permissions-Policy": "local-network-access=*, loopback-network=*",
-        },
+        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=86400"},
     )
 
 
@@ -16500,173 +16268,6 @@ self.addEventListener('fetch', (event) => {{
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
     )
-
-
-def _print_key_ok(request: Request) -> bool:
-    key = (request.headers.get("x-print-key") or request.query_params.get("key") or "").strip()
-    return bool(PRINT_AGENT_KEY) and key == PRINT_AGENT_KEY
-
-
-@app.post("/print_jobs")
-async def create_print_job(payload: dict, request: Request) -> dict:
-    if not _print_key_ok(request):
-        raise HTTPException(status_code=403, detail="print key required")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="invalid payload")
-    image = str(payload.get("image") or "")
-    if "," in image:
-        image = image.split(",", 1)[1]
-    image = "".join(image.split())
-    if len(image) < 64 or len(image) > 6_000_000:
-        raise HTTPException(status_code=400, detail="invalid image")
-    try:
-        copies = max(1, min(50, int(payload.get("copies") or 1)))
-        width_mm = float(payload.get("widthMm") or 105)
-        height_mm = float(payload.get("heightMm") or 28)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid copies/size")
-    conn = get_db()
-    try:
-        queued = conn.execute("SELECT COUNT(*) AS n FROM print_jobs WHERE status = ?", ("queued",)).fetchone()
-        n = int((queued["n"] if queued else 0) or 0)
-        if n >= 30:
-            raise HTTPException(status_code=429, detail="print queue full")
-        if conn.postgres:
-            conn.execute(
-                "DELETE FROM print_jobs WHERE created_at < (CURRENT_TIMESTAMP - INTERVAL '2 hours')"
-            )
-            row = conn.execute(
-                """
-                INSERT INTO print_jobs (copies, width_mm, height_mm, image_b64, status)
-                VALUES (?, ?, ?, ?, 'queued')
-                RETURNING id
-                """,
-                (copies, width_mm, height_mm, image),
-            ).fetchone()
-        else:
-            conn.execute("DELETE FROM print_jobs WHERE created_at < datetime('now', '-2 hours')")
-            conn.execute(
-                """
-                INSERT INTO print_jobs (copies, width_mm, height_mm, image_b64, status)
-                VALUES (?, ?, ?, ?, 'queued')
-                """,
-                (copies, width_mm, height_mm, image),
-            )
-            row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
-        conn.commit()
-        job_id = int(row["id"] if row else 0)
-    finally:
-        conn.close()
-    return {"ok": True, "id": job_id, "copies": copies}
-
-
-@app.get("/print_jobs/next")
-def next_print_job(request: Request) -> dict:
-    if not _print_key_ok(request):
-        raise HTTPException(status_code=403, detail="print key required")
-    conn = get_db()
-    try:
-        row = conn.execute(
-            """
-            SELECT id, copies, width_mm, height_mm, image_b64
-            FROM print_jobs
-            WHERE status IN ('queued', 'printing')
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-        ).fetchone()
-        if not row:
-            return {"ok": True, "job": None}
-        job_id = int(row["id"])
-        conn.execute("UPDATE print_jobs SET status = ? WHERE id = ?", ("printing", job_id))
-        conn.commit()
-        return {
-            "ok": True,
-            "job": {
-                "id": job_id,
-                "copies": int(row["copies"] or 1),
-                "widthMm": float(row["width_mm"] or 105),
-                "heightMm": float(row["height_mm"] or 28),
-                "image": row["image_b64"],
-            },
-        }
-    finally:
-        conn.close()
-
-
-@app.get("/print_jobs/status")
-def print_job_status(id: int = Query(..., ge=1)) -> dict:
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT id, copies, status, message FROM print_jobs WHERE id = ?",
-            (id,),
-        ).fetchone()
-        if not row:
-            return {"ok": False, "status": "missing"}
-        return {
-            "ok": True,
-            "id": int(row["id"]),
-            "copies": int(row["copies"] or 1),
-            "status": str(row["status"] or ""),
-            "message": str(row["message"] or ""),
-        }
-    finally:
-        conn.close()
-
-
-@app.post("/print_jobs/ack")
-async def ack_print_job(payload: dict, request: Request) -> dict:
-    if not _print_key_ok(request):
-        raise HTTPException(status_code=403, detail="print key required")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="invalid payload")
-    try:
-        job_id = int(payload.get("id") or 0)
-    except Exception:
-        job_id = 0
-    if job_id <= 0:
-        raise HTTPException(status_code=400, detail="id required")
-    ok = bool(payload.get("ok", True))
-    message = str(payload.get("message") or "")[:500]
-    status = "done" if ok else "error"
-    conn = get_db()
-    try:
-        conn.execute(
-            "UPDATE print_jobs SET status = ?, message = ? WHERE id = ?",
-            (status, message, job_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True}
-
-
-@app.options("/print_rongta")
-def print_rongta_options(request: Request) -> JSONResponse:
-    return JSONResponse(content={}, status_code=204, headers=_print_cors_headers(request.headers.get("origin") or ""))
-
-
-@app.post("/print_rongta")
-async def print_rongta(payload: dict, request: Request) -> JSONResponse:
-    origin = request.headers.get("origin") or ""
-    headers = _print_cors_headers(origin)
-    if os.name != "nt":
-        return JSONResponse(
-            {"ok": False, "code": "not-windows", "message": "print on the PC with Rongta"},
-            status_code=501,
-            headers=headers,
-        )
-    if not isinstance(payload, dict):
-        return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400, headers=headers)
-    try:
-        copies = max(1, min(50, int(payload.get("copies") or 1)))
-        width_mm = float(payload.get("widthMm") or 105)
-        height_mm = float(payload.get("heightMm") or 28)
-        _print_png_on_windows(str(payload.get("image") or ""), copies, width_mm, height_mm)
-    except Exception as exc:
-        return JSONResponse({"ok": False, "message": str(exc)[:800]}, status_code=500, headers=headers)
-    return JSONResponse({"ok": True, "copies": copies, "printer": "Rongta RP4xx Series"}, headers=headers)
 
 
 @app.get("/health")

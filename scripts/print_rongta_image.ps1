@@ -14,16 +14,6 @@ $Copies = [Math]::Max(1, $Copies)
 
 $bmp = [System.Drawing.Bitmap]::FromFile($ImagePath)
 try {
-  $wmi = Get-WmiObject Win32_Printer -Filter ("Name='" + $PrinterName.Replace("'", "''") + "'")
-  if (-not $wmi) { throw "Printer not found: $PrinterName" }
-  if ($wmi.WorkOffline) {
-    $wmi.WorkOffline = $false
-    $wmi.Put() | Out-Null
-    Start-Sleep -Milliseconds 400
-    $wmi = Get-WmiObject Win32_Printer -Filter ("Name='" + $PrinterName.Replace("'", "''") + "'")
-  }
-  if ($wmi.WorkOffline) { throw "Printer is offline: $PrinterName (USB)" }
-
   $doc = New-Object System.Drawing.Printing.PrintDocument
   $doc.PrinterSettings.PrinterName = $PrinterName
   if (-not $doc.PrinterSettings.IsValid) { throw "Printer not ready: $PrinterName" }

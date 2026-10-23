@@ -3,14 +3,9 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import subprocess
 import sys
 import tempfile
-import threading
-import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -28,14 +23,6 @@ ALLOWED_ORIGINS = (
 )
 ROOT = Path(__file__).resolve().parent
 PRINT_PS1 = ROOT / "print_rongta_image.ps1"
-SITES = [
-    (os.environ.get("BADAIL_PRINT_SITE") or "https://badail-search.vercel.app").rstrip("/"),
-    "https://badail-search.vercel.app",
-    "https://www.sayyedstore.com",
-    "https://sayyedstore.com",
-]
-PRINT_KEY = (os.environ.get("PRINT_AGENT_KEY") or "badail-rongta").strip()
-LOG_PATH = Path(os.environ.get("LOCALAPPDATA") or ".") / "BadailPrint" / "agent.log"
 
 
 def cors_origin(origin: str) -> str:
@@ -77,8 +64,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         origin = self.headers.get("Origin") or ""
-        path = self.path.split("?", 1)[0]
-        if path in ("/ping", "/health"):
+        if self.path.split("?", 1)[0] in ("/ping", "/health"):
             body = json.dumps({"ok": True, "printer": PRINTER, "port": PORT}).encode("utf-8")
             self.send_response(200)
             self._cors(origin)
@@ -86,22 +72,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            return
-        if path in ("/go", "/print_go"):
-            title, msg, ok = run_one_cloud_job()
-            html = (
-                "<!doctype html><meta charset=utf-8><title>{t}</title>"
-                "<body style='font-family:Arial;padding:24px;direction:rtl;text-align:center'>"
-                "<h2>{title}</h2><p>{msg}</p>"
-                "<script>setTimeout(function(){{window.close()}}, 2500)</script>"
-                "</body>"
-            ).format(t=("OK" if ok else "Print"), title=title, msg=msg)
-            raw = html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
             return
         self.send_response(404)
         self._cors(origin)
@@ -128,7 +98,37 @@ class Handler(BaseHTTPRequestHandler):
             if "," in image:
                 image = image.split(",", 1)[1]
             blob = base64.b64decode(image)
-            print_png_blob(blob, copies, printer, width_mm, height_mm)
+            if len(blob) < 32:
+                raise ValueError("empty image")
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(blob)
+            tmp.close()
+            cmd = [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(PRINT_PS1),
+                "-ImagePath",
+                tmp.name,
+                "-PrinterName",
+                printer,
+                "-Copies",
+                str(copies),
+                "-WidthMm",
+                str(width_mm),
+                "-HeightMm",
+                str(height_mm),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            try:
+                Path(tmp.name).unlink()
+            except OSError:
+                pass
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "print failed").strip()
+                raise RuntimeError(err[-800:])
             out = {"ok": True, "copies": copies, "printer": printer}
             code = 200
         except Exception as exc:
@@ -144,112 +144,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _log(msg: str) -> None:
-    line = "[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
     try:
-        print(line, flush=True)
+        print(msg, flush=True)
     except Exception:
         pass
-    try:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-
-
-def print_png_blob(blob: bytes, copies: int, printer: str, width_mm: float, height_mm: float) -> None:
-    if len(blob) < 32:
-        raise ValueError("empty image")
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    tmp.write(blob)
-    tmp.close()
-    cmd = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(PRINT_PS1),
-        "-ImagePath",
-        tmp.name,
-        "-PrinterName",
-        printer,
-        "-Copies",
-        str(copies),
-        "-WidthMm",
-        str(width_mm),
-        "-HeightMm",
-        str(height_mm),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-    try:
-        Path(tmp.name).unlink()
-    except OSError:
-        pass
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "print failed").strip()
-        raise RuntimeError(err[-800:])
-
-
-def _site_json(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict:
-    last_err = None
-    payload = json.dumps(body).encode("utf-8") if body is not None else None
-    curl = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "curl.exe"
-    for site in SITES:
-        url = site + path
-        try:
-            if curl.exists():
-                cmd = [
-                    str(curl), "-sS", "-m", str(timeout),
-                    "-H", "X-Print-Key: %s" % PRINT_KEY,
-                    "-H", "Accept: application/json",
-                    "-X", method,
-                ]
-                if payload is not None:
-                    cmd.extend(["-H", "Content-Type: application/json", "--data-binary", "@-"])
-                cmd.append(url)
-                run_kw = {"capture_output": True, "text": True, "timeout": timeout + 5}
-                if payload is not None:
-                    run_kw["input"] = payload.decode("utf-8")
-                proc = subprocess.run(cmd, **run_kw)
-                if proc.returncode != 0:
-                    raise RuntimeError((proc.stderr or proc.stdout or "curl fail").strip()[:300])
-                raw = proc.stdout or ""
-                return json.loads(raw) if raw.strip() else {}
-            headers = {"X-Print-Key": PRINT_KEY, "Accept": "application/json"}
-            if payload is not None:
-                headers["Content-Type"] = "application/json"
-            req = urllib.request.Request(url, data=payload, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
-        except Exception as exc:
-            last_err = exc
-            continue
-    raise RuntimeError(str(last_err or "print site unreachable"))
-
-
-def run_one_cloud_job() -> tuple[str, str, bool]:
-    try:
-        data = _site_json("GET", "/print_jobs/next")
-        job = (data or {}).get("job")
-        if not job:
-            return ("لا يوجد أمر طباعة", "ما في ملصق بالانتظار على هذا الجهاز.", False)
-        job_id = int(job.get("id") or 0)
-        copies = max(1, min(50, int(job.get("copies") or 1)))
-        width_mm = float(job.get("widthMm") or 105)
-        height_mm = float(job.get("heightMm") or 28)
-        image = str(job.get("image") or "")
-        if "," in image:
-            image = image.split(",", 1)[1]
-        blob = base64.b64decode(image)
-        print_png_blob(blob, copies, PRINTER, width_mm, height_mm)
-        _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": True})
-        _log("printed job %s on %s" % (job_id, os.environ.get("COMPUTERNAME") or ""))
-        return ("تمت الطباعة", "Rongta على هذا الجهاز · %s ورقة" % copies, True)
-    except Exception as exc:
-        _log("go-print failed: %s" % exc)
-        return ("فشلت الطباعة", str(exc)[:400], False)
 
 
 def main() -> None:
