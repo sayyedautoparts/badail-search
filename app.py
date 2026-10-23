@@ -9468,9 +9468,9 @@ def home() -> HTMLResponse:
       return out;
     }
     function printBarcodeEncodeValue(code) {
-      // اطبع الباركود كما يظهر على الشاشة — مع كل الفراغات، بلا دمج ولا قص
-      // مثال: "28130C5300        KA22" يبقى كما هو ولا يصبح "28130C5300KA22"
-      return printBarcodeExactValue(code);
+      // للأعمدة: مسافة واحدة بين المقاطع حتى يبقى X=2 نقطة على الطابعة قابلاً للمسح
+      // "28130C5300        KA22" → "28130C5300 KA22"
+      return printBarcodeScanValue(code) || printBarcodeExactValue(code);
     }
     const PRINT_REAL_PX_PER_MM = 96 / 25.4;
 
@@ -11213,8 +11213,8 @@ def home() -> HTMLResponse:
       const labelW = PRINT_SHEET_MM.labelW;
       const labelH = PRINT_SHEET_MM.labelH;
       const sideKey = printSideKey(side || 'left');
-      const padL = PRINT_ZONE_INSET_MM;
-      const padR = PRINT_ZONE_INSET_MM;
+      const padL = 0.4;
+      const padR = 0.4;
       let x = Number(box && box.x);
       let y = Number(box && box.y);
       let w = Number(box && box.w);
@@ -11468,7 +11468,7 @@ def home() -> HTMLResponse:
     }
 
     /* ===== NiceLabel-style engine: one mm model, one bitmap, 1:1 dots ===== */
-    const NL_BC = { maxX: 6, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
+    const NL_BC = { maxX: 6, quiet: [10, 7, 5, 4, 3], hrBandMm: 3.0, barHMaxMm: 12.5, barHMinMm: 8 };
     function nlDpi() { return 406; }
     function nlDots(mm) { return Math.round(mm * nlDpi() / 25.4); }
     function nlHasArabic(s) {
@@ -11576,8 +11576,11 @@ def home() -> HTMLResponse:
       for (let x = 0; x < c.width; x++) bits += (d[x * 4] < 128) ? '1' : '0';
       return bits;
     }
+    function nlPrinterScale() {
+      return Math.max(1, Math.round(nlDpi() / 203));
+    }
     function nlPlanBarcode(modules, boxDots) {
-      const scale = Math.max(1, Math.round(nlDpi() / 203));
+      const scale = nlPrinterScale();
       const minX = 2 * scale;
       const maxX = 3 * scale;
       for (let x = maxX; x >= minX; x--) {
@@ -11586,24 +11589,50 @@ def home() -> HTMLResponse:
           if ((modules + 2 * q) * x <= boxDots) return { x: x, q: q, ok: true, fitted: false };
         }
       }
-      const minQ = 4;
-      let x = Math.floor(boxDots / Math.max(1, modules + 2 * minQ));
-      x = Math.max(scale, Math.min(maxX, x));
-      return { x: x, q: minQ, ok: true, fitted: true };
+      return { x: minX, q: 3, ok: true, fitted: true };
+    }
+    function nlPickBarcodeValue(raw, boxDots) {
+      const scale = nlPrinterScale();
+      const minX = 2 * scale;
+      const scan = printBarcodeScanValue(raw) || printBarcodeExactValue(raw);
+      const compact = printBarcodeCompactValue(raw);
+      const exact = printBarcodeExactValue(raw);
+      const order = [];
+      function add(v) {
+        if (!v) return;
+        for (let i = 0; i < order.length; i++) if (order[i] === v) return;
+        order.push(v);
+      }
+      add(scan);
+      add(compact);
+      add(exact);
+      let best = null;
+      for (let i = 0; i < order.length; i++) {
+        const bits = nlBarcodeBits(order[i]);
+        if (!bits) continue;
+        const plan = nlPlanBarcode(bits.length, boxDots);
+        const item = { value: order[i], bits: bits, plan: plan };
+        if (!best) best = item;
+        if (plan.x >= minX && !plan.fitted) return item;
+        if (plan.x >= minX) best = item;
+      }
+      return best;
     }
     function nlDrawBarcode(ctx, value, ox, oy, box, s) {
-      const bits = nlBarcodeBits(value);
-      if (!bits) return { ok: false, msg: 'تعذر ترميز الباركود' };
       const bx = ox + nlDots(box.x), by = oy + nlDots(box.y);
       const bw = nlDots(box.w);
-      const plan = nlPlanBarcode(bits.length, bw);
+      const picked = nlPickBarcodeValue(value, bw);
+      if (!picked || !picked.bits) return { ok: false, msg: 'تعذر ترميز الباركود' };
+      const bits = picked.bits;
+      const plan = picked.plan;
+      const drawVal = picked.value;
       const hrD = nlDots(NL_BC.hrBandMm);
       const barMm = Math.max(NL_BC.barHMinMm, Math.min(NL_BC.barHMaxMm, box.h - NL_BC.hrBandMm));
       const barH = nlDots(barMm);
-      const mod = Math.max(1, Math.round(plan.x));
+      const mod = Math.max(2 * nlPrinterScale(), Math.round(plan.x));
       const quietPx = plan.q * mod;
       const dataW = bits.length * mod;
-      const totalW = Math.min(bw, dataW + quietPx * 2);
+      const totalW = dataW + quietPx * 2;
       const startX = bx + Math.max(0, Math.floor((bw - totalW) / 2)) + quietPx;
       const maxEnd = bx + bw - 1;
       ctx.fillStyle = '#000000';
@@ -11621,16 +11650,13 @@ def home() -> HTMLResponse:
       const k = nlDpi() / 96;
       const hrPx = 13.33;
       const hrWeight = '400';
-      nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
+      nlDrawText(ctx, drawVal, bx, by + barH, bw, hrD, {
         maxDot: Math.max(6, hrPx * k), minDot: 5, weight: hrWeight, wrap: false,
         family: 'Arial, sans-serif'
       });
-      const usedMm = (dataW + quietPx * 2) * 25.4 / nlDpi();
       return {
         ok: true, x: plan.x, fitted: !!plan.fitted,
-        msg: plan.fitted
-          ? ('باركود طويل · تم تصغيره ليناسب اللزقة (' + usedMm.toFixed(1) + 'مم) بدون قص')
-          : ''
+        msg: ''
       };
     }
     function nlDrawLabel(ctx, ox, oy, payload, side) {
@@ -11648,7 +11674,7 @@ def home() -> HTMLResponse:
         w: Number(s.bcWmm) || PRINT_ZONE_CONTENT_W_MM,
         h: Number(s.bcHmm) || PRINT_ZONE_BC_H_MM
       });
-      return nlDrawBarcode(ctx, printBarcodeEncodeValue(payload.barcode), ox, oy, box, s);
+      return nlDrawBarcode(ctx, payload.barcode, ox, oy, box, s);
     }
     function nlNewCanvas(wMm, hMm) {
       const c = document.createElement('canvas');
