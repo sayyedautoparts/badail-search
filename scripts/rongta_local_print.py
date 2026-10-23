@@ -29,7 +29,9 @@ ALLOWED_ORIGINS = (
 ROOT = Path(__file__).resolve().parent
 PRINT_PS1 = ROOT / "print_rongta_image.ps1"
 SITES = [
-    (os.environ.get("BADAIL_PRINT_SITE") or "https://www.sayyedstore.com").rstrip("/"),
+    (os.environ.get("BADAIL_PRINT_SITE") or "https://badail-search.vercel.app").rstrip("/"),
+    "https://badail-search.vercel.app",
+    "https://www.sayyedstore.com",
     "https://sayyedstore.com",
 ]
 PRINT_KEY = (os.environ.get("PRINT_AGENT_KEY") or "badail-rongta").strip()
