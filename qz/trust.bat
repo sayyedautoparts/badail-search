@@ -1,13 +1,13 @@
 @echo off
-echo Trusting this website in QZ Tray (one time)...
-if not exist "%PROGRAMDATA%\qz" mkdir "%PROGRAMDATA%\qz"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path $env:PROGRAMDATA\qz | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://badail-search.vercel.app/qz/cert' -OutFile (Join-Path $env:PROGRAMDATA 'qz\override.crt')"
+echo Trusting this website in QZ Tray...
+set "DEST=%TEMP%\badail-qz-trust"
+if not exist "%DEST%" mkdir "%DEST%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri 'https://badail-search.vercel.app/qz/trust-qz.ps1' -OutFile (Join-Path $env:TEMP 'badail-qz-trust\trust-qz.ps1')"
 if errorlevel 1 (
-  echo Failed to download the certificate.
+  echo Failed to download trust-qz.ps1
   pause
   exit /b 1
 )
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DEST%\trust-qz.ps1"
 echo.
-echo OK. Close QZ Tray completely, open it again, then print.
-echo After that, Allow should not appear every time.
 pause

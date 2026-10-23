@@ -7079,6 +7079,19 @@ def qz_trust_bat() -> FileResponse:
     )
 
 
+@app.get("/qz/trust-qz.ps1")
+def qz_trust_ps1() -> FileResponse:
+    path = _qz_dir() / "trust-qz.ps1"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="trust-qz.ps1 missing")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename="trust-qz.ps1",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.post("/qz/sign")
 async def qz_sign(request: Request) -> Response:
     to_sign = (await request.body()).decode("utf-8", errors="replace")
@@ -11809,7 +11822,7 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('نزّل trust-qz.bat واضغطه مرة واحدة، بعدين سكّر QZ Tray وافتحه. بعد هيك Allow مرة واحدة فقط.');
+      setPrintFetchStatus('نزّل trust-qz.bat واضغطه مرة (موافق على Administrator). بعدين اطبع بدون Action Required.');
       try {
         const a = document.createElement('a');
         a.href = '/qz/trust.bat';
