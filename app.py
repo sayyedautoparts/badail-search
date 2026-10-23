@@ -11753,15 +11753,20 @@ def home() -> HTMLResponse:
     }
 
     /* print */
+    function fetchWithTimeout(url, opts, ms) {
+      const ac = new AbortController();
+      const t = setTimeout(function () { try { ac.abort(); } catch (_) {} }, Math.max(200, Number(ms) || 800));
+      const o = Object.assign({ mode: 'cors', cache: 'no-store' }, opts || {}, { signal: ac.signal });
+      return fetch(url, o).finally(function () { clearTimeout(t); });
+    }
     async function pingLocalPrintAgent() {
-      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
-      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store', targetAddressSpace: 'loopback' };
-      for (let i = 0; i < bases.length; i++) {
-        try {
-          const res = await fetch(bases[i] + '/ping', fetchOpts);
-          if (res.ok) return bases[i];
-        } catch (_) {}
-      }
+      try {
+        const res = await fetchWithTimeout('http://127.0.0.1:17891/ping', {
+          method: 'GET',
+          targetAddressSpace: 'loopback'
+        }, 700);
+        if (res && res.ok) return 'http://127.0.0.1:17891';
+      } catch (_) {}
       return '';
     }
     async function setupLocalPrintAgent() {
@@ -11864,10 +11869,8 @@ def home() -> HTMLResponse:
         return;
       }
       try {
-        const res = await fetch(base + '/print', {
+        const res = await fetchWithTimeout(base + '/print', {
           method: 'POST',
-          mode: 'cors',
-          cache: 'no-store',
           targetAddressSpace: 'loopback',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -11877,7 +11880,7 @@ def home() -> HTMLResponse:
             widthMm: w,
             heightMm: h
           })
-        });
+        }, 12000);
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) {
           throw new Error((data && data.message) || ('HTTP ' + res.status));
