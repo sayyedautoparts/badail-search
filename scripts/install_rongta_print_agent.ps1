@@ -1,11 +1,22 @@
 #Requires -Version 5.1
+# One-time setup on the PC that has the USB Rongta.
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
-$Runner = Join-Path $PSScriptRoot "start_rongta_print_agent.ps1"
-$Py = Join-Path $PSScriptRoot "rongta_local_print.py"
+$Src = $PSScriptRoot
+$Dest = Join-Path $env:LOCALAPPDATA "BadailPrint\agent"
 $TaskName = "BadailRongtaPrintAgent"
-if (-not (Test-Path -LiteralPath $Runner)) { throw "Missing $Runner" }
-if (-not (Test-Path -LiteralPath $Py)) { throw "Missing $Py" }
+$Needed = @(
+  "rongta_local_print.py",
+  "print_rongta_image.ps1",
+  "start_rongta_print_agent.ps1"
+)
+foreach ($f in $Needed) {
+  if (-not (Test-Path -LiteralPath (Join-Path $Src $f))) {
+    throw "Missing $f. Unzip the whole RongtaPrintAgent folder, then run this script from inside it."
+  }
+}
+
+$prn = Get-CimInstance Win32_Printer | Where-Object { $_.Name -eq "Rongta RP4xx Series" }
+if (-not $prn) { throw "Rongta RP4xx Series is not installed on this PC." }
 
 function Get-BadailPython {
   foreach ($p in @(
@@ -20,20 +31,31 @@ function Get-BadailPython {
   if ($c -and $c.Source -and ($c.Source -notmatch "WindowsApps")) { return $c.Source }
   $py = Get-Command py -ErrorAction SilentlyContinue
   if ($py) { return $py.Source }
-  throw "python not found"
+  throw "Python is not installed on this PC."
 }
 
 $python = Get-BadailPython
-$pythonw = $python
+if (-not (Test-Path -LiteralPath $Dest)) {
+  New-Item -ItemType Directory -Path $Dest -Force | Out-Null
+}
+foreach ($f in $Needed) {
+  Copy-Item -LiteralPath (Join-Path $Src $f) -Destination (Join-Path $Dest $f) -Force
+}
+Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $Dest "install_rongta_print_agent.ps1") -Force
+$Runner = Join-Path $Dest "start_rongta_print_agent.ps1"
+$Py = Join-Path $Dest "rongta_local_print.py"
 
-Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -and $_.CommandLine -match 'rongta_local_print\.py' } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Get-CimInstance Win32_Process | Where-Object {
+  $_.CommandLine -and (
+    $_.CommandLine -match 'rongta_local_print\.py' -or
+    $_.CommandLine -match 'start_rongta_print_agent\.ps1'
+  )
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 $action = New-ScheduledTaskAction `
   -Execute "powershell.exe" `
   -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`"" `
-  -WorkingDirectory $Root
+  -WorkingDirectory $Dest
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
@@ -44,18 +66,18 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 
-try { Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $TaskName -ErrorAction SilentlyContinue } catch {}
-
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $python
-$psi.Arguments = '"' + $Py + '"'
-$psi.WorkingDirectory = $Root
+if ($python -match '\\py\.exe$') { $psi.Arguments = '-3 -u "' + $Py + '"' }
+else { $psi.Arguments = '-u "' + $Py + '"' }
+$psi.WorkingDirectory = $Dest
 $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
 $psi.CreateNoWindow = $true
 $psi.UseShellExecute = $false
 [void][System.Diagnostics.Process]::Start($psi)
+
 $ok = $false
-foreach ($i in 1..12) {
+foreach ($i in 1..15) {
   Start-Sleep -Milliseconds 400
   try {
     $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:17891/ping" -TimeoutSec 2
@@ -63,5 +85,5 @@ foreach ($i in 1..12) {
   } catch {}
 }
 if (-not $ok) { throw "Print agent did not start on http://127.0.0.1:17891" }
-Write-Host "Print agent running: http://127.0.0.1:17891"
+Write-Host "Print agent running on this PC: http://127.0.0.1:17891"
 Write-Host "Starts automatically at logon ($TaskName)"

@@ -10,6 +10,7 @@ import unicodedata
 import hashlib
 import json
 import base64
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,7 +21,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 logger = logging.getLogger("hesabate_sync")
 from openpyxl import load_workbook
@@ -7019,6 +7020,52 @@ def apple_touch_icon_png() -> FileResponse:
     )
 
 
+PRINT_AGENT_KIT_FILES = (
+    "install_rongta_print_agent.ps1",
+    "start_rongta_print_agent.ps1",
+    "rongta_local_print.py",
+    "print_rongta_image.ps1",
+)
+
+
+def _print_agent_scripts_dir() -> Path:
+    return Path(__file__).resolve().parent / "scripts"
+
+
+@app.get("/print_agent/kit.zip")
+def print_agent_kit_zip() -> Response:
+    """حزمة تثبيت وكيل Rongta للجهاز الحالي (مرة واحدة)."""
+    root = _print_agent_scripts_dir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in PRINT_AGENT_KIT_FILES:
+            path = root / name
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="missing " + name)
+            zf.write(path, arcname=name)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="RongtaPrintAgent.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/static/install_rongta_print_agent.ps1")
+def print_agent_install_ps1() -> FileResponse:
+    path = _print_agent_scripts_dir() / "install_rongta_print_agent.ps1"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="installer missing")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename="install_rongta_print_agent.ps1",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/")
 def home() -> HTMLResponse:
     _icon_q = app_icon_cache_query()
@@ -8411,8 +8458,9 @@ def home() -> HTMLResponse:
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
+          <button type="button" class="btn-secondary" onclick="setupLocalPrintAgent()" style="margin-right:8px;">تجهيز هذا الجهاز للطباعة المباشرة</button>
         </div>
-        <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
+        <div id="printFetchStatus" class="muted" style="margin-top:8px;white-space:pre-line;"></div>
       </div>
 
       <div id="mainSearchPanel" class="search-panel active">
@@ -11705,6 +11753,43 @@ def home() -> HTMLResponse:
     }
 
     /* print */
+    async function pingLocalPrintAgent() {
+      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
+      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store', targetAddressSpace: 'loopback' };
+      for (let i = 0; i < bases.length; i++) {
+        try {
+          const res = await fetch(bases[i] + '/ping', fetchOpts);
+          if (res.ok) return bases[i];
+        } catch (_) {}
+      }
+      return '';
+    }
+    async function setupLocalPrintAgent() {
+      setPrintFetchStatus('جاري فحص الجهاز...');
+      const base = await pingLocalPrintAgent();
+      if (base) {
+        setPrintFetchStatus('الجهاز جاهز. الطباعة المباشرة على Rongta شغّالة على هذا الجهاز.');
+        return;
+      }
+      setPrintFetchStatus('الوكيل غير مثبت على هذا الجهاز. جاري تنزيل ملف التثبيت...');
+      try {
+        const a = document.createElement('a');
+        a.href = '/print_agent/kit.zip';
+        a.download = 'RongtaPrintAgent.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setPrintFetchStatus(
+          'تم تنزيل RongtaPrintAgent.zip' + '\n' +
+          '1. فك الضغط' + '\n' +
+          '2. اضغط install_rongta_print_agent.ps1 بالزر اليمين → Run with PowerShell' + '\n' +
+          '3. لازم درايفر Rongta RP4xx Series و Python على هذا الجهاز' + '\n' +
+          '4. بعد الانتهاء ارجع واضغط الزر مرة ثانية للتأكد'
+        );
+      } catch (e) {
+        setPrintFetchStatus('تعذر تنزيل ملف التثبيت: ' + ((e && e.message) || e));
+      }
+    }
     async function printBarcodeLabels() {
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
@@ -11772,15 +11857,7 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
-      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store', targetAddressSpace: 'loopback' };
-      let base = '';
-      for (let i = 0; i < bases.length; i++) {
-        try {
-          const ping = await fetch(bases[i] + '/ping', fetchOpts);
-          if (ping.ok) { base = bases[i]; break; }
-        } catch (_) {}
-      }
+      const base = await pingLocalPrintAgent();
       if (!base) {
         setPrintFetchStatus('لا توجد خدمة طباعة محلية على هذا الجهاز — سيتم فتح نافذة الطباعة العادية.');
         await nlPrintViaBrowser(dataUrl, pages);

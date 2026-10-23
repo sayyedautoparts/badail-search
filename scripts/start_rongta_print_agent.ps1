@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = $PSScriptRoot
 $Py = Join-Path $PSScriptRoot "rongta_local_print.py"
 $LogDir = Join-Path $env:LOCALAPPDATA "BadailPrint"
 $Log = Join-Path $LogDir "agent.log"
