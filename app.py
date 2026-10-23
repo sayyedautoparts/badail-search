@@ -7415,7 +7415,7 @@ def home() -> HTMLResponse:
       /* حامل الليبل 105×28 مم · هامش 1 مم · لزقتان 50×26 · فجوة 3 مم */
       @page {
         size: 105mm 28mm;
-        margin: 0;
+        margin: 0 !important;
       }
       html, body {
         width: 105mm !important;
@@ -11733,41 +11733,58 @@ def home() -> HTMLResponse:
       const res = nlRenderSheet(pl, pr);
       if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
-      let sheet = document.getElementById('printLabelSheet');
-      if (!sheet) {
-        sheet = document.createElement('div');
-        sheet.id = 'printLabelSheet';
-        document.body.appendChild(sheet);
-      }
-      sheet.className = 'print-label-sheet';
-      sheet.innerHTML = '';
-      const imgs = [];
-      for (let p = 0; p < pages; p++) {
-        const img = new Image();
-        img.className = 'print-sheet-img';
-        img.src = url;
-        img.style.imageRendering = 'pixelated';
-        img.style.width = '105mm';
-        img.style.height = '28mm';
-        sheet.appendChild(img);
-        imgs.push(img);
-      }
-      try { await Promise.all(imgs.map((i) => (i.decode ? i.decode() : Promise.resolve()))); } catch (_) {}
-      setPrintFetchStatus('جاهز · ' + pages + ' ورقة · ' + nlDpi() + 'dpi · «' + RONGTA_PRINTER_NAME + '»');
       try { savePrintFormState(); } catch (_) {}
-      printJobTitleRestore = document.title;
-      document.title = 'Barcode-' + (pl.barcode || pr.barcode || 'labels');
-      const restoreTitle = () => {
-        document.body.classList.remove('printing-labels');
-        if (printJobTitleRestore != null) { document.title = printJobTitleRestore; printJobTitleRestore = null; }
-        window.removeEventListener('afterprint', restoreTitle);
+      setPrintFetchStatus('طباعة · 105×28مم · مقياس 100% · بدون هوامش · «' + RONGTA_PRINTER_NAME + '»');
+      nlPrintWithFixedSettings(url, pages, pl.barcode || pr.barcode || 'labels');
+    }
+    function nlPrintWithFixedSettings(dataUrl, pages, jobName) {
+      const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
+      const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
+      const n = Math.max(1, Number(pages) || 1);
+      let imgsHtml = '';
+      for (let p = 0; p < n; p++) {
+        imgsHtml += '<img class="pg" alt="" src="' + dataUrl + '" />';
+      }
+      const css = '@page{size:' + w + 'mm ' + h + 'mm;margin:0}'
+        + 'html,body{margin:0;padding:0;width:' + w + 'mm;height:' + h + 'mm;background:#fff;'
+        + '-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        + 'img.pg{display:block;width:' + w + 'mm;height:' + h + 'mm;max-width:' + w + 'mm;max-height:' + h + 'mm;'
+        + 'image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges;image-rendering:pixelated;'
+        + '-ms-interpolation-mode:nearest-neighbor;page-break-after:always;break-after:page}'
+        + 'img.pg:last-child{page-break-after:auto;break-after:auto}';
+      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Barcode-' + String(jobName || 'labels')
+        + '</title><style>' + css + '</style></head><body>' + imgsHtml + '</body></html>';
+      let iframe = document.getElementById('nlPrintFrame');
+      if (iframe) { try { iframe.remove(); } catch (_) {} }
+      iframe = document.createElement('iframe');
+      iframe.id = 'nlPrintFrame';
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+      document.body.appendChild(iframe);
+      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      doc.open();
+      doc.write(html);
+      doc.close();
+      const win = iframe.contentWindow;
+      const restore = () => {
+        try { win.removeEventListener('afterprint', restore); } catch (_) {}
+        setTimeout(() => { try { iframe.remove(); } catch (__) {} }, 400);
       };
-      window.addEventListener('afterprint', restoreTitle);
-      document.body.classList.add('printing-labels');
-      setTimeout(() => {
-        try { window.print(); }
-        catch (_) { restoreTitle(); setPrintFetchStatus('تعذر فتح نافذة الطباعة.'); }
-      }, 50);
+      const go = () => {
+        try { win.addEventListener('afterprint', restore); } catch (_) {}
+        try {
+          win.focus();
+          win.print();
+        } catch (_) {
+          restore();
+          setPrintFetchStatus('تعذر فتح نافذة الطباعة.');
+        }
+      };
+      const list = Array.prototype.slice.call(doc.images || []);
+      const ready = list.length
+        ? Promise.all(list.map((im) => (im.decode ? im.decode() : Promise.resolve())))
+        : Promise.resolve();
+      ready.then(() => setTimeout(go, 60)).catch(() => setTimeout(go, 120));
     }
 
     async function forceHesabateFullImport() {
