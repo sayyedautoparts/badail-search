@@ -34,7 +34,15 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 2
-Write-Host "Print worker is running on this PC ($env:COMPUTERNAME)."
-Write-Host "Only this machine (with Rongta USB) will print shop labels."
+$ok = $false
+foreach ($i in 1..20) {
+  Start-Sleep -Milliseconds 400
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:17891/ping" -TimeoutSec 2
+    if ($r.StatusCode -eq 200) { $ok = $true; break }
+  } catch {}
+}
+if (-not $ok) { throw "Failed to start local print server on 127.0.0.1:17891" }
+Write-Host "Rongta on this PC will print directly ($env:COMPUTERNAME)."
+Write-Host "Open the shop website ON THIS computer, then press Print."
 Write-Host "Starts automatically at logon ($TaskName)"

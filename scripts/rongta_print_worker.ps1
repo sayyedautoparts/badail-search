@@ -1,64 +1,134 @@
 #Requires -Version 5.1
-# Run this ONLY on the PC that has the Rongta USB printer.
-$ErrorActionPreference = "Continue"
+# Local print server: browser on THIS PC -> Rongta USB on THIS PC.
+$ErrorActionPreference = "Stop"
 $PrintPs1 = Join-Path $PSScriptRoot "print_rongta_image.ps1"
 $LogDir = Join-Path $env:LOCALAPPDATA "BadailPrint"
 $Log = Join-Path $LogDir "agent.log"
-$Key = "badail-rongta"
-$Sites = @("https://badail-search.vercel.app")
-$Curl = Join-Path $env:SystemRoot "System32\curl.exe"
 $Printer = "Rongta RP4xx Series"
+$Port = 17891
 if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
 function Write-AgentLog([string]$Message) {
   $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
-  Add-Content -LiteralPath $Log -Value $line -Encoding UTF8
+  try { Add-Content -LiteralPath $Log -Value $line -Encoding UTF8 } catch {}
 }
 
-function Invoke-PrintApi {
-  param([string]$Method, [string]$Path, [string]$Body)
-  $last = $null
-  foreach ($site in $Sites) {
-    $url = $site.TrimEnd("/") + $Path
-    try {
-      $args = @("-sS", "-m", "25", "-H", "X-Print-Key: $Key", "-H", "Accept: application/json", "-X", $Method, $url)
-      if ($null -ne $Body) {
-        $args = @("-sS", "-m", "25", "-H", "X-Print-Key: $Key", "-H", "Accept: application/json", "-H", "Content-Type: application/json", "-X", $Method, "--data-binary", $Body, $url)
-      }
-      $out = & $Curl @args 2>&1 | Out-String
-      if ($LASTEXITCODE -ne 0) { throw $out }
-      if (-not $out.Trim()) { return $null }
-      return ($out | ConvertFrom-Json)
-    } catch {
-      $last = $_
+function Send-Http($stream, [int]$code, [string]$status, [string]$ctype, [byte[]]$body, [string]$origin) {
+  if (-not $origin) { $origin = "*" }
+  $head = "HTTP/1.1 $code $status`r`nAccess-Control-Allow-Origin: $origin`r`nAccess-Control-Allow-Methods: GET, POST, OPTIONS`r`nAccess-Control-Allow-Headers: Content-Type, Access-Control-Request-Private-Network, Access-Control-Request-Local-Network`r`nAccess-Control-Allow-Private-Network: true`r`nAccess-Control-Allow-Local-Network: true`r`nAccess-Control-Max-Age: 600`r`nVary: Origin`r`nContent-Type: $ctype`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+  $hb = [Text.Encoding]::ASCII.GetBytes($head)
+  $stream.Write($hb, 0, $hb.Length)
+  if ($body.Length -gt 0) { $stream.Write($body, 0, $body.Length) }
+  $stream.Flush()
+}
+
+function Read-HttpRequest($stream) {
+  $ms = New-Object IO.MemoryStream
+  $buf = New-Object byte[] 8192
+  $raw = $null
+  while ($true) {
+    $n = $stream.Read($buf, 0, $buf.Length)
+    if ($n -le 0) { break }
+    $ms.Write($buf, 0, $n)
+    $raw = [Text.Encoding]::ASCII.GetString($ms.ToArray())
+    $idx = $raw.IndexOf("`r`n`r`n")
+    if ($idx -lt 0) { continue }
+    $headerText = $raw.Substring(0, $idx)
+    $cl = 0
+    foreach ($line in $headerText -split "`r`n") {
+      if ($line -match '^(?i)Content-Length:\s*(\d+)') { $cl = [int]$Matches[1] }
     }
+    $got = $ms.Length - ($idx + 4)
+    while ($got -lt $cl) {
+      $n = $stream.Read($buf, 0, $buf.Length)
+      if ($n -le 0) { break }
+      $ms.Write($buf, 0, $n)
+      $got += $n
+    }
+    break
   }
-  throw $last
+  $bytes = $ms.ToArray()
+  $text = [Text.Encoding]::UTF8.GetString($bytes)
+  $idx = $text.IndexOf("`r`n`r`n")
+  if ($idx -lt 0) { return $null }
+  $headerText = $text.Substring(0, $idx)
+  $body = $text.Substring($idx + 4)
+  $lines = $headerText -split "`r`n"
+  $req = $lines[0] -split " "
+  $origin = ""
+  foreach ($line in $lines) {
+    if ($line -match '^(?i)Origin:\s*(.+)$') { $origin = $Matches[1].Trim() }
+  }
+  return @{
+    Method = $req[0]
+    Path = (($req[1] -split "\?")[0])
+    Body = $body
+    Origin = $origin
+  }
 }
 
-Write-AgentLog "print worker started on $env:COMPUTERNAME"
-while ($true) {
+function Invoke-RongtaPrint([string]$ImageB64, [int]$Copies, [double]$WidthMm, [double]$HeightMm) {
+  if ($ImageB64 -match ",") { $ImageB64 = $ImageB64.Split(",", 2)[1] }
+  $blob = [Convert]::FromBase64String($ImageB64)
+  if ($blob.Length -lt 32) { throw "empty image" }
+  $tmp = Join-Path $env:TEMP ("badail-" + [guid]::NewGuid().ToString("N") + ".png")
+  [IO.File]::WriteAllBytes($tmp, $blob)
   try {
-    $data = Invoke-PrintApi -Method GET -Path "/print_jobs/next" -Body $null
-    $job = $data.job
-    if (-not $job) { Start-Sleep -Seconds 2; continue }
-    $tmp = Join-Path $env:TEMP ("badail-print-" + $job.id + ".png")
-    $bytes = [Convert]::FromBase64String([string]$job.image)
-    [IO.File]::WriteAllBytes($tmp, $bytes)
-    try {
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PrintPs1 -ImagePath $tmp -PrinterName $Printer -Copies ([int]$job.copies) -WidthMm ([double]$job.widthMm) -HeightMm ([double]$job.heightMm)
-      if ($LASTEXITCODE -ne 0) { throw "print exit $LASTEXITCODE" }
-      Invoke-PrintApi -Method POST -Path "/print_jobs/ack" -Body (@{ id = [int]$job.id; ok = $true } | ConvertTo-Json -Compress) | Out-Null
-      Write-AgentLog ("printed job " + $job.id + " x" + $job.copies + " on " + $env:COMPUTERNAME)
-    } catch {
-      $msg = [string]$_.Exception.Message
-      try { Invoke-PrintApi -Method POST -Path "/print_jobs/ack" -Body (@{ id = [int]$job.id; ok = $false; message = $msg } | ConvertTo-Json -Compress) | Out-Null } catch {}
-      Write-AgentLog ("job " + $job.id + " failed: " + $msg)
-    } finally {
-      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-    }
-  } catch {
-    Write-AgentLog ("poll error: " + $_.Exception.Message)
-    Start-Sleep -Seconds 4
+    $p = Start-Process -FilePath "powershell.exe" -WorkingDirectory $PSScriptRoot -ArgumentList @(
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "print_rongta_image.ps1",
+      "-ImagePath", $tmp, "-PrinterName", $Printer, "-Copies", "$Copies",
+      "-WidthMm", "$WidthMm", "-HeightMm", "$HeightMm"
+    ) -Wait -PassThru -WindowStyle Hidden
+    if ($p.ExitCode -ne 0) { throw "print exit $($p.ExitCode)" }
+  } finally {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
   }
+}
+
+Write-AgentLog "direct Rongta listener on 127.0.0.1:$Port ($env:COMPUTERNAME)"
+$server = New-Object System.Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $Port
+$server.Start()
+try {
+  while ($true) {
+    $client = $server.AcceptTcpClient()
+    try {
+      $stream = $client.GetStream()
+      $stream.ReadTimeout = 30000
+      $req = Read-HttpRequest $stream
+      if (-not $req) { continue }
+      $origin = $req.Origin
+      $jsonUtf8 = New-Object System.Text.UTF8Encoding $false
+      if ($req.Method -eq "OPTIONS") {
+        Send-Http $stream 204 "No Content" "text/plain" ([byte[]]@()) $origin
+      } elseif ($req.Path -in @("/ping", "/health") -and $req.Method -eq "GET") {
+        $b = $jsonUtf8.GetBytes((@{ ok = $true; printer = $Printer; host = $env:COMPUTERNAME } | ConvertTo-Json -Compress))
+        Send-Http $stream 200 "OK" "application/json; charset=utf-8" $b $origin
+      } elseif ($req.Path -eq "/print" -and $req.Method -eq "POST") {
+        try {
+          $payload = $req.Body | ConvertFrom-Json
+          $copies = [Math]::Max(1, [Math]::Min(50, [int]($payload.copies)))
+          if ($copies -lt 1) { $copies = 1 }
+          $w = 105; if ($payload.widthMm) { $w = [double]$payload.widthMm }
+          $h = 28; if ($payload.heightMm) { $h = [double]$payload.heightMm }
+          Invoke-RongtaPrint -ImageB64 ([string]$payload.image) -Copies $copies -WidthMm $w -HeightMm $h
+          $b = $jsonUtf8.GetBytes((@{ ok = $true; copies = $copies; printer = $Printer } | ConvertTo-Json -Compress))
+          Send-Http $stream 200 "OK" "application/json; charset=utf-8" $b $origin
+          Write-AgentLog "printed $copies copy on $Printer"
+        } catch {
+          $msg = [string]$_.Exception.Message
+          Write-AgentLog "print fail: $msg"
+          $b = $jsonUtf8.GetBytes((@{ ok = $false; message = $msg } | ConvertTo-Json -Compress))
+          Send-Http $stream 500 "Error" "application/json; charset=utf-8" $b $origin
+        }
+      } else {
+        Send-Http $stream 404 "Not Found" "text/plain" ([byte[]]@()) $origin
+      }
+    } catch {
+      Write-AgentLog ("http error: " + $_.Exception.Message)
+    } finally {
+      try { $client.Close() } catch {}
+    }
+  }
+} finally {
+  $server.Stop()
 }

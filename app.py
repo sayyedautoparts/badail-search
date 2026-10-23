@@ -11835,27 +11835,37 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
+      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
+      let base = '';
+      for (let i = 0; i < bases.length; i++) {
+        try {
+          const ping = await fetch(bases[i] + '/ping', { method: 'GET', mode: 'cors', cache: 'no-store' });
+          if (ping.ok) { base = bases[i]; break; }
+        } catch (_) {}
+      }
+      if (!base) {
+        setPrintFetchStatus('افتح الموقع على نفس الكمبيوتر الشابك فيه Rongta، وشغّل RongtaPrintAgent\\install.ps1 هناك. إذا كروم سأل عن الشبكة المحلية اضغط Allow.');
+        return;
+      }
       try {
-        const queued = await nlQueuePrintJob(dataUrl, copies, w, h);
-        const jobId = queued && queued.id;
-        setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة...');
-        if (!jobId) return;
-        for (let i = 0; i < 40; i++) {
-          await new Promise((r) => setTimeout(r, 500));
-          try {
-            const stRes = await fetch('/print_jobs/status?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
-            const st = await stRes.json().catch(() => ({}));
-            if (st && st.status === 'done') {
-              setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-              return;
-            }
-            if (st && st.status === 'error') {
-              setPrintFetchStatus('فشلت الطباعة على Rongta: ' + (st.message || ''));
-              return;
-            }
-          } catch (_) {}
+        const res = await fetch(base + '/print', {
+          method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: dataUrl,
+            copies: copies,
+            printer: RONGTA_PRINTER_NAME,
+            widthMm: w,
+            heightMm: h
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error((data && data.message) || ('HTTP ' + res.status));
         }
-        setPrintFetchStatus('الأمر واصل، بس جهاز Rongta في المكتب ما سحبه. شغّل scripts/install_rongta_print_agent.ps1 على جهاز الطابعة فقط.');
+        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
       } catch (err) {
         const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
         setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
