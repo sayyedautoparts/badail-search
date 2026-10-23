@@ -11762,12 +11762,7 @@ def home() -> HTMLResponse:
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setPrintFetchStatus(
-          'تم تنزيل RongtaPrintAgent.zip' + '\n' +
-          '1. فك الضغط' + '\n' +
-          '2. اضغط install_rongta_print_agent.ps1 بالزر اليمين → Run with PowerShell' + '\n' +
-          '3. لازم درايفر Rongta RP4xx Series و Python على هذا الجهاز'
-        );
+        setPrintFetchStatus('تم تنزيل RongtaPrintAgent.zip · فك الضغط · Run with PowerShell على install_rongta_print_agent.ps1 · يلزم Python ودرايفر Rongta RP4xx Series');
       } catch (e) {
         setPrintFetchStatus('تعذر تنزيل ملف التثبيت: ' + ((e && e.message) || e));
       }
