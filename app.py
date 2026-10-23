@@ -7104,7 +7104,7 @@ async def qz_sign(request: Request) -> Response:
     except Exception as exc:
         raise HTTPException(status_code=500, detail="cryptography missing: %s" % exc)
     key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
-    sig = key.sign(to_sign.encode("utf-8"), padding.PKCS1v15(), hashes.SHA512())
+    sig = key.sign(to_sign.encode("utf-8"), padding.PKCS1v15(), hashes.SHA1())
     return Response(content=base64.b64encode(sig).decode("ascii"), media_type="text/plain")
 
 
@@ -11822,7 +11822,7 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('نزّل trust-qz.bat واضغطه مرة (موافق على Administrator). بعدين اطبع بدون Action Required.');
+      setPrintFetchStatus('شغّل trust-qz.bat مرة واحدة ثم اطبع. ما في Administrator.');
       try {
         const a = document.createElement('a');
         a.href = '/qz/trust.bat';
@@ -11861,7 +11861,7 @@ def home() -> HTMLResponse:
           }).then(function (r) { return r.text(); }).then(resolve).catch(reject);
         };
       });
-      try { if (qz.security.setSignatureAlgorithm) qz.security.setSignatureAlgorithm('SHA512'); } catch (_) {}
+      try { if (qz.security.setSignatureAlgorithm) qz.security.setSignatureAlgorithm('SHA1'); } catch (_) {}
       window.__qzSecurityReady = true;
     }
     async function printDirectToRongta(dataUrl, pages) {
@@ -11873,21 +11873,10 @@ def home() -> HTMLResponse:
         throw new Error('مكتبة QZ Tray غير محمّلة — حدّث الصفحة');
       }
       if (!qz.websocket.isActive()) {
-        setPrintFetchStatus('أول مرة: اضغط Allow في QZ Tray (وبعد الثقة ما رح تتكرر).');
+        setPrintFetchStatus('جاري الاتصال بـ QZ Tray...');
         await qz.websocket.connect();
       }
-      let printer = null;
-      try { printer = await qz.printers.find('Rongta'); } catch (_) { printer = null; }
-      if (!printer) {
-        const all = await qz.printers.find();
-        const list = Array.isArray(all) ? all : [];
-        for (let i = 0; i < list.length; i++) {
-          if (String(list[i]).toLowerCase().indexOf('rongta') >= 0) { printer = list[i]; break; }
-        }
-      }
-      if (!printer) {
-        throw new Error('ويندوز ما لقى طابعة Rongta على هذا الجهاز');
-      }
+      const printer = RONGTA_PRINTER_NAME;
       const config = qz.configs.create(printer, {
         copies: copies,
         size: { width: w, height: h },
@@ -16435,6 +16424,7 @@ self.addEventListener('fetch', (event) => {{
     path.startsWith('/search') ||
     path.startsWith('/upload') ||
     path.startsWith('/hesabate') ||
+    path.startsWith('/qz') ||
     path === '/stats';
   if (networkOnly) {{
     event.respondWith(fetch(req));
