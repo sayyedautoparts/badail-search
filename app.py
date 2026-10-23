@@ -11753,30 +11753,8 @@ def home() -> HTMLResponse:
     }
 
     /* print */
-    function fetchWithTimeout(url, opts, ms) {
-      const ac = new AbortController();
-      const t = setTimeout(function () { try { ac.abort(); } catch (_) {} }, Math.max(200, Number(ms) || 800));
-      const o = Object.assign({ mode: 'cors', cache: 'no-store' }, opts || {}, { signal: ac.signal });
-      return fetch(url, o).finally(function () { clearTimeout(t); });
-    }
-    async function pingLocalPrintAgent() {
-      try {
-        const res = await fetchWithTimeout('http://127.0.0.1:17891/ping', {
-          method: 'GET',
-          targetAddressSpace: 'loopback'
-        }, 700);
-        if (res && res.ok) return 'http://127.0.0.1:17891';
-      } catch (_) {}
-      return '';
-    }
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('جاري فحص الجهاز...');
-      const base = await pingLocalPrintAgent();
-      if (base) {
-        setPrintFetchStatus('الجهاز جاهز. الطباعة المباشرة على Rongta شغّالة على هذا الجهاز.');
-        return;
-      }
-      setPrintFetchStatus('الوكيل غير مثبت على هذا الجهاز. جاري تنزيل ملف التثبيت...');
+      setPrintFetchStatus('جاري تنزيل ملف التثبيت...');
       try {
         const a = document.createElement('a');
         a.href = '/print_agent/kit.zip';
@@ -11788,14 +11766,14 @@ def home() -> HTMLResponse:
           'تم تنزيل RongtaPrintAgent.zip' + '\n' +
           '1. فك الضغط' + '\n' +
           '2. اضغط install_rongta_print_agent.ps1 بالزر اليمين → Run with PowerShell' + '\n' +
-          '3. لازم درايفر Rongta RP4xx Series و Python على هذا الجهاز' + '\n' +
-          '4. بعد الانتهاء ارجع واضغط الزر مرة ثانية للتأكد'
+          '3. لازم درايفر Rongta RP4xx Series و Python على هذا الجهاز'
         );
       } catch (e) {
         setPrintFetchStatus('تعذر تنزيل ملف التثبيت: ' + ((e && e.message) || e));
       }
     }
     async function printBarcodeLabels() {
+      const popup = window.open('', 'labelPrint', 'width=980,height=420');
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11808,89 +11786,63 @@ def home() -> HTMLResponse:
       let pl = buildPrintPayloadForSide('left');
       let pr = buildPrintPayloadForSide('right');
       const lOk = isPrintPayloadReady(pl), rOk = isPrintPayloadReady(pr);
-      if (!lOk && !rOk) { setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
+      if (!lOk && !rOk) {
+        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
+        setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.');
+        return;
+      }
       if (lOk && !rOk) pr = Object.assign({}, pl);
       else if (rOk && !lOk) pl = Object.assign({}, pr);
-      try { await ensureJsBarcodeLib(); } catch (_) { setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
+      try { await ensureJsBarcodeLib(); } catch (_) {
+        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
+        setPrintFetchStatus('تعذر تحميل مكتبة الباركود.');
+        return;
+      }
       const res = nlRenderSheet(pl, pr);
-      if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
+      if (!res.ok) {
+        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
+        setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | '));
+        return;
+      }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري تجهيز الطباعة...');
-      await nlPrintDirectToRongta(url, pages);
-    }
-    async function nlPrintViaBrowser(dataUrl, pages) {
-      const copies = Math.max(1, Number(pages) || 1);
-      const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
-      const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      let sheet = document.getElementById('printLabelSheet');
-      if (!sheet) {
-        sheet = document.createElement('div');
-        sheet.id = 'printLabelSheet';
-        document.body.appendChild(sheet);
-      }
-      sheet.className = 'print-label-sheet';
-      sheet.innerHTML = '';
-      for (let i = 0; i < copies; i++) {
-        const row = document.createElement('div');
-        row.className = 'print-label-row';
-        row.style.cssText = 'page-break-after:always;break-after:page;display:flex;justify-content:center;align-items:center;';
-        const img = document.createElement('img');
-        img.src = dataUrl;
-        img.style.cssText = 'width:' + w + 'mm;height:' + h + 'mm;object-fit:contain;image-rendering:pixelated;';
-        row.appendChild(img);
-        sheet.appendChild(row);
-      }
-      document.body.classList.add('printing-labels');
       setPrintFetchStatus('نافذة الطباعة جاهزة — اختر الطابعة على هذا الجهاز ثم اطبع.');
-      const restore = () => {
-        document.body.classList.remove('printing-labels');
-        if (sheet) sheet.innerHTML = '';
-        window.removeEventListener('afterprint', restore);
-      };
-      window.addEventListener('afterprint', restore);
-      setTimeout(() => {
-        try {
-          window.print();
-        } catch (e) {
-          restore();
-          setPrintFetchStatus('تعذر فتح نافذة الطباعة.');
-        }
-      }, 80);
+      nlPrintViaBrowser(url, pages, popup);
     }
-    async function nlPrintDirectToRongta(dataUrl, pages) {
+    function nlPrintViaBrowser(dataUrl, pages, popup) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const base = await pingLocalPrintAgent();
-      if (!base) {
-        setPrintFetchStatus('لا توجد خدمة طباعة محلية على هذا الجهاز — سيتم فتح نافذة الطباعة العادية.');
-        await nlPrintViaBrowser(dataUrl, pages);
+      const imgs = Array.from({ length: copies }, function () {
+        return '<img src="' + dataUrl + '" alt="labels">';
+      }).join('');
+      const html = '<!doctype html><html><head><meta charset="utf-8"><title>طباعة</title><style>'
+        + '@page{size:' + w + 'mm ' + h + 'mm;margin:0}'
+        + 'html,body{margin:0;padding:0;background:#fff}'
+        + 'img{display:block;width:' + w + 'mm;height:' + h + 'mm;image-rendering:pixelated;page-break-after:always}'
+        + 'img:last-child{page-break-after:auto}'
+        + '</style></head><body>' + imgs + '</body></html>';
+      let wref = popup;
+      if (!wref || wref.closed) {
+        setPrintFetchStatus('اسمح بالنوافذ المنبثقة لهذا الموقع ثم اضغط طباعة مرة ثانية.');
         return;
       }
       try {
-        const res = await fetchWithTimeout(base + '/print', {
-          method: 'POST',
-          targetAddressSpace: 'loopback',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: dataUrl,
-            copies: copies,
-            printer: RONGTA_PRINTER_NAME,
-            widthMm: w,
-            heightMm: h
-          })
-        }, 12000);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error((data && data.message) || ('HTTP ' + res.status));
-        }
-        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-      } catch (err) {
-        const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
-        setPrintFetchStatus('فشل الوكيل المحلي (' + msg + ') — جاري فتح نافذة الطباعة...');
-        await nlPrintViaBrowser(dataUrl, pages);
+        wref.document.open();
+        wref.document.write(html);
+        wref.document.close();
+        wref.focus();
+        setTimeout(function () {
+          try { wref.print(); } catch (_) {
+            setPrintFetchStatus('تعذر فتح نافذة الطباعة.');
+          }
+        }, 120);
+      } catch (_) {
+        setPrintFetchStatus('تعذر فتح نافذة الطباعة.');
       }
+    }
+    async function nlPrintDirectToRongta(dataUrl, pages, popup) {
+      nlPrintViaBrowser(dataUrl, pages, popup);
     }
 
     async function forceHesabateFullImport() {
