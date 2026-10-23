@@ -7054,6 +7054,18 @@ def print_agent_kit_zip() -> Response:
     )
 
 
+@app.get("/static/qz-tray.js")
+def qz_tray_js() -> FileResponse:
+    path = Path(__file__).resolve().parent / "static" / "qz-tray.js"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="qz-tray.js missing")
+    return FileResponse(
+        path,
+        media_type="application/javascript; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.get("/static/install_rongta_print_agent.ps1")
 def print_agent_install_ps1() -> FileResponse:
     path = _print_agent_scripts_dir() / "install_rongta_print_agent.ps1"
@@ -8304,7 +8316,7 @@ def home() -> HTMLResponse:
     .pdg-zone.is-active { background: rgba(45,95,255,.08); }
     .pdg-zone-inner { display: none; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/qz-tray/dist/qz-tray.js"></script>
+  <script src="/static/qz-tray.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -11759,10 +11771,24 @@ def home() -> HTMLResponse:
       setPrintFetchStatus('ثبّت QZ Tray واترك الأيقونة شغال في شريط ويندوز، ثم اطبع واضغط Allow.');
       try { window.open('https://qz.io/download/', '_blank'); } catch (_) {}
     }
+    function ensureQzLib() {
+      if (typeof qz !== 'undefined' && qz.websocket) return Promise.resolve();
+      return new Promise(function (resolve, reject) {
+        const s = document.createElement('script');
+        s.src = '/static/qz-tray.js';
+        s.onload = function () {
+          if (typeof qz !== 'undefined' && qz.websocket) resolve();
+          else reject(new Error('QZ Tray JS loaded but qz missing'));
+        };
+        s.onerror = function () { reject(new Error('تعذر تحميل مكتبة QZ Tray من الموقع')); };
+        document.head.appendChild(s);
+      });
+    }
     async function printDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
+      await ensureQzLib();
       if (typeof qz === 'undefined' || !qz.websocket) {
         throw new Error('مكتبة QZ Tray غير محمّلة — حدّث الصفحة');
       }
