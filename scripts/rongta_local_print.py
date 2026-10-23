@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -23,6 +28,8 @@ ALLOWED_ORIGINS = (
 )
 ROOT = Path(__file__).resolve().parent
 PRINT_PS1 = ROOT / "print_rongta_image.ps1"
+SITE = (os.environ.get("BADAIL_PRINT_SITE") or "https://www.sayyedstore.com").rstrip("/")
+PRINT_KEY = (os.environ.get("PRINT_AGENT_KEY") or "badail-rongta").strip()
 
 
 def cors_origin(origin: str) -> str:
@@ -98,37 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             if "," in image:
                 image = image.split(",", 1)[1]
             blob = base64.b64decode(image)
-            if len(blob) < 32:
-                raise ValueError("empty image")
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmp.write(blob)
-            tmp.close()
-            cmd = [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(PRINT_PS1),
-                "-ImagePath",
-                tmp.name,
-                "-PrinterName",
-                printer,
-                "-Copies",
-                str(copies),
-                "-WidthMm",
-                str(width_mm),
-                "-HeightMm",
-                str(height_mm),
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-            try:
-                Path(tmp.name).unlink()
-            except OSError:
-                pass
-            if proc.returncode != 0:
-                err = (proc.stderr or proc.stdout or "print failed").strip()
-                raise RuntimeError(err[-800:])
+            print_png_blob(blob, copies, printer, width_mm, height_mm)
             out = {"ok": True, "copies": copies, "printer": printer}
             code = 200
         except Exception as exc:
@@ -150,7 +127,82 @@ def _log(msg: str) -> None:
         pass
 
 
+def print_png_blob(blob: bytes, copies: int, printer: str, width_mm: float, height_mm: float) -> None:
+    if len(blob) < 32:
+        raise ValueError("empty image")
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.write(blob)
+    tmp.close()
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(PRINT_PS1),
+        "-ImagePath",
+        tmp.name,
+        "-PrinterName",
+        printer,
+        "-Copies",
+        str(copies),
+        "-WidthMm",
+        str(width_mm),
+        "-HeightMm",
+        str(height_mm),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    try:
+        Path(tmp.name).unlink()
+    except OSError:
+        pass
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "print failed").strip()
+        raise RuntimeError(err[-800:])
+
+
+def _site_json(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict:
+    data = None
+    headers = {"X-Print-Key": PRINT_KEY, "Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(SITE + path, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def poll_cloud_jobs() -> None:
+    _log("polling print jobs from %s" % SITE)
+    while True:
+        try:
+            data = _site_json("GET", "/print_jobs/next")
+            job = (data or {}).get("job")
+            if not job:
+                time.sleep(2)
+                continue
+            job_id = int(job.get("id") or 0)
+            copies = max(1, min(50, int(job.get("copies") or 1)))
+            width_mm = float(job.get("widthMm") or 105)
+            height_mm = float(job.get("heightMm") or 28)
+            image = str(job.get("image") or "")
+            blob = base64.b64decode(image)
+            try:
+                print_png_blob(blob, copies, PRINTER, width_mm, height_mm)
+                _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": True})
+                _log("printed cloud job %s x%s" % (job_id, copies))
+            except Exception as exc:
+                _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": False, "message": str(exc)[:400]})
+                _log("cloud job %s failed: %s" % (job_id, exc))
+        except Exception as exc:
+            _log("poll error: %s" % exc)
+            time.sleep(4)
+
+
 def main() -> None:
+    poller = threading.Thread(target=poll_cloud_jobs, name="rongta-cloud-poll", daemon=True)
+    poller.start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     _log("Rongta local print agent on http://%s:%s" % (HOST, PORT))
     try:

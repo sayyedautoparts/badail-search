@@ -88,6 +88,7 @@ ARABIC_LETTER_TRANS = str.maketrans(
     }
 )
 APP_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+PRINT_AGENT_KEY = (os.getenv("PRINT_AGENT_KEY") or "badail-rongta").strip()
 APP_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = APP_DIR / "static" / "app-icon.png"
 APPLE_TOUCH_ICON_PATH = APP_DIR / "static" / "apple-touch-icon.png"
@@ -585,6 +586,37 @@ def init_db() -> None:
                 """
             )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_shelf_locations_location ON shelf_locations(location)")
+        if conn.postgres:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS print_jobs (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    copies INTEGER NOT NULL DEFAULT 1,
+                    width_mm DOUBLE PRECISION NOT NULL DEFAULT 105,
+                    height_mm DOUBLE PRECISION NOT NULL DEFAULT 28,
+                    image_b64 TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    message TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS print_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    copies INTEGER NOT NULL DEFAULT 1,
+                    width_mm REAL NOT NULL DEFAULT 105,
+                    height_mm REAL NOT NULL DEFAULT 28,
+                    image_b64 TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    message TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, id)")
         # كاش أصناف حساباتي + فهرس باركود للجلب الفوري لصنف واحد
         if conn.postgres:
             conn.execute(
@@ -8183,6 +8215,12 @@ def home() -> HTMLResponse:
       #locationsTable .cell { min-height: 50px; padding: 10px 10px; }
       #locationsTable th .cell { min-height: 44px; }
     }
+    .print-qty-modal .barcode-modal-box { max-width: 380px; text-align: center; padding: 22px 18px 18px; }
+    .print-qty-modal input[type="text"] {
+      width: 100%; max-width: 160px; margin: 12px auto 0; display: block;
+      font-size: 28px; font-weight: 700; text-align: center; padding: 8px 10px;
+      font-variant-numeric: lining-nums; letter-spacing: 1px;
+    }
     .barcode-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; align-items: center; justify-content: center; flex-direction: column; padding: 12px; box-sizing: border-box; }
     .barcode-modal-overlay.active { display: flex; }
     .barcode-modal-box { background: #fff; border-radius: 14px; padding: 14px; max-width: min(98vw, 640px); width: 100%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.2); box-sizing: border-box; }
@@ -8401,11 +8439,7 @@ def home() -> HTMLResponse:
           </div>
         </div>
 
-        <div class="print-unit-fields" style="margin-top:12px;">
-          <label class="field-label" for="printQtyInput">عدد الأوراق (كل ورقة = لزق يسار + لزق يمين معاً)</label>
-          <input id="printQtyInput" type="text" inputmode="numeric" pattern="[0-9]*" lang="en" dir="ltr" autocomplete="off" value="1" placeholder="1" style="font-variant-numeric:lining-nums;font-feature-settings:'tnum';text-align:left;" onfocus="this.select()" onmouseup="event.preventDefault()" oninput="onPrintQtyInputChange()" onkeydown="if(event.key==='Enter'){event.preventDefault();printBarcodeLabels();}" />
-          <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
-        </div>
+        <input id="printQtyInput" type="hidden" value="1" />
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
           الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · حامل 105×28 مم · هامش 1 مم · لزقة 50×26 مم · فجوة 3 مم.
         </p>
@@ -8529,6 +8563,18 @@ def home() -> HTMLResponse:
   </div>
 
   <div id="printLabelSheet" class="print-label-sheet" aria-hidden="true"></div>
+
+  <div id="printQtyModal" class="barcode-modal-overlay print-qty-modal" aria-hidden="true" onclick="if(event.target===this)closePrintQtyPopup()">
+    <div class="barcode-modal-box" role="dialog" aria-labelledby="printQtyModalTitle">
+      <strong id="printQtyModalTitle">عدد الأوراق</strong>
+      <p class="muted" style="margin:8px 0 0;">كل ورقة = لزق يسار + لزق يمين معاً</p>
+      <input id="printQtyPopupInput" type="text" inputmode="numeric" pattern="[0-9]*" lang="en" dir="ltr" autocomplete="off" value="1" maxlength="3" oninput="this.value=normalizePrintQtyValue(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmPrintQtyPopup();}" />
+      <div class="btn-row" style="margin-top:16px;justify-content:center;">
+        <button type="button" class="btn-success" onclick="confirmPrintQtyPopup()">طباعة</button>
+        <button type="button" class="btn-secondary" onclick="closePrintQtyPopup()">إلغاء</button>
+      </div>
+    </div>
+  </div>
 
   <div id="barcodeModal" class="barcode-modal-overlay" aria-hidden="true">
     <div class="barcode-modal-box">
@@ -11705,7 +11751,50 @@ def home() -> HTMLResponse:
     }
 
     /* print */
+    const PRINT_AGENT_KEY = 'badail-rongta';
+    function closePrintQtyPopup() {
+      const modal = document.getElementById('printQtyModal');
+      if (!modal) return;
+      modal.classList.remove('active');
+      modal.setAttribute('aria-hidden', 'true');
+    }
+    function openPrintQtyPopup() {
+      const modal = document.getElementById('printQtyModal');
+      const inp = document.getElementById('printQtyPopupInput');
+      const hidden = document.getElementById('printQtyInput');
+      if (!modal || !inp) return;
+      inp.value = normalizePrintQtyValue((hidden && hidden.value) || '1') || '1';
+      modal.classList.add('active');
+      modal.setAttribute('aria-hidden', 'false');
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 40);
+    }
+    function confirmPrintQtyPopup() {
+      const inp = document.getElementById('printQtyPopupInput');
+      const hidden = document.getElementById('printQtyInput');
+      const qty = normalizePrintQtyValue(inp ? inp.value : '1') || '1';
+      if (hidden) hidden.value = qty;
+      if (inp) inp.value = qty;
+      closePrintQtyPopup();
+      printBarcodeLabelsNow();
+    }
     async function printBarcodeLabels() {
+      const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
+      const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
+      if (!printSides.left.item && !(printSides.left.rows && printSides.left.rows.length) && leftQ) {
+        await resolvePrintItemFromLocal('left', false);
+      }
+      if (!printSides.right.item && !(printSides.right.rows && printSides.right.rows.length) && rightQ) {
+        await resolvePrintItemFromLocal('right', false);
+      }
+      const pl = buildPrintPayloadForSide('left');
+      const pr = buildPrintPayloadForSide('right');
+      if (!isPrintPayloadReady(pl) && !isPrintPayloadReady(pr)) {
+        setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.');
+        return;
+      }
+      openPrintQtyPopup();
+    }
+    async function printBarcodeLabelsNow() {
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11726,8 +11815,21 @@ def home() -> HTMLResponse:
       if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» بدون كروم...');
+      setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '»...');
       await nlPrintDirectToRongta(url, pages);
+    }
+    async function nlQueuePrintJob(dataUrl, copies, w, h) {
+      const res = await fetch('/print_jobs', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Print-Key': PRINT_AGENT_KEY },
+        body: JSON.stringify({ image: dataUrl, copies: copies, widthMm: w, heightMm: h })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error((data && (data.message || data.detail)) || ('HTTP ' + res.status));
+      }
+      return data;
     }
     async function nlPrintDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
@@ -11736,41 +11838,40 @@ def home() -> HTMLResponse:
       const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
       const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store' };
       let base = '';
-      let lastErr = null;
       for (let i = 0; i < bases.length; i++) {
         try {
           const ping = await fetch(bases[i] + '/ping', fetchOpts);
           if (ping.ok) { base = bases[i]; break; }
-          lastErr = new Error('ping HTTP ' + ping.status);
-        } catch (e) {
-          lastErr = e;
-        }
+        } catch (_) {}
       }
-      if (!base) {
-        setPrintFetchStatus(
-          'خدمة الطباعة المحلية غير شغّالة على هذا الجهاز. إذا ظهر في كروم طلب السماح بالشبكة المحلية اضغط Allow ثم أعد الطباعة. أو شغّل scripts/install_rongta_print_agent.ps1'
-        );
-        return;
+      if (base) {
+        try {
+          const res = await fetch(base + '/print', {
+            method: 'POST',
+            mode: 'cors',
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              image: dataUrl,
+              copies: copies,
+              printer: RONGTA_PRINTER_NAME,
+              widthMm: w,
+              heightMm: h
+            })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            throw new Error((data && data.message) || ('HTTP ' + res.status));
+          }
+          setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
+          return;
+        } catch (err) {
+          /* fall through to shop queue */
+        }
       }
       try {
-        const res = await fetch(base + '/print', {
-          method: 'POST',
-          mode: 'cors',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: dataUrl,
-            copies: copies,
-            printer: RONGTA_PRINTER_NAME,
-            widthMm: w,
-            heightMm: h
-          })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error((data && data.message) || ('HTTP ' + res.status));
-        }
-        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة · بدون نافذة كروم');
+        await nlQueuePrintJob(dataUrl, copies, w, h);
+        setPrintFetchStatus('أُرسلت الطباعة لجهاز المكتب · ' + copies + ' ورقة · ستطلع على Rongta خلال ثوانٍ');
       } catch (err) {
         const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
         setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
@@ -16268,6 +16369,126 @@ self.addEventListener('fetch', (event) => {{
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+def _print_key_ok(request: Request) -> bool:
+    key = (request.headers.get("x-print-key") or request.query_params.get("key") or "").strip()
+    return bool(PRINT_AGENT_KEY) and key == PRINT_AGENT_KEY
+
+
+@app.post("/print_jobs")
+async def create_print_job(payload: dict, request: Request) -> dict:
+    if not _print_key_ok(request):
+        raise HTTPException(status_code=403, detail="print key required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    image = str(payload.get("image") or "")
+    if "," in image:
+        image = image.split(",", 1)[1]
+    image = "".join(image.split())
+    if len(image) < 64 or len(image) > 6_000_000:
+        raise HTTPException(status_code=400, detail="invalid image")
+    try:
+        copies = max(1, min(50, int(payload.get("copies") or 1)))
+        width_mm = float(payload.get("widthMm") or 105)
+        height_mm = float(payload.get("heightMm") or 28)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid copies/size")
+    conn = get_db()
+    try:
+        queued = conn.execute("SELECT COUNT(*) AS n FROM print_jobs WHERE status = ?", ("queued",)).fetchone()
+        n = int((queued["n"] if queued else 0) or 0)
+        if n >= 30:
+            raise HTTPException(status_code=429, detail="print queue full")
+        if conn.postgres:
+            conn.execute(
+                "DELETE FROM print_jobs WHERE created_at < (CURRENT_TIMESTAMP - INTERVAL '2 hours')"
+            )
+            row = conn.execute(
+                """
+                INSERT INTO print_jobs (copies, width_mm, height_mm, image_b64, status)
+                VALUES (?, ?, ?, ?, 'queued')
+                RETURNING id
+                """,
+                (copies, width_mm, height_mm, image),
+            ).fetchone()
+        else:
+            conn.execute("DELETE FROM print_jobs WHERE created_at < datetime('now', '-2 hours')")
+            conn.execute(
+                """
+                INSERT INTO print_jobs (copies, width_mm, height_mm, image_b64, status)
+                VALUES (?, ?, ?, ?, 'queued')
+                """,
+                (copies, width_mm, height_mm, image),
+            )
+            row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+        conn.commit()
+        job_id = int(row["id"] if row else 0)
+    finally:
+        conn.close()
+    return {"ok": True, "id": job_id, "copies": copies}
+
+
+@app.get("/print_jobs/next")
+def next_print_job(request: Request) -> dict:
+    if not _print_key_ok(request):
+        raise HTTPException(status_code=403, detail="print key required")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT id, copies, width_mm, height_mm, image_b64
+            FROM print_jobs
+            WHERE status = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            ("queued",),
+        ).fetchone()
+        if not row:
+            return {"ok": True, "job": None}
+        job_id = int(row["id"])
+        conn.execute("UPDATE print_jobs SET status = ? WHERE id = ?", ("printing", job_id))
+        conn.commit()
+        return {
+            "ok": True,
+            "job": {
+                "id": job_id,
+                "copies": int(row["copies"] or 1),
+                "widthMm": float(row["width_mm"] or 105),
+                "heightMm": float(row["height_mm"] or 28),
+                "image": row["image_b64"],
+            },
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/print_jobs/ack")
+async def ack_print_job(payload: dict, request: Request) -> dict:
+    if not _print_key_ok(request):
+        raise HTTPException(status_code=403, detail="print key required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    try:
+        job_id = int(payload.get("id") or 0)
+    except Exception:
+        job_id = 0
+    if job_id <= 0:
+        raise HTTPException(status_code=400, detail="id required")
+    ok = bool(payload.get("ok", True))
+    message = str(payload.get("message") or "")[:500]
+    status = "done" if ok else "error"
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE print_jobs SET status = ?, message = ? WHERE id = ?",
+            (status, message, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 @app.get("/health")
