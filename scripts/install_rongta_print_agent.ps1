@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# شغّل هذا الملف فقط على الجهاز اللي شابك فيه طابعة Rongta.
+# Run only on the PC with the Rongta USB printer.
 $ErrorActionPreference = "Stop"
 $Worker = Join-Path $PSScriptRoot "rongta_print_worker.ps1"
 $PrintPs1 = Join-Path $PSScriptRoot "print_rongta_image.ps1"
@@ -9,7 +9,7 @@ if (-not (Test-Path -LiteralPath $PrintPs1)) { throw "Missing $PrintPs1" }
 
 $prn = Get-WmiObject Win32_Printer | Where-Object { $_.Name -eq "Rongta RP4xx Series" }
 if (-not $prn) {
-  throw "طابعة Rongta RP4xx Series غير موجودة على هذا الجهاز. ثبّت الدرايفر هنا ثم أعد المحاولة."
+  throw "Rongta RP4xx Series is not installed on this PC."
 }
 
 Get-CimInstance Win32_Process | Where-Object {
