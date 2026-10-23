@@ -8241,8 +8241,12 @@ def home() -> HTMLResponse:
       display: block;
       width: 105mm;
       height: 28mm;
-      image-rendering: pixelated;
+      image-rendering: -webkit-optimize-contrast;
       image-rendering: crisp-edges;
+      image-rendering: pixelated;
+      -ms-interpolation-mode: nearest-neighbor;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
       page-break-after: always;
       break-after: page;
     }
@@ -11494,7 +11498,7 @@ def home() -> HTMLResponse:
       if (cur) lines.push(cur);
       return lines;
     }
-    const NL_TEXT = { ss: 3, strokeEm: 0, thresh: 180 };
+    const NL_TEXT = { ss: 4, strokeEm: 0, thresh: 200 };
     function nlDrawText(ctx, text, bx, by, bw, bh, o) {
       text = String(text == null ? '' : text);
       if (!text || bw <= 0 || bh <= 0) return;
@@ -11504,7 +11508,7 @@ def home() -> HTMLResponse:
       tc.height = Math.max(1, Math.round(bh * S));
       const t = tc.getContext('2d');
       const W = tc.width, H = tc.height;
-      const fam = o.family || '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif';
+      const fam = 'Arial, sans-serif';
       t.fillStyle = '#000';
       t.strokeStyle = '#000';
       t.lineJoin = 'round';
@@ -11521,7 +11525,7 @@ def home() -> HTMLResponse:
         lines.forEach((l) => { widest = Math.max(widest, t.measureText(l).width); });
         if (lines.length * mid * 1.12 <= H && widest <= W - pad) { best = mid; lo = mid; } else hi = mid;
       }
-      t.font = o.weight + ' ' + best + 'px ' + fam;
+      t.font = '400 ' + Math.round(best) + 'px ' + fam;
       const lines = o.wrap ? nlWrapLines(t, text, W - pad) : [text];
       const lh = best * 1.12;
       let y = (H - lines.length * lh) / 2 + lh / 2;
@@ -11616,11 +11620,11 @@ def home() -> HTMLResponse:
         } else i++;
       }
       const k = nlDpi() / 96;
-      const hrPx = Number(s && s.bcTextPx) > 0 ? Number(s.bcTextPx) : 9;
+      const hrPx = 13.33;
       const hrWeight = '400';
       nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
         maxDot: Math.max(6, hrPx * k), minDot: 5, weight: hrWeight, wrap: false,
-        family: '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif'
+        family: 'Arial, sans-serif'
       });
       const usedMm = (dataW + quietPx * 2) * 25.4 / nlDpi();
       return {
@@ -11636,9 +11640,9 @@ def home() -> HTMLResponse:
       const T = (txt, x, y, w, h, maxPx, wrap, weight) => nlDrawText(
         ctx, txt, ox + nlDots(x), oy + nlDots(y), nlDots(w), nlDots(h),
         { maxDot: maxPx * k, minDot: 5 * k, weight: weight, wrap: wrap });
-      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, '400');
-      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, '400');
-      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, '400');
+      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, 18.67, true, '400');
+      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, 18.67, false, '400');
+      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, 18.67, false, '400');
       const box = clampBarcodeBoxToLabelMm(side, {
         x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
         y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
@@ -11743,6 +11747,9 @@ def home() -> HTMLResponse:
         const img = new Image();
         img.className = 'print-sheet-img';
         img.src = url;
+        img.style.imageRendering = 'pixelated';
+        img.style.width = '105mm';
+        img.style.height = '28mm';
         sheet.appendChild(img);
         imgs.push(img);
       }
