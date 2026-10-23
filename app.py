@@ -11498,7 +11498,7 @@ def home() -> HTMLResponse:
       if (cur) lines.push(cur);
       return lines;
     }
-    const NL_TEXT = { ss: 4, strokeEm: 0, thresh: 200 };
+    const NL_TEXT = { ss: 4, strokeEm: 0.035, thresh: 220 };
     function nlDrawText(ctx, text, bx, by, bw, bh, o) {
       text = String(text == null ? '' : text);
       if (!text || bw <= 0 || bh <= 0) return;
@@ -11530,6 +11530,10 @@ def home() -> HTMLResponse:
       const lh = best * 1.12;
       let y = (H - lines.length * lh) / 2 + lh / 2;
       lines.forEach((l) => {
+        if (NL_TEXT.strokeEm > 0) {
+          t.lineWidth = Math.max(1, best * NL_TEXT.strokeEm);
+          t.strokeText(l, W / 2, y);
+        }
         t.fillText(l, W / 2, y);
         y += lh;
       });
