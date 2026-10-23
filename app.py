@@ -11726,30 +11726,64 @@ def home() -> HTMLResponse:
       if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» بدون كروم...');
+      setPrintFetchStatus('جاري تجهيز الطباعة...');
       await nlPrintDirectToRongta(url, pages);
+    }
+    async function nlPrintViaBrowser(dataUrl, pages) {
+      const copies = Math.max(1, Number(pages) || 1);
+      const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
+      const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
+      let sheet = document.getElementById('printLabelSheet');
+      if (!sheet) {
+        sheet = document.createElement('div');
+        sheet.id = 'printLabelSheet';
+        document.body.appendChild(sheet);
+      }
+      sheet.className = 'print-label-sheet';
+      sheet.innerHTML = '';
+      for (let i = 0; i < copies; i++) {
+        const row = document.createElement('div');
+        row.className = 'print-label-row';
+        row.style.cssText = 'page-break-after:always;break-after:page;display:flex;justify-content:center;align-items:center;';
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.style.cssText = 'width:' + w + 'mm;height:' + h + 'mm;object-fit:contain;image-rendering:pixelated;';
+        row.appendChild(img);
+        sheet.appendChild(row);
+      }
+      document.body.classList.add('printing-labels');
+      setPrintFetchStatus('نافذة الطباعة جاهزة — اختر الطابعة على هذا الجهاز ثم اطبع.');
+      const restore = () => {
+        document.body.classList.remove('printing-labels');
+        if (sheet) sheet.innerHTML = '';
+        window.removeEventListener('afterprint', restore);
+      };
+      window.addEventListener('afterprint', restore);
+      setTimeout(() => {
+        try {
+          window.print();
+        } catch (e) {
+          restore();
+          setPrintFetchStatus('تعذر فتح نافذة الطباعة.');
+        }
+      }, 80);
     }
     async function nlPrintDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
       const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
-      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store' };
+      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store', targetAddressSpace: 'loopback' };
       let base = '';
-      let lastErr = null;
       for (let i = 0; i < bases.length; i++) {
         try {
           const ping = await fetch(bases[i] + '/ping', fetchOpts);
           if (ping.ok) { base = bases[i]; break; }
-          lastErr = new Error('ping HTTP ' + ping.status);
-        } catch (e) {
-          lastErr = e;
-        }
+        } catch (_) {}
       }
       if (!base) {
-        setPrintFetchStatus(
-          'خدمة الطباعة المحلية غير شغّالة على هذا الجهاز. إذا ظهر في كروم طلب السماح بالشبكة المحلية اضغط Allow ثم أعد الطباعة. أو شغّل scripts/install_rongta_print_agent.ps1'
-        );
+        setPrintFetchStatus('لا توجد خدمة طباعة محلية على هذا الجهاز — سيتم فتح نافذة الطباعة العادية.');
+        await nlPrintViaBrowser(dataUrl, pages);
         return;
       }
       try {
@@ -11757,6 +11791,7 @@ def home() -> HTMLResponse:
           method: 'POST',
           mode: 'cors',
           cache: 'no-store',
+          targetAddressSpace: 'loopback',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             image: dataUrl,
@@ -11770,10 +11805,11 @@ def home() -> HTMLResponse:
         if (!res.ok || !data.ok) {
           throw new Error((data && data.message) || ('HTTP ' + res.status));
         }
-        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة · بدون نافذة كروم');
+        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
       } catch (err) {
         const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
-        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
+        setPrintFetchStatus('فشل الوكيل المحلي (' + msg + ') — جاري فتح نافذة الطباعة...');
+        await nlPrintViaBrowser(dataUrl, pages);
       }
     }
 
