@@ -11835,7 +11835,8 @@ def home() -> HTMLResponse:
       if (hidden) hidden.value = qty;
       if (inp) inp.value = qty;
       closePrintQtyPopup();
-      printBarcodeLabelsNow();
+      const popup = window.open('about:blank', 'rongtaPrint', 'width=420,height=220');
+      printBarcodeLabelsNow(popup);
     }
     async function printBarcodeLabels() {
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
@@ -11854,7 +11855,10 @@ def home() -> HTMLResponse:
       }
       openPrintQtyPopup();
     }
-    async function printBarcodeLabelsNow() {
+    function closeRongtaPopup(popup) {
+      try { if (popup && !popup.closed) popup.close(); } catch (_) {}
+    }
+    async function printBarcodeLabelsNow(popup) {
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11867,16 +11871,16 @@ def home() -> HTMLResponse:
       let pl = buildPrintPayloadForSide('left');
       let pr = buildPrintPayloadForSide('right');
       const lOk = isPrintPayloadReady(pl), rOk = isPrintPayloadReady(pr);
-      if (!lOk && !rOk) { setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
+      if (!lOk && !rOk) { closeRongtaPopup(popup); setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.'); return; }
       if (lOk && !rOk) pr = Object.assign({}, pl);
       else if (rOk && !lOk) pl = Object.assign({}, pr);
-      try { await ensureJsBarcodeLib(); } catch (_) { setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
+      try { await ensureJsBarcodeLib(); } catch (_) { closeRongtaPopup(popup); setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
       const res = nlRenderSheet(pl, pr);
-      if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
+      if (!res.ok) { closeRongtaPopup(popup); setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
       setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '»...');
-      await nlPrintDirectToRongta(url, pages);
+      await nlPrintDirectToRongta(url, pages, popup);
     }
     async function nlQueuePrintJob(dataUrl, copies, w, h) {
       const res = await fetch('/print_jobs', {
@@ -11902,32 +11906,21 @@ def home() -> HTMLResponse:
         return await fetch(url, o);
       }
     }
-    async function nlPrintDirectToRongta(dataUrl, pages) {
+    async function nlPrintDirectToRongta(dataUrl, pages, popup) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
       try {
-        const queued = await nlQueuePrintJob(dataUrl, copies, w, h);
-        const jobId = queued && queued.id;
-        setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '»...');
-        if (!jobId) return;
-        for (let i = 0; i < 40; i++) {
-          await new Promise((r) => setTimeout(r, 500));
-          try {
-            const stRes = await fetch('/print_jobs/status?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
-            const st = await stRes.json().catch(() => ({}));
-            if (st && st.status === 'done') {
-              setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-              return;
-            }
-            if (st && st.status === 'error') {
-              setPrintFetchStatus('فشلت الطباعة: ' + (st.message || ''));
-              return;
-            }
-          } catch (_) {}
+        await nlQueuePrintJob(dataUrl, copies, w, h);
+        const go = 'http://127.0.0.1:17891/go';
+        if (popup && !popup.closed) {
+          try { popup.location.replace(go); } catch (_) { window.open(go, 'rongtaPrint'); }
+        } else {
+          window.open(go, 'rongtaPrint', 'width=420,height=220');
         }
-        setPrintFetchStatus('الأمر واصل. انتظر ثانية — الطابعة بتسحب الطلب من جهاز المكتب.');
+        setPrintFetchStatus('الطباعة تتم على Rongta في هذا الجهاز فقط (USB هنا).');
       } catch (err) {
+        closeRongtaPopup(popup);
         setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + ((err && err.message) || ''));
       }
     }

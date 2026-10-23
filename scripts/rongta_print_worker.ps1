@@ -67,6 +67,36 @@ function Read-HttpRequest($stream) {
   }
 }
 
+function Invoke-OneCloudJob() {
+  $key = "badail-rongta"
+  $sites = @("https://badail-search.vercel.app", "https://www.sayyedstore.com")
+  $job = $null
+  foreach ($site in $sites) {
+    try {
+      $r = Invoke-WebRequest -UseBasicParsing -Headers @{ "X-Print-Key" = $key } -Uri ($site + "/print_jobs/next") -TimeoutSec 20
+      $data = $r.Content | ConvertFrom-Json
+      if ($data.job) { $job = $data.job; break }
+    } catch {}
+  }
+  if (-not $job) {
+    return @{ ok = $false; title = "لا يوجد أمر طباعة"; msg = "ما في ملصق بالانتظار على هذا الجهاز." }
+  }
+  $copies = 1
+  try { $copies = [Math]::Max(1, [Math]::Min(50, [int]$job.copies)) } catch { $copies = 1 }
+  $w = 105; if ($job.widthMm) { $w = [double]$job.widthMm }
+  $h = 28; if ($job.heightMm) { $h = [double]$job.heightMm }
+  Invoke-RongtaPrint -ImageB64 ([string]$job.image) -Copies $copies -WidthMm $w -HeightMm $h
+  foreach ($site in $sites) {
+    try {
+      $body = (@{ id = [int]$job.id; ok = $true } | ConvertTo-Json -Compress)
+      Invoke-WebRequest -UseBasicParsing -Method POST -Headers @{ "X-Print-Key" = $key; "Content-Type" = "application/json" } -Uri ($site + "/print_jobs/ack") -Body $body -TimeoutSec 15 | Out-Null
+      break
+    } catch {}
+  }
+  Write-AgentLog "printed job $($job.id) on $env:COMPUTERNAME"
+  return @{ ok = $true; title = "تمت الطباعة"; msg = ("Rongta على هذا الجهاز · {0} ورقة" -f $copies) }
+}
+
 function Invoke-RongtaPrint([string]$ImageB64, [int]$Copies, [double]$WidthMm, [double]$HeightMm) {
   if ($ImageB64 -match ",") { $ImageB64 = $ImageB64.Split(",", 2)[1] }
   $blob = [Convert]::FromBase64String($ImageB64)
@@ -103,6 +133,19 @@ try {
       } elseif ($req.Path -in @("/ping", "/health") -and $req.Method -eq "GET") {
         $b = $jsonUtf8.GetBytes((@{ ok = $true; printer = $Printer; host = $env:COMPUTERNAME } | ConvertTo-Json -Compress))
         Send-Http $stream 200 "OK" "application/json; charset=utf-8" $b $origin
+      } elseif ($req.Path -in @("/go", "/print_go") -and $req.Method -eq "GET") {
+        try {
+          $r = Invoke-OneCloudJob
+          $html = "<!doctype html><meta charset=utf-8><title>Print</title><body style='font-family:Arial;padding:24px;direction:rtl;text-align:center'><h2>$($r.title)</h2><p>$($r.msg)</p><script>setTimeout(function(){window.close()},2500)</script></body>"
+          $b = $jsonUtf8.GetBytes($html)
+          Send-Http $stream 200 "OK" "text/html; charset=utf-8" $b $origin
+        } catch {
+          $msg = [string]$_.Exception.Message
+          Write-AgentLog "go fail: $msg"
+          $html = "<!doctype html><meta charset=utf-8><title>Print</title><body style='font-family:Arial;padding:24px;direction:rtl;text-align:center'><h2>فشلت الطباعة</h2><p>$msg</p></body>"
+          $b = $jsonUtf8.GetBytes($html)
+          Send-Http $stream 200 "OK" "text/html; charset=utf-8" $b $origin
+        }
       } elseif ($req.Path -eq "/print" -and $req.Method -eq "POST") {
         try {
           $payload = $req.Body | ConvertFrom-Json

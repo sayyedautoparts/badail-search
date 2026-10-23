@@ -77,7 +77,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         origin = self.headers.get("Origin") or ""
-        if self.path.split("?", 1)[0] in ("/ping", "/health"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/ping", "/health"):
             body = json.dumps({"ok": True, "printer": PRINTER, "port": PORT}).encode("utf-8")
             self.send_response(200)
             self._cors(origin)
@@ -85,6 +86,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path in ("/go", "/print_go"):
+            title, msg, ok = run_one_cloud_job()
+            html = (
+                "<!doctype html><meta charset=utf-8><title>{t}</title>"
+                "<body style='font-family:Arial;padding:24px;direction:rtl;text-align:center'>"
+                "<h2>{title}</h2><p>{msg}</p>"
+                "<script>setTimeout(function(){{window.close()}}, 2500)</script>"
+                "</body>"
+            ).format(t=("OK" if ok else "Print"), title=title, msg=msg)
+            raw = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
             return
         self.send_response(404)
         self._cors(origin)
@@ -212,39 +229,30 @@ def _site_json(method: str, path: str, body: dict | None = None, timeout: int = 
     raise RuntimeError(str(last_err or "print site unreachable"))
 
 
-def poll_cloud_jobs() -> None:
-    _log("polling print jobs from %s" % SITES[0])
-    while True:
-        try:
-            data = _site_json("GET", "/print_jobs/next")
-            job = (data or {}).get("job")
-            if not job:
-                time.sleep(2)
-                continue
-            job_id = int(job.get("id") or 0)
-            copies = max(1, min(50, int(job.get("copies") or 1)))
-            width_mm = float(job.get("widthMm") or 105)
-            height_mm = float(job.get("heightMm") or 28)
-            image = str(job.get("image") or "")
-            blob = base64.b64decode(image)
-            try:
-                print_png_blob(blob, copies, PRINTER, width_mm, height_mm)
-                _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": True})
-                _log("printed cloud job %s x%s" % (job_id, copies))
-            except Exception as exc:
-                try:
-                    _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": False, "message": str(exc)[:400]})
-                except Exception:
-                    pass
-                _log("cloud job %s failed: %s" % (job_id, exc))
-        except Exception as exc:
-            _log("poll error: %s" % exc)
-            time.sleep(4)
+def run_one_cloud_job() -> tuple[str, str, bool]:
+    try:
+        data = _site_json("GET", "/print_jobs/next")
+        job = (data or {}).get("job")
+        if not job:
+            return ("لا يوجد أمر طباعة", "ما في ملصق بالانتظار على هذا الجهاز.", False)
+        job_id = int(job.get("id") or 0)
+        copies = max(1, min(50, int(job.get("copies") or 1)))
+        width_mm = float(job.get("widthMm") or 105)
+        height_mm = float(job.get("heightMm") or 28)
+        image = str(job.get("image") or "")
+        if "," in image:
+            image = image.split(",", 1)[1]
+        blob = base64.b64decode(image)
+        print_png_blob(blob, copies, PRINTER, width_mm, height_mm)
+        _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": True})
+        _log("printed job %s on %s" % (job_id, os.environ.get("COMPUTERNAME") or ""))
+        return ("تمت الطباعة", "Rongta على هذا الجهاز · %s ورقة" % copies, True)
+    except Exception as exc:
+        _log("go-print failed: %s" % exc)
+        return ("فشلت الطباعة", str(exc)[:400], False)
 
 
 def main() -> None:
-    poller = threading.Thread(target=poll_cloud_jobs, name="rongta-cloud-poll", daemon=True)
-    poller.start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     _log("Rongta local print agent on http://%s:%s" % (HOST, PORT))
     try:
