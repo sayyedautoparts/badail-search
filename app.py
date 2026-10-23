@@ -11836,8 +11836,26 @@ def home() -> HTMLResponse:
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
       try {
-        await nlQueuePrintJob(dataUrl, copies, w, h);
-        setPrintFetchStatus('أُرسلت للطابعة في المكتب · ' + copies + ' ورقة · الجهاز الحالي لا يطبع');
+        const queued = await nlQueuePrintJob(dataUrl, copies, w, h);
+        const jobId = queued && queued.id;
+        setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة...');
+        if (!jobId) return;
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          try {
+            const stRes = await fetch('/print_jobs/status?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
+            const st = await stRes.json().catch(() => ({}));
+            if (st && st.status === 'done') {
+              setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
+              return;
+            }
+            if (st && st.status === 'error') {
+              setPrintFetchStatus('فشلت الطباعة على Rongta: ' + (st.message || ''));
+              return;
+            }
+          } catch (_) {}
+        }
+        setPrintFetchStatus('الأمر واصل، بس جهاز Rongta في المكتب ما سحبه. شغّل scripts/install_rongta_print_agent.ps1 على جهاز الطابعة فقط.');
       } catch (err) {
         const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
         setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
@@ -16424,6 +16442,27 @@ def next_print_job(request: Request) -> dict:
                 "heightMm": float(row["height_mm"] or 28),
                 "image": row["image_b64"],
             },
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/print_jobs/status")
+def print_job_status(id: int = Query(..., ge=1)) -> dict:
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, copies, status, message FROM print_jobs WHERE id = ?",
+            (id,),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "status": "missing"}
+        return {
+            "ok": True,
+            "id": int(row["id"]),
+            "copies": int(row["copies"] or 1),
+            "status": str(row["status"] or ""),
+            "message": str(row["message"] or ""),
         }
     finally:
         conn.close()
