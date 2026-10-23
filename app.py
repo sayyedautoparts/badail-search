@@ -11468,8 +11468,8 @@ def home() -> HTMLResponse:
     }
 
     /* ===== NiceLabel-style engine: one mm model, one bitmap, 1:1 dots ===== */
-    const NL_BC = { maxX: 2, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
-    function nlDpi() { return PRINT_BARCODE_CFG.dpi || 203; }
+    const NL_BC = { maxX: 6, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
+    function nlDpi() { return 406; }
     function nlDots(mm) { return Math.round(mm * nlDpi() / 25.4); }
     function nlHasArabic(s) {
       for (let i = 0; i < s.length; i++) {
@@ -11577,23 +11577,19 @@ def home() -> HTMLResponse:
       return bits;
     }
     function nlPlanBarcode(modules, boxDots) {
-      // باركود قصير: نفس السلوك السابق (عرض وحدة 2 نقطة + هامش مريح)
-      for (let x = NL_BC.maxX; x >= 2; x--) {
+      const scale = Math.max(1, Math.round(nlDpi() / 203));
+      const minX = 2 * scale;
+      const maxX = 3 * scale;
+      for (let x = maxX; x >= minX; x--) {
         for (let i = 0; i < NL_BC.quiet.length; i++) {
           const q = NL_BC.quiet[i];
           if ((modules + 2 * q) * x <= boxDots) return { x: x, q: q, ok: true, fitted: false };
         }
       }
-      // باركود طويل: صغّر عرض الوحدة حتى يدخل كامل الرمز + هامش صغير، بدون قص أي جزء
       const minQ = 4;
-      let x = boxDots / Math.max(1, modules + 2 * minQ);
-      let q = minQ;
-      if (x < 0.85) {
-        q = 2;
-        x = boxDots / Math.max(1, modules + 2 * q);
-      }
-      x = Math.max(0.55, Math.min(1.9, x));
-      return { x: x, q: q, ok: true, fitted: true };
+      let x = Math.floor(boxDots / Math.max(1, modules + 2 * minQ));
+      x = Math.max(scale, Math.min(maxX, x));
+      return { x: x, q: minQ, ok: true, fitted: true };
     }
     function nlDrawBarcode(ctx, value, ox, oy, box, s) {
       const bits = nlBarcodeBits(value);
@@ -11604,21 +11600,20 @@ def home() -> HTMLResponse:
       const hrD = nlDots(NL_BC.hrBandMm);
       const barMm = Math.max(NL_BC.barHMinMm, Math.min(NL_BC.barHMaxMm, box.h - NL_BC.hrBandMm));
       const barH = nlDots(barMm);
-      const quietPx = Math.max(1, Math.round(plan.q * plan.x));
-      let dataW = Math.max(bits.length, Math.round(bits.length * plan.x));
-      if (dataW + quietPx * 2 > bw) dataW = Math.max(bits.length, bw - quietPx * 2);
+      const mod = Math.max(1, Math.round(plan.x));
+      const quietPx = plan.q * mod;
+      const dataW = bits.length * mod;
       const totalW = Math.min(bw, dataW + quietPx * 2);
       const startX = bx + Math.max(0, Math.floor((bw - totalW) / 2)) + quietPx;
       const maxEnd = bx + bw - 1;
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#000000';
       let i = 0;
       while (i < bits.length) {
         if (bits.charAt(i) === '1') {
           let j = i;
           while (j < bits.length && bits.charAt(j) === '1') j++;
-          const x0 = startX + Math.round(i * (dataW / bits.length));
-          const x1 = startX + Math.round(j * (dataW / bits.length));
-          const w = Math.max(1, x1 - x0);
+          const x0 = startX + i * mod;
+          const w = (j - i) * mod;
           if (x0 <= maxEnd) ctx.fillRect(x0, by, Math.min(w, maxEnd - x0 + 1), barH);
           i = j;
         } else i++;
