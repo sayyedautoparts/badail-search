@@ -46,17 +46,10 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 try { Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name $TaskName -ErrorAction SilentlyContinue } catch {}
 
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $python
-$psi.Arguments = '"' + $Py + '"'
-$psi.WorkingDirectory = $Root
-$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-$psi.CreateNoWindow = $true
-$psi.UseShellExecute = $false
-[void][System.Diagnostics.Process]::Start($psi)
+Start-ScheduledTask -TaskName $TaskName
 $ok = $false
-foreach ($i in 1..12) {
-  Start-Sleep -Milliseconds 400
+foreach ($i in 1..20) {
+  Start-Sleep -Milliseconds 500
   try {
     $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:17891/ping" -TimeoutSec 2
     if ($r.StatusCode -eq 200) { $ok = $true; break }

@@ -16439,11 +16439,10 @@ def next_print_job(request: Request) -> dict:
             """
             SELECT id, copies, width_mm, height_mm, image_b64
             FROM print_jobs
-            WHERE status = ?
+            WHERE status IN ('queued', 'printing')
             ORDER BY id ASC
             LIMIT 1
             """,
-            ("queued",),
         ).fetchone()
         if not row:
             return {"ok": True, "job": None}

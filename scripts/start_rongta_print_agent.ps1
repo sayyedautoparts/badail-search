@@ -30,19 +30,11 @@ if (-not (Test-Path -LiteralPath $Py)) { throw "Missing $Py" }
 Set-Location -LiteralPath $Root
 $python = Get-BadailPython
 Write-AgentLog "starting $python $Py"
+Set-Location -LiteralPath $PSScriptRoot
 while ($true) {
   try {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $python
-    if ($python -match '\\py\.exe$') { $psi.Arguments = '-3 "' + $Py + '"' }
-    else { $psi.Arguments = '"' + $Py + '"' }
-    $psi.WorkingDirectory = $Root
-    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $psi.CreateNoWindow = $true
-    $psi.UseShellExecute = $false
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $proc.WaitForExit()
-    Write-AgentLog ("exited code " + $proc.ExitCode)
+    $p = Start-Process -FilePath $python -ArgumentList '-u','rongta_local_print.py' -WorkingDirectory $PSScriptRoot -Wait -PassThru -WindowStyle Hidden
+    Write-AgentLog ("exited code " + $p.ExitCode)
   } catch {
     Write-AgentLog ("crash: " + $_.Exception.Message)
   }

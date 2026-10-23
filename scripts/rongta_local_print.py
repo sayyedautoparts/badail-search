@@ -28,8 +28,12 @@ ALLOWED_ORIGINS = (
 )
 ROOT = Path(__file__).resolve().parent
 PRINT_PS1 = ROOT / "print_rongta_image.ps1"
-SITE = (os.environ.get("BADAIL_PRINT_SITE") or "https://www.sayyedstore.com").rstrip("/")
+SITES = [
+    (os.environ.get("BADAIL_PRINT_SITE") or "https://www.sayyedstore.com").rstrip("/"),
+    "https://sayyedstore.com",
+]
 PRINT_KEY = (os.environ.get("PRINT_AGENT_KEY") or "badail-rongta").strip()
+LOG_PATH = Path(os.environ.get("LOCALAPPDATA") or ".") / "BadailPrint" / "agent.log"
 
 
 def cors_origin(origin: str) -> str:
@@ -121,8 +125,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _log(msg: str) -> None:
+    line = "[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
     try:
-        print(msg, flush=True)
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
     except Exception:
         pass
 
@@ -162,19 +173,45 @@ def print_png_blob(blob: bytes, copies: int, printer: str, width_mm: float, heig
 
 
 def _site_json(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict:
-    data = None
-    headers = {"X-Print-Key": PRINT_KEY, "Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(SITE + path, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    last_err = None
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    curl = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "curl.exe"
+    for site in SITES:
+        url = site + path
+        try:
+            if curl.exists():
+                cmd = [
+                    str(curl), "-sS", "-m", str(timeout),
+                    "-H", "X-Print-Key: %s" % PRINT_KEY,
+                    "-H", "Accept: application/json",
+                    "-X", method,
+                ]
+                if payload is not None:
+                    cmd.extend(["-H", "Content-Type: application/json", "--data-binary", "@-"])
+                cmd.append(url)
+                run_kw = {"capture_output": True, "text": True, "timeout": timeout + 5}
+                if payload is not None:
+                    run_kw["input"] = payload.decode("utf-8")
+                proc = subprocess.run(cmd, **run_kw)
+                if proc.returncode != 0:
+                    raise RuntimeError((proc.stderr or proc.stdout or "curl fail").strip()[:300])
+                raw = proc.stdout or ""
+                return json.loads(raw) if raw.strip() else {}
+            headers = {"X-Print-Key": PRINT_KEY, "Accept": "application/json"}
+            if payload is not None:
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(str(last_err or "print site unreachable"))
 
 
 def poll_cloud_jobs() -> None:
-    _log("polling print jobs from %s" % SITE)
+    _log("polling print jobs from %s" % SITES[0])
     while True:
         try:
             data = _site_json("GET", "/print_jobs/next")
@@ -193,7 +230,10 @@ def poll_cloud_jobs() -> None:
                 _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": True})
                 _log("printed cloud job %s x%s" % (job_id, copies))
             except Exception as exc:
-                _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": False, "message": str(exc)[:400]})
+                try:
+                    _site_json("POST", "/print_jobs/ack", {"id": job_id, "ok": False, "message": str(exc)[:400]})
+                except Exception:
+                    pass
                 _log("cloud job %s failed: %s" % (job_id, exc))
         except Exception as exc:
             _log("poll error: %s" % exc)
