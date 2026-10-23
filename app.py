@@ -7040,7 +7040,7 @@ def home() -> HTMLResponse:
   <title>بحث البدائل</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
       --bg0: #eef2f8;
@@ -7309,7 +7309,7 @@ def home() -> HTMLResponse:
       overflow: hidden;
       background: #fff;
       color: #000;
-      font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
     }
     .print-label-mock-host .pl-name,
     .print-label-mock-host .pl-orig,
@@ -7321,7 +7321,7 @@ def home() -> HTMLResponse:
       margin: 0;
     }
     .print-label-mock-host .pl-name {
-      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       line-height: 1.02;
       text-align: center;
@@ -7373,7 +7373,7 @@ def home() -> HTMLResponse:
       height: 3.2mm;
       min-height: 3.2mm;
       width: 100%;
-      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       color: #000;
       background: #fff;
@@ -7469,7 +7469,7 @@ def home() -> HTMLResponse:
         padding: 0;
         margin: 0;
         text-align: center;
-        font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+        font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
         color: #000;
         overflow: hidden !important;
         position: relative;
@@ -7502,7 +7502,7 @@ def home() -> HTMLResponse:
         padding: 0;
       }
       .print-label .pl-name {
-        font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+        font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
         font-size: 22px;
         font-weight: 900;
         line-height: 1.02;
@@ -7515,7 +7515,7 @@ def home() -> HTMLResponse:
       }
       .print-label .pl-orig,
       .print-label .pl-loc {
-        font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+        font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
         font-size: 8px;
         font-weight: 800;
         white-space: nowrap;
@@ -7574,7 +7574,7 @@ def home() -> HTMLResponse:
         min-height: 3.2mm;
         max-width: 100%;
         width: 100%;
-        font-family: Consolas, "Courier New", "Segoe UI", monospace;
+        font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
         font-size: 9px;
         font-weight: 900;
         color: #000;
@@ -7626,7 +7626,7 @@ def home() -> HTMLResponse:
       overflow: hidden;
       position: relative;
       display: block;
-      font-family: "Segoe UI", Arial, Tahoma, sans-serif;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
     }
     .print-label-sheet.print-measure .print-label-row .print-label:first-child,
     .print-label-sheet.print-measure .print-label.print-label-left,
@@ -7645,7 +7645,7 @@ def home() -> HTMLResponse:
       margin: 0;
     }
     .print-label-sheet.print-measure .pl-name {
-      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       line-height: 1.02;
       white-space: normal;
@@ -7688,7 +7688,7 @@ def home() -> HTMLResponse:
       height: 3.2mm;
       min-height: 3.2mm;
       width: 100%;
-      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       color: #000;
       background: #fff;
@@ -7881,7 +7881,7 @@ def home() -> HTMLResponse:
       pointer-events: none;
     }
     .pdg-zone[data-zone="name"] .pdg-zone-inner {
-      font-family: "Segoe UI", "Arial Black", Arial, Tahoma, sans-serif;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       align-content: center;
       white-space: normal;
@@ -7915,7 +7915,7 @@ def home() -> HTMLResponse:
     .pdg-bc-text {
       flex: 0 0 auto;
       min-height: 12px;
-      font-family: Consolas, "Courier New", "Segoe UI", monospace;
+      font-family: "Cairo", "Tahoma", "Segoe UI", Arial, sans-serif;
       font-weight: 900;
       color: #000;
       letter-spacing: 0.04em;
@@ -8601,8 +8601,8 @@ def home() -> HTMLResponse:
       await loadExternalScript(SCRIPT_QR);
     }
     async function ensureJsBarcodeLib() {
-      if (typeof JsBarcode !== 'undefined') return;
-      await loadExternalScript(SCRIPT_JSBARCODE);
+      if (typeof JsBarcode === 'undefined') await loadExternalScript(SCRIPT_JSBARCODE);
+      try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (_) {}
     }
     function setSyncInfo(message) {
       document.getElementById('syncInfo').innerText = message || '';
@@ -9464,9 +9464,9 @@ def home() -> HTMLResponse:
       return out;
     }
     function printBarcodeEncodeValue(code) {
-      return PRINT_BARCODE_CFG.stripSpaces
-        ? printBarcodeCompactValue(code)
-        : printBarcodeScanValue(code);
+      // اطبع الباركود كما يظهر على الشاشة — مع كل الفراغات، بلا دمج ولا قص
+      // مثال: "28130C5300        KA22" يبقى كما هو ولا يصبح "28130C5300KA22"
+      return printBarcodeExactValue(code);
     }
     const PRINT_REAL_PX_PER_MM = 96 / 25.4;
 
@@ -9667,7 +9667,7 @@ def home() -> HTMLResponse:
       el.textContent = display;
       el.style.display = 'block';
       el.style.whiteSpace = 'pre';
-      el.style.fontFamily = 'Consolas, "Courier New", "Segoe UI", monospace';
+      el.style.fontFamily = '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif';
       el.style.fontWeight = '900';
       el.style.color = '#000';
       el.style.background = '#fff';
@@ -10240,7 +10240,7 @@ def home() -> HTMLResponse:
       quietModulesMin: 6,
       fitPadMm: 1.2,
       maxWidthMm: 48,
-      stripSpaces: true,
+      stripSpaces: false,
       textReserveMm: 2.4
     };
     function code128SymbolModulesCount(text) {
@@ -11248,7 +11248,7 @@ def home() -> HTMLResponse:
       const bcText = label.querySelector('.pl-bc-text');
       if (metaEl) metaEl.style.display = 'none';
       if (nameEl) {
-        nameEl.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
+        nameEl.style.fontFamily = '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif';
         nameEl.style.fontWeight = '900';
         nameEl.dataset.maxNamePx = String(s.namePx);
         applyPrintBoxStyle(nameEl, { x: s.nameXmm, y: s.nameYmm, w: s.nameWmm, h: s.nameHmm });
@@ -11295,7 +11295,7 @@ def home() -> HTMLResponse:
       const maxPx = Number(el.dataset.maxNamePx) || s.namePx || 48;
       const minPx = Math.min(14, Math.max(9, Math.round(maxPx * 0.32)));
       el.style.display = 'block';
-      el.style.fontFamily = '"Segoe UI", "Arial Black", Arial, Tahoma, sans-serif';
+      el.style.fontFamily = '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif';
       el.style.fontWeight = '900';
       el.style.whiteSpace = 'normal';
       el.style.wordBreak = 'break-word';
@@ -11494,7 +11494,7 @@ def home() -> HTMLResponse:
       if (cur) lines.push(cur);
       return lines;
     }
-    const NL_TEXT = { ss: 3, strokeEm: 0.05, thresh: 205 };
+    const NL_TEXT = { ss: 3, strokeEm: 0, thresh: 160 };
     function nlDrawText(ctx, text, bx, by, bw, bh, o) {
       text = String(text == null ? '' : text);
       if (!text || bw <= 0 || bh <= 0) return;
@@ -11504,7 +11504,7 @@ def home() -> HTMLResponse:
       tc.height = Math.max(1, Math.round(bh * S));
       const t = tc.getContext('2d');
       const W = tc.width, H = tc.height;
-      const fam = o.family || '"Segoe UI", Arial, Tahoma, sans-serif';
+      const fam = o.family || '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif';
       t.fillStyle = '#000';
       t.strokeStyle = '#000';
       t.lineJoin = 'round';
@@ -11519,21 +11519,18 @@ def home() -> HTMLResponse:
         const lines = o.wrap ? nlWrapLines(t, text, W - pad) : [text];
         let widest = 0;
         lines.forEach((l) => { widest = Math.max(widest, t.measureText(l).width); });
-        if (lines.length * mid * 1.05 <= H && widest <= W - pad) { best = mid; lo = mid; } else hi = mid;
+        if (lines.length * mid * 1.12 <= H && widest <= W - pad) { best = mid; lo = mid; } else hi = mid;
       }
       t.font = o.weight + ' ' + best + 'px ' + fam;
-      t.lineWidth = best * NL_TEXT.strokeEm;
       const lines = o.wrap ? nlWrapLines(t, text, W - pad) : [text];
-      const lh = best * 1.05;
+      const lh = best * 1.12;
       let y = (H - lines.length * lh) / 2 + lh / 2;
       lines.forEach((l) => {
-        t.strokeText(l, W / 2, y);
         t.fillText(l, W / 2, y);
         y += lh;
       });
       ctx.save();
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingEnabled = false;
       ctx.drawImage(tc, bx, by, bw, bh);
       ctx.restore();
     }
@@ -11572,13 +11569,23 @@ def home() -> HTMLResponse:
       return bits;
     }
     function nlPlanBarcode(modules, boxDots) {
+      // باركود قصير: نفس السلوك السابق (عرض وحدة 2 نقطة + هامش مريح)
       for (let x = NL_BC.maxX; x >= 2; x--) {
         for (let i = 0; i < NL_BC.quiet.length; i++) {
           const q = NL_BC.quiet[i];
-          if ((modules + 2 * q) * x <= boxDots) return { x: x, q: q, ok: true };
+          if ((modules + 2 * q) * x <= boxDots) return { x: x, q: q, ok: true, fitted: false };
         }
       }
-      return { x: 2, q: NL_BC.quiet[NL_BC.quiet.length - 1], ok: false };
+      // باركود طويل: صغّر عرض الوحدة حتى يدخل كامل الرمز + هامش صغير، بدون قص أي جزء
+      const minQ = 4;
+      let x = boxDots / Math.max(1, modules + 2 * minQ);
+      let q = minQ;
+      if (x < 0.85) {
+        q = 2;
+        x = boxDots / Math.max(1, modules + 2 * q);
+      }
+      x = Math.max(0.55, Math.min(1.9, x));
+      return { x: x, q: q, ok: true, fitted: true };
     }
     function nlDrawBarcode(ctx, value, ox, oy, box, s) {
       const bits = nlBarcodeBits(value);
@@ -11589,15 +11596,22 @@ def home() -> HTMLResponse:
       const hrD = nlDots(NL_BC.hrBandMm);
       const barMm = Math.max(NL_BC.barHMinMm, Math.min(NL_BC.barHMaxMm, box.h - NL_BC.hrBandMm));
       const barH = nlDots(barMm);
-      const barW = bits.length * plan.x;
-      const startX = bx + Math.floor((bw - barW) / 2);
+      const quietPx = Math.max(1, Math.round(plan.q * plan.x));
+      let dataW = Math.max(bits.length, Math.round(bits.length * plan.x));
+      if (dataW + quietPx * 2 > bw) dataW = Math.max(bits.length, bw - quietPx * 2);
+      const totalW = Math.min(bw, dataW + quietPx * 2);
+      const startX = bx + Math.max(0, Math.floor((bw - totalW) / 2)) + quietPx;
+      const maxEnd = bx + bw - 1;
       ctx.fillStyle = '#000';
       let i = 0;
       while (i < bits.length) {
         if (bits.charAt(i) === '1') {
           let j = i;
           while (j < bits.length && bits.charAt(j) === '1') j++;
-          ctx.fillRect(startX + i * plan.x, by, (j - i) * plan.x, barH);
+          const x0 = startX + Math.round(i * (dataW / bits.length));
+          const x1 = startX + Math.round(j * (dataW / bits.length));
+          const w = Math.max(1, x1 - x0);
+          if (x0 <= maxEnd) ctx.fillRect(x0, by, Math.min(w, maxEnd - x0 + 1), barH);
           i = j;
         } else i++;
       }
@@ -11605,13 +11619,15 @@ def home() -> HTMLResponse:
       const hrPx = Number(s && s.bcTextPx) > 0 ? Number(s.bcTextPx) : 9;
       const hrWeight = (s && s.bcTextBold === false) ? '400' : '700';
       nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
-        maxDot: Math.max(6, hrPx * k), minDot: 6, weight: hrWeight, wrap: false,
-        family: 'Consolas, "Courier New", monospace'
+        maxDot: Math.max(6, hrPx * k), minDot: 5, weight: hrWeight, wrap: false,
+        family: '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif'
       });
-      const needMm = (bits.length + 2 * NL_BC.quiet[NL_BC.quiet.length - 1]) * plan.x * 25.4 / nlDpi();
+      const usedMm = (dataW + quietPx * 2) * 25.4 / nlDpi();
       return {
-        ok: plan.ok, x: plan.x,
-        msg: plan.ok ? '' : 'الباركود يحتاج ' + needMm.toFixed(1) + 'مم والخانة ' + box.w.toFixed(1) + 'مم — وسّع خانة الباركود أو قصّر الكود'
+        ok: true, x: plan.x, fitted: !!plan.fitted,
+        msg: plan.fitted
+          ? ('باركود طويل · تم تصغيره ليناسب اللزقة (' + usedMm.toFixed(1) + 'مم) بدون قص')
+          : ''
       };
     }
     function nlDrawLabel(ctx, ox, oy, payload, side) {
@@ -11620,9 +11636,9 @@ def home() -> HTMLResponse:
       const T = (txt, x, y, w, h, maxPx, wrap, weight) => nlDrawText(
         ctx, txt, ox + nlDots(x), oy + nlDots(y), nlDots(w), nlDots(h),
         { maxDot: maxPx * k, minDot: 5 * k, weight: weight, wrap: wrap });
-      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, (s.nameBold === false) ? '400' : '900');
-      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, (s.origBold === false) ? '400' : '800');
-      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, (s.locBold === false) ? '400' : '800');
+      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, (s.nameBold === false) ? '400' : '700');
+      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, (s.origBold === false) ? '400' : '600');
+      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, (s.locBold === false) ? '400' : '600');
       const box = clampBarcodeBoxToLabelMm(side, {
         x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
         y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
@@ -11674,7 +11690,7 @@ def home() -> HTMLResponse:
           + 'mm;image-rendering:pixelated;';
         host.innerHTML = '';
         host.appendChild(img);
-        setPrintFetchStatus(r.info.ok ? ('Code128 X=' + r.info.x + ' نقطة · جاهز') : ('تحذير: ' + r.info.msg), s);
+        setPrintFetchStatus(r.info.ok ? (r.info.msg || ('Code128 X=' + r.info.x + ' نقطة · جاهز')) : ('تحذير: ' + r.info.msg), s);
       }).catch(() => {});
     }
 
