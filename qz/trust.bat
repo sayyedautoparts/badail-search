@@ -1,5 +1,5 @@
 @echo off
-echo Trusting this website in QZ Tray (one time)...
+echo Installing QZ Tray trust (one time, click Yes on Administrator)...
 set "DEST=%TEMP%\badail-qz-trust"
 if not exist "%DEST%" mkdir "%DEST%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri 'https://badail-search.vercel.app/qz/trust-qz.ps1' -OutFile (Join-Path $env:TEMP 'badail-qz-trust\trust-qz.ps1')"

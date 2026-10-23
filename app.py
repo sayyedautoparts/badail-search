@@ -11822,7 +11822,7 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('شغّل trust-qz.bat مرة واحدة ثم اطبع. ما في Administrator.');
+      setPrintFetchStatus('شغّل trust-qz.bat مرة (Yes على Administrator) ثم أعد الطباعة.');
       try {
         const a = document.createElement('a');
         a.href = '/qz/trust.bat';
