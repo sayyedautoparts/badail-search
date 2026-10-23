@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import socket
+import subprocess
 import sqlite3
 import threading
 import time
@@ -7003,6 +7004,65 @@ def live_lookup_locations_from_hesabate(
 
 
 app = FastAPI(title="Advanced Excel Search")
+
+
+def _print_cors_headers(origin: str) -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": origin or "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Access-Control-Request-Private-Network, Access-Control-Request-Local-Network",
+        "Access-Control-Allow-Private-Network": "true",
+        "Access-Control-Allow-Local-Network": "true",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
+def _print_png_on_windows(image_b64: str, copies: int, width_mm: float, height_mm: float) -> None:
+    if os.name != "nt":
+        raise RuntimeError("not-windows")
+    ps1 = Path(__file__).resolve().parent / "scripts" / "print_rongta_image.ps1"
+    if not ps1.is_file():
+        raise RuntimeError("missing print script")
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+    blob = base64.b64decode(image_b64)
+    if len(blob) < 32:
+        raise RuntimeError("empty image")
+    tmp = Path(os.environ.get("TEMP") or ".") / ("badail-print-" + hashlib.sha1(blob[:200]).hexdigest()[:12] + ".png")
+    tmp.write_bytes(blob)
+    try:
+        proc = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ps1),
+                "-ImagePath",
+                str(tmp),
+                "-PrinterName",
+                "Rongta RP4xx Series",
+                "-Copies",
+                str(max(1, min(50, copies))),
+                "-WidthMm",
+                str(width_mm),
+                "-HeightMm",
+                str(height_mm),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "print failed").strip()
+            raise RuntimeError(err[-800:])
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 # Do not crash the serverless process if Postgres (Neon) is down/over-quota.
 # Import-time failure here is what produced Vercel 500 FUNCTION_INVOCATION_FAILED.
 try:
@@ -11835,41 +11895,27 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
-      let base = '';
-      for (let i = 0; i < bases.length; i++) {
+      const body = JSON.stringify({
+        image: dataUrl, copies: copies, printer: RONGTA_PRINTER_NAME, widthMm: w, heightMm: h
+      });
+      const headers = { 'Content-Type': 'application/json' };
+      const urls = ['/print_rongta', 'http://127.0.0.1:8765/print_rongta', 'http://127.0.0.1:17891/print'];
+      let last = '';
+      for (let i = 0; i < urls.length; i++) {
         try {
-          const ping = await fetch(bases[i] + '/ping', { method: 'GET', mode: 'cors', cache: 'no-store' });
-          if (ping.ok) { base = bases[i]; break; }
-        } catch (_) {}
-      }
-      if (!base) {
-        setPrintFetchStatus('افتح الموقع على نفس الكمبيوتر الشابك فيه Rongta، وشغّل RongtaPrintAgent\\install.ps1 هناك. إذا كروم سأل عن الشبكة المحلية اضغط Allow.');
-        return;
-      }
-      try {
-        const res = await fetch(base + '/print', {
-          method: 'POST',
-          mode: 'cors',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: dataUrl,
-            copies: copies,
-            printer: RONGTA_PRINTER_NAME,
-            widthMm: w,
-            heightMm: h
-          })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error((data && data.message) || ('HTTP ' + res.status));
+          const res = await fetch(urls[i], { method: 'POST', mode: 'cors', cache: 'no-store', headers: headers, body: body });
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 501) { last = 'cloud'; continue; }
+          if (res.ok && data && data.ok) {
+            setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
+            return;
+          }
+          last = (data && data.message) || ('HTTP ' + res.status);
+        } catch (err) {
+          last = (err && err.message) ? String(err.message) : 'Failed to fetch';
         }
-        setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-      } catch (err) {
-        const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
-        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
       }
+      setPrintFetchStatus('Windows ما لقى Rongta على هذا الجهاز. افتح الموقع على الكمبيوتر الشابك فيه الطابعة وشغّل RongtaPrintAgent\\install.ps1 مرة واحدة هناك.');
     }
 
     async function forceHesabateFullImport() {
@@ -16503,6 +16549,33 @@ async def ack_print_job(payload: dict, request: Request) -> dict:
     finally:
         conn.close()
     return {"ok": True}
+
+
+@app.options("/print_rongta")
+def print_rongta_options(request: Request) -> JSONResponse:
+    return JSONResponse(content={}, status_code=204, headers=_print_cors_headers(request.headers.get("origin") or ""))
+
+
+@app.post("/print_rongta")
+async def print_rongta(payload: dict, request: Request) -> JSONResponse:
+    origin = request.headers.get("origin") or ""
+    headers = _print_cors_headers(origin)
+    if os.name != "nt":
+        return JSONResponse(
+            {"ok": False, "code": "not-windows", "message": "print on the PC with Rongta"},
+            status_code=501,
+            headers=headers,
+        )
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400, headers=headers)
+    try:
+        copies = max(1, min(50, int(payload.get("copies") or 1)))
+        width_mm = float(payload.get("widthMm") or 105)
+        height_mm = float(payload.get("heightMm") or 28)
+        _print_png_on_windows(str(payload.get("image") or ""), copies, width_mm, height_mm)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "message": str(exc)[:800]}, status_code=500, headers=headers)
+    return JSONResponse({"ok": True, "copies": copies, "printer": "Rongta RP4xx Series"}, headers=headers)
 
 
 @app.get("/health")
