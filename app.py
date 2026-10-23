@@ -11835,43 +11835,9 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
-      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store' };
-      let base = '';
-      for (let i = 0; i < bases.length; i++) {
-        try {
-          const ping = await fetch(bases[i] + '/ping', fetchOpts);
-          if (ping.ok) { base = bases[i]; break; }
-        } catch (_) {}
-      }
-      if (base) {
-        try {
-          const res = await fetch(base + '/print', {
-            method: 'POST',
-            mode: 'cors',
-            cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              image: dataUrl,
-              copies: copies,
-              printer: RONGTA_PRINTER_NAME,
-              widthMm: w,
-              heightMm: h
-            })
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || !data.ok) {
-            throw new Error((data && data.message) || ('HTTP ' + res.status));
-          }
-          setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
-          return;
-        } catch (err) {
-          /* fall through to shop queue */
-        }
-      }
       try {
         await nlQueuePrintJob(dataUrl, copies, w, h);
-        setPrintFetchStatus('أُرسلت الطباعة لجهاز المكتب · ' + copies + ' ورقة · ستطلع على Rongta خلال ثوانٍ');
+        setPrintFetchStatus('أُرسلت للطابعة في المكتب · ' + copies + ' ورقة · الجهاز الحالي لا يطبع');
       } catch (err) {
         const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
         setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
