@@ -11464,7 +11464,7 @@ def home() -> HTMLResponse:
     }
 
     /* ===== NiceLabel-style engine: one mm model, one bitmap, 1:1 dots ===== */
-    const NL_BC = { maxX: 3, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
+    const NL_BC = { maxX: 2, quiet: [10, 7, 5], hrBandMm: 3.2, barHMaxMm: 12, barHMinMm: 5 };
     function nlDpi() { return PRINT_BARCODE_CFG.dpi || 203; }
     function nlDots(mm) { return Math.round(mm * nlDpi() / 25.4); }
     function nlHasArabic(s) {
@@ -11494,7 +11494,7 @@ def home() -> HTMLResponse:
       if (cur) lines.push(cur);
       return lines;
     }
-    const NL_TEXT = { ss: 3, strokeEm: 0.08, thresh: 230 };
+    const NL_TEXT = { ss: 3, strokeEm: 0, thresh: 180 };
     function nlDrawText(ctx, text, bx, by, bw, bh, o) {
       text = String(text == null ? '' : text);
       if (!text || bw <= 0 || bh <= 0) return;
@@ -11526,10 +11526,6 @@ def home() -> HTMLResponse:
       const lh = best * 1.12;
       let y = (H - lines.length * lh) / 2 + lh / 2;
       lines.forEach((l) => {
-        if (NL_TEXT.strokeEm > 0) {
-          t.lineWidth = Math.max(1, best * NL_TEXT.strokeEm);
-          t.strokeText(l, W / 2, y);
-        }
         t.fillText(l, W / 2, y);
         y += lh;
       });
@@ -11614,15 +11610,14 @@ def home() -> HTMLResponse:
           while (j < bits.length && bits.charAt(j) === '1') j++;
           const x0 = startX + Math.round(i * (dataW / bits.length));
           const x1 = startX + Math.round(j * (dataW / bits.length));
-          let w = Math.max(1, x1 - x0);
-          if (w <= 2) w = w + 1;
+          const w = Math.max(1, x1 - x0);
           if (x0 <= maxEnd) ctx.fillRect(x0, by, Math.min(w, maxEnd - x0 + 1), barH);
           i = j;
         } else i++;
       }
       const k = nlDpi() / 96;
       const hrPx = Number(s && s.bcTextPx) > 0 ? Number(s.bcTextPx) : 9;
-      const hrWeight = (s && s.bcTextBold === false) ? '400' : '700';
+      const hrWeight = '400';
       nlDrawText(ctx, value, bx, by + barH, bw, hrD, {
         maxDot: Math.max(6, hrPx * k), minDot: 5, weight: hrWeight, wrap: false,
         family: '"Cairo", "Tahoma", "Segoe UI", Arial, sans-serif'
@@ -11641,9 +11636,9 @@ def home() -> HTMLResponse:
       const T = (txt, x, y, w, h, maxPx, wrap, weight) => nlDrawText(
         ctx, txt, ox + nlDots(x), oy + nlDots(y), nlDots(w), nlDots(h),
         { maxDot: maxPx * k, minDot: 5 * k, weight: weight, wrap: wrap });
-      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, (s.nameBold === false) ? '400' : '700');
-      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, (s.origBold === false) ? '400' : '600');
-      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, (s.locBold === false) ? '400' : '600');
+      T(sanitizePrintItemName(payload.name || ''), s.nameXmm, s.nameYmm, s.nameWmm, s.nameHmm, s.namePx, true, '400');
+      T(payload.original || '', s.origXmm, s.origYmm, s.origWmm, s.origHmm, s.originalPx, false, '400');
+      T(payload.location || '', s.locXmm, s.locYmm, s.locWmm, s.locHmm, s.locationPx, false, '400');
       const box = clampBarcodeBoxToLabelMm(side, {
         x: Number(s.bcXmm) + (Number(s.bcShiftXmm) || 0),
         y: Number(s.bcYmm) + (Number(s.bcShiftYmm) || 0),
