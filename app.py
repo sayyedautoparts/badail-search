@@ -7054,6 +7054,47 @@ def print_agent_kit_zip() -> Response:
     )
 
 
+def _qz_dir() -> Path:
+    return Path(__file__).resolve().parent / "qz"
+
+
+@app.get("/qz/cert")
+def qz_cert() -> Response:
+    path = _qz_dir() / "digital-certificate.txt"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="QZ certificate missing")
+    return Response(content=path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/qz/trust.bat")
+def qz_trust_bat() -> FileResponse:
+    path = _qz_dir() / "trust.bat"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="trust.bat missing")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename="trust-qz.bat",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/qz/sign")
+async def qz_sign(request: Request) -> Response:
+    to_sign = (await request.body()).decode("utf-8", errors="replace")
+    key_path = _qz_dir() / "private-key.pem"
+    if not key_path.is_file():
+        raise HTTPException(status_code=500, detail="QZ private key missing")
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="cryptography missing: %s" % exc)
+    key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    sig = key.sign(to_sign.encode("utf-8"), padding.PKCS1v15(), hashes.SHA512())
+    return Response(content=base64.b64encode(sig).decode("ascii"), media_type="text/plain")
+
+
 @app.get("/static/qz-tray.js")
 def qz_tray_js() -> FileResponse:
     path = Path(__file__).resolve().parent / "static" / "qz-tray.js"
@@ -11768,8 +11809,15 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('ثبّت QZ Tray واترك الأيقونة شغال في شريط ويندوز، ثم اطبع واضغط Allow.');
-      try { window.open('https://qz.io/download/', '_blank'); } catch (_) {}
+      setPrintFetchStatus('نزّل trust-qz.bat واضغطه مرة واحدة، بعدين سكّر QZ Tray وافتحه. بعد هيك Allow مرة واحدة فقط.');
+      try {
+        const a = document.createElement('a');
+        a.href = '/qz/trust.bat';
+        a.download = 'trust-qz.bat';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (_) {}
     }
     function ensureQzLib() {
       if (typeof qz !== 'undefined' && qz.websocket) return Promise.resolve();
@@ -11784,16 +11832,35 @@ def home() -> HTMLResponse:
         document.head.appendChild(s);
       });
     }
+    async function ensureQzSecurity() {
+      await ensureQzLib();
+      if (window.__qzSecurityReady) return;
+      qz.security.setCertificatePromise(function (resolve, reject) {
+        fetch('/qz/cert', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(resolve).catch(reject);
+      });
+      qz.security.setSignaturePromise(function (toSign) {
+        return function (resolve, reject) {
+          fetch('/qz/sign', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'Content-Type': 'text/plain' },
+            body: String(toSign || '')
+          }).then(function (r) { return r.text(); }).then(resolve).catch(reject);
+        };
+      });
+      try { if (qz.security.setSignatureAlgorithm) qz.security.setSignatureAlgorithm('SHA512'); } catch (_) {}
+      window.__qzSecurityReady = true;
+    }
     async function printDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      await ensureQzLib();
+      await ensureQzSecurity();
       if (typeof qz === 'undefined' || !qz.websocket) {
         throw new Error('مكتبة QZ Tray غير محمّلة — حدّث الصفحة');
       }
       if (!qz.websocket.isActive()) {
-        setPrintFetchStatus('انتظر نافذة QZ Tray واضغط Allow...');
+        setPrintFetchStatus('أول مرة: اضغط Allow في QZ Tray (وبعد الثقة ما رح تتكرر).');
         await qz.websocket.connect();
       }
       let printer = null;
