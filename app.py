@@ -7529,6 +7529,19 @@ def home() -> HTMLResponse:
         padding: 0;
         background: #fff;
       }
+      .print-label-sheet img {
+        display: block !important;
+        width: 105mm !important;
+        height: 28mm !important;
+        margin: 0 !important;
+        page-break-after: always;
+        break-after: page;
+        image-rendering: pixelated;
+      }
+      .print-label-sheet img:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
+      }
       .print-label-row {
         display: flex;
         flex-direction: row;
@@ -8501,10 +8514,11 @@ def home() -> HTMLResponse:
 
         <input id="printQtyInput" type="hidden" value="1" />
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · حامل 105×28 مم · هامش 1 مم · لزقة 50×26 مم · فجوة 3 مم.
+          الطباعة محلية من هذا الجهاز عبر نافذة المتصفح. اختر الطابعة الموصولة به (USB أو محلية). المقاس الموصى به: حامل 105×28 مم · لزقة 50×26 مم · Code128.
         </p>
         <div class="btn-row" style="margin-top:10px;">
-          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
+          <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة من هذا الجهاز</button>
+          <button type="button" class="btn-secondary" onclick="downloadPrintLabelSheet()" style="margin-right:8px;">تحميل الصورة للطباعة</button>
         </div>
         <div id="printFetchStatus" class="muted" style="margin-top:8px;"></div>
       </div>
@@ -11550,9 +11564,7 @@ def home() -> HTMLResponse:
         return;
       }
       const titleCode = (payloadLeft && payloadLeft.barcode) || (payloadRight && payloadRight.barcode) || 'labels';
-      setPrintFetchStatus(
-        `جاهز · ${pages} ورقة · كل ورقة لزقتين معاً · Code128 · «${RONGTA_PRINTER_NAME}» · 203dpi`
-      );
+      setPrintFetchStatus('جاهز · ' + pages + ' ورقة · اختر الطابعة المحلية في نافذة المتصفح');
       try { localStorage.setItem('preferredBarcodePrinter', RONGTA_PRINTER_NAME); } catch (_) {}
       try { savePrintFormState(); } catch (_) {}
       printJobTitleRestore = document.title;
@@ -11572,7 +11584,7 @@ def home() -> HTMLResponse:
           window.print();
         } catch (_) {
           restoreTitle();
-          setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن درايفر Rongta RP4xx Series مثبت.');
+          setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
         }
       }, 50);
     }
@@ -11835,7 +11847,7 @@ def home() -> HTMLResponse:
       if (hidden) hidden.value = qty;
       if (inp) inp.value = qty;
       closePrintQtyPopup();
-      const popup = window.open('about:blank', 'rongtaPrint', 'width=420,height=220');
+      const popup = window.open('', 'labelPrint', 'width=980,height=420');
       printBarcodeLabelsNow(popup);
     }
     async function printBarcodeLabels() {
@@ -11879,8 +11891,77 @@ def home() -> HTMLResponse:
       if (!res.ok) { closeRongtaPopup(popup); setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري الطباعة على «' + RONGTA_PRINTER_NAME + '»...');
-      await nlPrintDirectToRongta(url, pages, popup);
+      fillPrintLabelSheet(url, pages);
+      printSheetInBrowser(url, pages, popup);
+    }
+    function fillPrintLabelSheet(dataUrl, pages) {
+      let sheet = document.getElementById('printLabelSheet');
+      if (!sheet) {
+        sheet = document.createElement('div');
+        sheet.id = 'printLabelSheet';
+        sheet.className = 'print-label-sheet';
+        document.body.appendChild(sheet);
+      }
+      sheet.innerHTML = '';
+      const n = Math.max(1, Number(pages) || 1);
+      for (let i = 0; i < n; i++) {
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.alt = 'labels';
+        img.style.cssText = 'display:block;width:105mm;height:28mm;image-rendering:pixelated;';
+        sheet.appendChild(img);
+      }
+    }
+    function downloadPrintLabelSheet() {
+      const sheet = document.getElementById('printLabelSheet');
+      if (!sheet) { setPrintFetchStatus('لا يوجد ملصق جاهز للتحميل. اضغط طباعة أولاً أو جهّز الصنف.'); return; }
+      const img = sheet.querySelector('img');
+      if (!img || !img.src) { setPrintFetchStatus('لا توجد صورة ملصق للتحميل.'); return; }
+      try {
+        const a = document.createElement('a');
+        a.href = img.src;
+        a.download = 'labels-' + (Date.now()) + '.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setPrintFetchStatus('تم تحميل صورة الملصقات. افتحها من الجهاز واطبعها من أي برنامج.');
+      } catch (e) {
+        setPrintFetchStatus('تعذر التحميل: ' + (e && e.message ? e.message : e));
+      }
+    }
+    function printSheetInBrowser(dataUrl, pages, popup) {
+      const n = Math.max(1, Number(pages) || 1);
+      setPrintFetchStatus('جاهز · ' + n + ' ورقة · اختر الطابعة المحلية في نافذة المتصفح');
+      const imgs = Array.from({ length: n }, function () {
+        return '<img src="' + dataUrl + '" alt="labels">';
+      }).join('');
+      const html = '<!doctype html><html><head><meta charset="utf-8"><title>طباعة</title><style>'
+        + '@page{size:105mm 28mm;margin:0}'
+        + 'html,body{margin:0;padding:0;background:#fff}'
+        + 'img{display:block;width:105mm;height:28mm;image-rendering:pixelated;page-break-after:always;break-after:page}'
+        + 'img:last-child{page-break-after:auto}'
+        + '</style></head><body>' + imgs + '</body></html>';
+      let w = popup;
+      if (!w || w.closed) {
+        try { w = window.open('', 'labelPrint', 'width=980,height=420'); } catch (_) { w = null; }
+      }
+      if (!w) {
+        setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
+        return;
+      }
+      try {
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+        w.focus();
+        setTimeout(function () {
+          try { w.print(); } catch (_) {
+            setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
+          }
+        }, 200);
+      } catch (_) {
+        setPrintFetchStatus('تعذر فتح نافذة الطباعة. تأكد أن الطابعة موصولة بهذا الجهاز وأن الدرايفر مثبت.');
+      }
     }
     async function nlQueuePrintJob(dataUrl, copies, w, h) {
       const res = await fetch('/print_jobs', {
