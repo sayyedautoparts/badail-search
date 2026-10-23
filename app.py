@@ -11756,30 +11756,31 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('ثبّت QZ Tray على هذا الجهاز واتركه شغال، ثم اضغط Allow عند أول طباعة.');
+      setPrintFetchStatus('ثبّت QZ Tray واترك الأيقونة شغال في شريط ويندوز، ثم اطبع واضغط Allow.');
       try { window.open('https://qz.io/download/', '_blank'); } catch (_) {}
-    }
-    function qzConnectWithTimeout(ms) {
-      return Promise.race([
-        qz.websocket.connect(),
-        new Promise(function (_, rej) {
-          setTimeout(function () { rej(new Error('QZ Tray not running')); }, Math.max(500, Number(ms) || 2000));
-        })
-      ]);
     }
     async function printDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
       if (typeof qz === 'undefined' || !qz.websocket) {
-        throw new Error('مكتبة QZ Tray غير محمّلة');
+        throw new Error('مكتبة QZ Tray غير محمّلة — حدّث الصفحة');
       }
       if (!qz.websocket.isActive()) {
-        await qzConnectWithTimeout(2000);
+        setPrintFetchStatus('انتظر نافذة QZ Tray واضغط Allow...');
+        await qz.websocket.connect();
       }
-      const printer = await qz.printers.find('Rongta');
+      let printer = null;
+      try { printer = await qz.printers.find('Rongta'); } catch (_) { printer = null; }
       if (!printer) {
-        throw new Error('لم يتم العثور على طابعة Rongta على هذا الجهاز');
+        const all = await qz.printers.find();
+        const list = Array.isArray(all) ? all : [];
+        for (let i = 0; i < list.length; i++) {
+          if (String(list[i]).toLowerCase().indexOf('rongta') >= 0) { printer = list[i]; break; }
+        }
+      }
+      if (!printer) {
+        throw new Error('ويندوز ما لقى طابعة Rongta على هذا الجهاز');
       }
       const config = qz.configs.create(printer, {
         copies: copies,
@@ -11801,8 +11802,6 @@ def home() -> HTMLResponse:
       }]);
     }
     async function printBarcodeLabels() {
-      const qzOn = (typeof qz !== 'undefined' && qz.websocket && qz.websocket.isActive());
-      const popup = qzOn ? null : window.open('', 'labelPrint', 'width=980,height=420');
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11816,33 +11815,29 @@ def home() -> HTMLResponse:
       let pr = buildPrintPayloadForSide('right');
       const lOk = isPrintPayloadReady(pl), rOk = isPrintPayloadReady(pr);
       if (!lOk && !rOk) {
-        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
         setPrintFetchStatus('جهّز اليسار أو اليمين على الأقل (باركود صالح) ثم اطبع.');
         return;
       }
       if (lOk && !rOk) pr = Object.assign({}, pl);
       else if (rOk && !lOk) pl = Object.assign({}, pr);
       try { await ensureJsBarcodeLib(); } catch (_) {
-        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
         setPrintFetchStatus('تعذر تحميل مكتبة الباركود.');
         return;
       }
       const res = nlRenderSheet(pl, pr);
       if (!res.ok) {
-        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
         setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | '));
         return;
       }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري الطباعة على Rongta...');
+      setPrintFetchStatus('جاري الطباعة المباشرة على Rongta...');
       try {
         await printDirectToRongta(url, pages);
-        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
-        setPrintFetchStatus('تمت الطباعة مباشرة على Rongta عبر QZ Tray');
+        setPrintFetchStatus('تمت الطباعة مباشرة على Rongta بدون نافذة كروم');
       } catch (err) {
-        setPrintFetchStatus('QZ Tray: ' + ((err && err.message) || err) + ' — فتح نافذة الطباعة على هذا الجهاز');
-        nlPrintViaBrowser(url, pages, popup);
+        const msg = (err && err.message) ? String(err.message) : String(err);
+        setPrintFetchStatus('ما صارت طباعة مباشرة. شغّل QZ Tray على هذا الجهاز واضغط Allow. التفاصيل: ' + msg);
       }
     }
     function nlPrintViaBrowser(dataUrl, pages, popup) {
