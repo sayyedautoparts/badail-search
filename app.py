@@ -8304,6 +8304,7 @@ def home() -> HTMLResponse:
     .pdg-zone.is-active { background: rgba(45,95,255,.08); }
     .pdg-zone-inner { display: none; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/qz-tray/dist/qz-tray.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -8455,7 +8456,7 @@ def home() -> HTMLResponse:
           <p id="printQtyHint" class="muted" style="margin:4px 0 0;font-size:12px;">كل ورقة تطبع اللزقتين معاً (يسار + يمين)</p>
         </div>
         <p class="muted" style="margin:6px 0 0;font-size:12px;">
-          الطابعة: <strong>Rongta RP4xx Series</strong> · Code128 · حامل 105×28 مم · هامش 1 مم · لزقة 50×26 مم · فجوة 3 مم.
+          الطباعة المباشرة عبر QZ Tray على Rongta · حامل 105×28 مم · لزقة 50×26 مم · Code128.
         </p>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-success" onclick="printBarcodeLabels()">طباعة على Rongta</button>
@@ -11755,21 +11756,53 @@ def home() -> HTMLResponse:
 
     /* print */
     async function setupLocalPrintAgent() {
-      setPrintFetchStatus('جاري تنزيل ملف التثبيت...');
-      try {
-        const a = document.createElement('a');
-        a.href = '/print_agent/kit.zip';
-        a.download = 'RongtaPrintAgent.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setPrintFetchStatus('تم تنزيل RongtaPrintAgent.zip · فك الضغط كاملاً · اضغط مرتين على install.bat');
-      } catch (e) {
-        setPrintFetchStatus('تعذر تنزيل ملف التثبيت: ' + ((e && e.message) || e));
+      setPrintFetchStatus('ثبّت QZ Tray على هذا الجهاز واتركه شغال، ثم اضغط Allow عند أول طباعة.');
+      try { window.open('https://qz.io/download/', '_blank'); } catch (_) {}
+    }
+    function qzConnectWithTimeout(ms) {
+      return Promise.race([
+        qz.websocket.connect(),
+        new Promise(function (_, rej) {
+          setTimeout(function () { rej(new Error('QZ Tray not running')); }, Math.max(500, Number(ms) || 2000));
+        })
+      ]);
+    }
+    async function printDirectToRongta(dataUrl, pages) {
+      const copies = Math.max(1, Number(pages) || 1);
+      const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
+      const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
+      if (typeof qz === 'undefined' || !qz.websocket) {
+        throw new Error('مكتبة QZ Tray غير محمّلة');
       }
+      if (!qz.websocket.isActive()) {
+        await qzConnectWithTimeout(2000);
+      }
+      const printer = await qz.printers.find('Rongta');
+      if (!printer) {
+        throw new Error('لم يتم العثور على طابعة Rongta على هذا الجهاز');
+      }
+      const config = qz.configs.create(printer, {
+        copies: copies,
+        size: { width: w, height: h },
+        units: 'mm',
+        colorType: 'blackwhite',
+        interpolation: 'nearest-neighbor',
+        scaleContent: false,
+        rasterize: true,
+        margins: 0
+      });
+      let raw = String(dataUrl || '');
+      if (raw.indexOf(',') >= 0) raw = raw.split(',')[1];
+      await qz.print(config, [{
+        type: 'pixel',
+        format: 'png',
+        flavor: 'base64',
+        data: raw
+      }]);
     }
     async function printBarcodeLabels() {
-      const popup = window.open('', 'labelPrint', 'width=980,height=420');
+      const qzOn = (typeof qz !== 'undefined' && qz.websocket && qz.websocket.isActive());
+      const popup = qzOn ? null : window.open('', 'labelPrint', 'width=980,height=420');
       const { pages } = updatePrintQtyHint();
       const leftQ = ((document.getElementById('printQueryLeft') || {}).value || '').trim();
       const rightQ = ((document.getElementById('printQueryRight') || {}).value || '').trim();
@@ -11802,8 +11835,15 @@ def home() -> HTMLResponse:
       }
       const url = res.canvas.toDataURL('image/png');
       try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('نافذة الطباعة جاهزة — اختر الطابعة على هذا الجهاز ثم اطبع.');
-      nlPrintViaBrowser(url, pages, popup);
+      setPrintFetchStatus('جاري الطباعة على Rongta...');
+      try {
+        await printDirectToRongta(url, pages);
+        try { if (popup && !popup.closed) popup.close(); } catch (_) {}
+        setPrintFetchStatus('تمت الطباعة مباشرة على Rongta عبر QZ Tray');
+      } catch (err) {
+        setPrintFetchStatus('QZ Tray: ' + ((err && err.message) || err) + ' — فتح نافذة الطباعة على هذا الجهاز');
+        nlPrintViaBrowser(url, pages, popup);
+      }
     }
     function nlPrintViaBrowser(dataUrl, pages, popup) {
       const copies = Math.max(1, Number(pages) || 1);
