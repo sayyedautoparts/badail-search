@@ -7021,6 +7021,7 @@ def apple_touch_icon_png() -> FileResponse:
 
 
 PRINT_AGENT_KIT_FILES = (
+    "install.bat",
     "install_rongta_print_agent.ps1",
     "start_rongta_print_agent.ps1",
     "rongta_local_print.py",
@@ -11762,7 +11763,7 @@ def home() -> HTMLResponse:
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setPrintFetchStatus('تم تنزيل RongtaPrintAgent.zip · فك الضغط · Run with PowerShell على install_rongta_print_agent.ps1 · يلزم Python ودرايفر Rongta RP4xx Series');
+        setPrintFetchStatus('تم تنزيل RongtaPrintAgent.zip · فك الضغط كاملاً · اضغط مرتين على install.bat');
       } catch (e) {
         setPrintFetchStatus('تعذر تنزيل ملف التثبيت: ' + ((e && e.message) || e));
       }
