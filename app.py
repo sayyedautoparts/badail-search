@@ -11822,7 +11822,7 @@ def home() -> HTMLResponse:
       if (raw.indexOf(',') >= 0) raw = raw.split(',')[1];
       await qz.print(config, [{
         type: 'pixel',
-        format: 'png',
+        format: 'image',
         flavor: 'base64',
         data: raw
       }]);
