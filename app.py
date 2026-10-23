@@ -11891,6 +11891,17 @@ def home() -> HTMLResponse:
       }
       return data;
     }
+    async function nlLoopbackFetch(url, opts) {
+      const o = Object.assign({ mode: 'cors', cache: 'no-store' }, opts || {});
+      if (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url)) {
+        o.targetAddressSpace = 'loopback';
+      }
+      try {
+        return await fetch(new Request(url, o));
+      } catch (_) {
+        return await fetch(url, o);
+      }
+    }
     async function nlPrintDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
@@ -11899,23 +11910,28 @@ def home() -> HTMLResponse:
         image: dataUrl, copies: copies, printer: RONGTA_PRINTER_NAME, widthMm: w, heightMm: h
       });
       const headers = { 'Content-Type': 'application/json' };
-      const urls = ['/print_rongta', 'http://127.0.0.1:8765/print_rongta', 'http://127.0.0.1:17891/print'];
-      let last = '';
+      try {
+        if (navigator.permissions && navigator.permissions.query) {
+          await navigator.permissions.query({ name: 'loopback-network' }).catch(() => null);
+          await navigator.permissions.query({ name: 'local-network-access' }).catch(() => null);
+        }
+      } catch (_) {}
+      const urls = ['http://127.0.0.1:17891/print', 'http://127.0.0.1:8765/print_rongta'];
+      if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+        urls.unshift('/print_rongta');
+      }
       for (let i = 0; i < urls.length; i++) {
         try {
-          const res = await fetch(urls[i], { method: 'POST', mode: 'cors', cache: 'no-store', headers: headers, body: body });
+          const res = await nlLoopbackFetch(urls[i], { method: 'POST', headers: headers, body: body });
           const data = await res.json().catch(() => ({}));
-          if (res.status === 501) { last = 'cloud'; continue; }
+          if (res.status === 501) continue;
           if (res.ok && data && data.ok) {
             setPrintFetchStatus('تمت الطباعة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة');
             return;
           }
-          last = (data && data.message) || ('HTTP ' + res.status);
-        } catch (err) {
-          last = (err && err.message) ? String(err.message) : 'Failed to fetch';
-        }
+        } catch (_) {}
       }
-      setPrintFetchStatus('Windows ما لقى Rongta على هذا الجهاز. افتح الموقع على الكمبيوتر الشابك فيه الطابعة وشغّل RongtaPrintAgent\\install.ps1 مرة واحدة هناك.');
+      setPrintFetchStatus('كروم منع الاتصال بالطابعة المحلية. اضغط Allow إذا ظهر طلب الشبكة المحلية، أو افتح http://127.0.0.1:8765 واطبع من هناك.');
     }
 
     async function forceHesabateFullImport() {
@@ -15001,7 +15017,10 @@ def home() -> HTMLResponse:
     ).replace("{APP_VERSION}", APP_VERSION)
     return HTMLResponse(
         content=html,
-        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=86400"},
+        headers={
+            "Cache-Control": "public, max-age=60, stale-while-revalidate=86400",
+            "Permissions-Policy": "local-network-access=*, loopback-network=*",
+        },
     )
 
 

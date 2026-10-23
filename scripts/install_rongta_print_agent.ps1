@@ -1,15 +1,26 @@
 #Requires -Version 5.1
-# Run only on the PC with the Rongta USB printer.
 $ErrorActionPreference = "Stop"
-$Worker = Join-Path $PSScriptRoot "rongta_print_worker.ps1"
+$WorkerPs1 = Join-Path $PSScriptRoot "rongta_print_worker.ps1"
+$Py = Join-Path $PSScriptRoot "rongta_local_print.py"
 $PrintPs1 = Join-Path $PSScriptRoot "print_rongta_image.ps1"
 $TaskName = "BadailRongtaPrintAgent"
-if (-not (Test-Path -LiteralPath $Worker)) { throw "Missing $Worker" }
 if (-not (Test-Path -LiteralPath $PrintPs1)) { throw "Missing $PrintPs1" }
 
 $prn = Get-WmiObject Win32_Printer | Where-Object { $_.Name -eq "Rongta RP4xx Series" }
-if (-not $prn) {
-  throw "Rongta RP4xx Series is not installed on this PC."
+if (-not $prn) { throw "Rongta RP4xx Series is not installed on this PC." }
+
+function Get-BadailPython {
+  foreach ($p in @(
+      (Join-Path $env:LOCALAPPDATA "Python\pythoncore-3.14-64\python.exe"),
+      (Join-Path $env:LOCALAPPDATA "Python\pythoncore-3.13-64\python.exe"),
+      (Join-Path $env:LOCALAPPDATA "Python\pythoncore-3.12-64\python.exe"),
+      (Join-Path $env:LOCALAPPDATA "Python\bin\python.exe")
+    )) {
+    if (Test-Path -LiteralPath $p) { return $p }
+  }
+  $c = Get-Command python -ErrorAction SilentlyContinue
+  if ($c -and $c.Source -and ($c.Source -notmatch "WindowsApps")) { return $c.Source }
+  return $null
 }
 
 Get-CimInstance Win32_Process | Where-Object {
@@ -20,16 +31,21 @@ Get-CimInstance Win32_Process | Where-Object {
   )
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-$action = New-ScheduledTaskAction `
-  -Execute "powershell.exe" `
-  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Worker`"" `
-  -WorkingDirectory $PSScriptRoot
+$python = Get-BadailPython
+if ($python -and (Test-Path -LiteralPath $Py)) {
+  $exe = $python
+  $arg = "-u rongta_local_print.py"
+  $wd = $PSScriptRoot
+} else {
+  if (-not (Test-Path -LiteralPath $WorkerPs1)) { throw "Missing $WorkerPs1" }
+  $exe = "powershell.exe"
+  $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$WorkerPs1`""
+  $wd = $PSScriptRoot
+}
+
+$action = New-ScheduledTaskAction -Execute $exe -Argument $arg -WorkingDirectory $wd
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet `
-  -AllowStartIfOnBatteries `
-  -DontStopIfGoingOnBatteries `
-  -StartWhenAvailable `
-  -ExecutionTimeLimit (New-TimeSpan -Days 3650)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 3650)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
@@ -43,6 +59,4 @@ foreach ($i in 1..20) {
   } catch {}
 }
 if (-not $ok) { throw "Failed to start local print server on 127.0.0.1:17891" }
-Write-Host "Rongta on this PC will print directly ($env:COMPUTERNAME)."
-Write-Host "Open the shop website ON THIS computer, then press Print."
-Write-Host "Starts automatically at logon ($TaskName)"
+Write-Host "Rongta print is ready on $env:COMPUTERNAME"
