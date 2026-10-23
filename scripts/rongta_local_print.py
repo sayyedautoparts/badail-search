@@ -26,22 +26,32 @@ PRINT_PS1 = ROOT / "print_rongta_image.ps1"
 
 
 def cors_origin(origin: str) -> str:
+    if not origin:
+        return "*"
     if origin in ALLOWED_ORIGINS:
         return origin
     if origin.startswith("https://") and "vercel.app" in origin and "badail-search" in origin:
         return origin
-    return ALLOWED_ORIGINS[0]
+    if origin.startswith(("http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")):
+        return origin
+    return origin
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
     def _cors(self, origin: str) -> None:
-        self.send_header("Access-Control-Allow-Origin", cors_origin(origin))
+        self.send_header("Access-Control-Allow-Origin", cors_origin(origin) or "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Access-Control-Request-Private-Network, Access-Control-Request-Local-Network",
+        )
         self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Local-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Vary", "Origin")
 
@@ -49,6 +59,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin") or ""
         self.send_response(204)
         self._cors(origin)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -132,9 +143,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _log(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
+
+
 def main() -> None:
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("Rongta local print agent on http://%s:%s" % (HOST, PORT), flush=True)
+    _log("Rongta local print agent on http://%s:%s" % (HOST, PORT))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

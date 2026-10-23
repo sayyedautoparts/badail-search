@@ -11741,12 +11741,30 @@ def home() -> HTMLResponse:
       const copies = Math.max(1, Number(pages) || 1);
       const w = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetW) || 105;
       const h = (PRINT_SHEET_MM && PRINT_SHEET_MM.sheetH) || 28;
-      const base = 'http://127.0.0.1:17891';
+      const bases = ['http://127.0.0.1:17891', 'http://localhost:17891'];
+      const fetchOpts = { method: 'GET', mode: 'cors', cache: 'no-store' };
+      let base = '';
+      let lastErr = null;
+      for (let i = 0; i < bases.length; i++) {
+        try {
+          const ping = await fetch(bases[i] + '/ping', fetchOpts);
+          if (ping.ok) { base = bases[i]; break; }
+          lastErr = new Error('ping HTTP ' + ping.status);
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!base) {
+        setPrintFetchStatus(
+          'خدمة الطباعة المحلية غير شغّالة على هذا الجهاز. إذا ظهر في كروم طلب السماح بالشبكة المحلية اضغط Allow ثم أعد الطباعة. أو شغّل scripts/install_rongta_print_agent.ps1'
+        );
+        return;
+      }
       try {
-        const ping = await fetch(base + '/ping', { method: 'GET', cache: 'no-store' });
-        if (!ping.ok) throw new Error('agent down');
         const res = await fetch(base + '/print', {
           method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             image: dataUrl,
@@ -11762,9 +11780,8 @@ def home() -> HTMLResponse:
         }
         setPrintFetchStatus('تمت الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» · ' + copies + ' ورقة · بدون نافذة كروم');
       } catch (err) {
-        setPrintFetchStatus(
-          'خدمة الطباعة المحلية غير شغّالة على هذا الجهاز. شغّل scripts/install_rongta_print_agent.ps1 ثم أعد المحاولة.'
-        );
+        const msg = (err && err.message) ? String(err.message) : 'فشل الطباعة';
+        setPrintFetchStatus('فشل إرسال الملصق للطابعة: ' + msg);
       }
     }
 
