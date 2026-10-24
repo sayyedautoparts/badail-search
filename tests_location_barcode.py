@@ -136,6 +136,35 @@ def main() -> None:
         "exact helper accepts full barcode token",
     )
 
+    # لاحقة بعد مسافات تنسيق: لا تطابق صنفاً شقيقاً بنفس الجسم (1429 IF29 ≠ 1431 IF31)
+    q1429 = "58101P2A00        IF29"
+    keys1429 = m.barcode_search_keys(q1429)
+    _eq("58101P2A00IF29" in keys1429, True, "full compact in query keys")
+    _eq("58101P2A00" in keys1429, False, "prefix must not be a query key when suffix is present")
+    nb1429 = m.location_row_normalized_barcode_value(q1429, "")
+    nb1431 = m.location_row_normalized_barcode_value("58101P2A00        IF31", "")
+    _eq(
+        m._location_row_matches_barcode_keys_exact(
+            {"barcode": q1429, "normalized_barcode": nb1429},
+            set(keys1429),
+        ),
+        True,
+        "IF29 query matches IF29 row",
+    )
+    _eq(
+        m._location_row_matches_barcode_keys_exact(
+            {"barcode": "58101P2A00        IF31", "normalized_barcode": nb1431},
+            set(keys1429),
+        ),
+        False,
+        "IF29 query must not match IF31 sibling",
+    )
+    _eq(
+        "58101P2A00" in m.barcode_search_keys("58101P2A00"),
+        True,
+        "prefix-only query still searches the body",
+    )
+
     print("tests_location_barcode: OK (all assertions passed)")
 
 

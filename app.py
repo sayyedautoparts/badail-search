@@ -2132,6 +2132,21 @@ def _barcode_spaced_first_segment_key(s: str) -> str:
     return fk if fk and len(fk) >= 6 else ""
 
 
+def _barcode_query_first_segment_key(s: str, compact: str) -> str:
+    """
+    جزء أول للبحث فقط إن كان الاستعلام هو البادئة وحدها.
+    إن وُجدت لاحقة (58101P2A00        IF29 → 58101P2A00IF29) لا نبحث بـ 58101P2A00
+    حتى لا يظهر صنف شقيق بلاحقة أخرى (IF31).
+    """
+    fk = _barcode_spaced_first_segment_key(s)
+    if not fk:
+        return ""
+    c = str(compact or "").upper()
+    if c and len(c) > len(fk) and c.startswith(fk):
+        return ""
+    return fk
+
+
 def barcode_search_keys_exact(raw: str) -> list[str]:
     """
     مفاتيح تطابق تام — بدون حذف أصفار بادئة.
@@ -2145,7 +2160,7 @@ def barcode_search_keys_exact(raw: str) -> list[str]:
     if not alnum:
         return []
     out: list[str] = [alnum.upper()]
-    fk = _barcode_spaced_first_segment_key(s)
+    fk = _barcode_query_first_segment_key(s, out[0])
     if fk and fk not in out:
         out.append(fk)
     return out
@@ -2173,7 +2188,7 @@ def barcode_search_keys(raw: str) -> list[str]:
                 out.append(k)
     else:
         out.append(up)
-        fk = _barcode_spaced_first_segment_key(s)
+        fk = _barcode_query_first_segment_key(s, up)
         if fk and fk not in out:
             out.append(fk)
     return out[:LOCATION_BARCODE_SEARCH_KEYS_MAX]
@@ -2447,11 +2462,24 @@ def _search_locations_sql_only(
         ).fetchall()
         # تحقق نهائي: رفض أي تطابق فرعي بالخطأ
         key_set = set(keys)
+        primary = str(canonical_barcode or (keys[0] if keys else "")).upper()
         exact_rows: list[Any] = []
         for row in rows:
             rd = sql_row_to_dict(row)
             if _location_row_matches_barcode_keys_exact(rd, key_set, exact=barcode_exact):
                 exact_rows.append(row)
+
+        def _barcode_row_rank(row: Any) -> tuple[int, int]:
+            rd = sql_row_to_dict(row)
+            full = normalize_barcode_lookup_key(str(rd.get("barcode") or ""))
+            if primary and full == primary:
+                return (0, -int(rd.get("id") or 0))
+            nb = " " + str(rd.get("normalized_barcode") or "").strip() + " "
+            if primary and f" {primary} " in nb:
+                return (1, -int(rd.get("id") or 0))
+            return (2, -int(rd.get("id") or 0))
+
+        exact_rows.sort(key=_barcode_row_rank)
         rows = exact_rows
     else:
         if not norm_tokens:
@@ -9994,8 +10022,16 @@ def home() -> HTMLResponse:
       } catch (_) {}
       return true;
     }
-    function rankLocationRowsForPrint(rawRows) {
+    function rankLocationRowsForPrint(rawRows, rawBc) {
+      const primary = printBarcodeExactNeedle(rawBc || '');
       const ranked = (Array.isArray(rawRows) ? rawRows : []).slice().sort((a, b) => {
+        if (primary) {
+          const aFull = printBarcodeExactNeedle(a && a.barcode);
+          const bFull = printBarcodeExactNeedle(b && b.barcode);
+          const aHit = aFull === primary ? 0 : 1;
+          const bHit = bFull === primary ? 0 : 1;
+          if (aHit !== bHit) return aHit - bHit;
+        }
         const aApi = String(a.source_file || '') === 'حساباتي_API' ? 0 : 1;
         const bApi = String(b.source_file || '') === 'حساباتي_API' ? 0 : 1;
         if (aApi !== bApi) return aApi - bApi;
@@ -10035,7 +10071,7 @@ def home() -> HTMLResponse:
       const p = { q_barcode: barcode, limit: '40' };
       let rows = await searchLocationsLocal(p);
       rows = filterRowsExactPrintBarcode(rows, barcode);
-      return rankLocationRowsForPrint(rows);
+      return rankLocationRowsForPrint(rows, barcode);
     }
     async function resolvePrintItemFromLocal(side, showEmptyMsg) {
       const s = printSideKey(side);
@@ -10165,7 +10201,7 @@ def home() -> HTMLResponse:
         }
         applyPrintLookupRows(
           s,
-          rankLocationRowsForPrint(apiRows),
+          rankLocationRowsForPrint(apiRows, barcode),
           `${live.message || ('تم · باركود ' + needle)} | ${timingLine}`,
           true
         );
@@ -11472,7 +11508,7 @@ def home() -> HTMLResponse:
     }
 
     /* ===== NiceLabel-style engine: one mm model, one bitmap, 1:1 dots ===== */
-    const NL_BC = { nativeModPrinter: 2, quiet: 10, hrBandMm: 3.2, barHNativeMm: 10.5 };
+    const NL_BC = { nativeModPrinter: 2, quiet: 10, hrBandMm: 3.4, barHNativeMm: 9.0 };
     function nlDpi() { return 406; }
     function nlDots(mm) { return Math.round(mm * nlDpi() / 25.4); }
     function nlHasArabic(s) {
@@ -11597,14 +11633,21 @@ def home() -> HTMLResponse:
       const nativeW = nMods * nativeMod;
       const nativeBarH = nlDots(NL_BC.barHNativeMm);
       const nativeHr = nlDots(NL_BC.hrBandMm);
-      const nativeH = nativeBarH + nativeHr;
-      const fit = Math.min(1, bw / Math.max(1, nativeW), bh / Math.max(1, nativeH));
-      const mod = nativeMod * fit;
-      const barH = Math.max(1, Math.round(nativeBarH * fit));
-      const hrD = Math.max(1, Math.round(nativeHr * fit));
-      const drawW = nMods * mod;
-      const left = bx + (fit >= 0.999 ? Math.max(0, (bw - drawW) / 2) : 0);
-      const xAt = (modIndex) => Math.round(left + modIndex * mod);
+      const nLetters = (drawVal.match(/[A-Za-z0-9]/g) || []).length;
+      let destW = nativeW;
+      if (nLetters >= 23) destW = Math.min(nativeW, Math.floor(bw * 0.92));
+      else if (nLetters >= 14) destW = Math.min(nativeW, bw);
+      if (destW > bw) destW = bw;
+      if (destW < 8) destW = Math.min(bw, nativeW);
+      const fit = destW / Math.max(1, nativeW);
+      const bottomPad = nlDots(0.5);
+      const maxH = Math.max(2, bh - bottomPad);
+      let hrD = Math.max(1, nativeHr);
+      let barH = Math.max(1, nativeBarH);
+      if (barH + hrD > maxH) barH = Math.max(1, maxH - hrD);
+      const drawW = destW;
+      const left = bx + Math.max(0, Math.floor((bw - drawW) / 2));
+      const xAt = (modIndex) => left + Math.round(modIndex * drawW / nMods);
       ctx.fillStyle = '#000000';
       let i = 0;
       while (i < bits.length) {
@@ -11618,11 +11661,12 @@ def home() -> HTMLResponse:
         } else i++;
       }
       const k = nlDpi() / 96;
-      const hrPx = 13.33 * fit;
+      const hrPx = nLetters >= 23 ? 12.5 : 13.33;
       nlDrawText(ctx, drawVal, xAt(0), by + barH, Math.max(8, Math.round(drawW)), hrD, {
         maxDot: Math.max(5, hrPx * k), minDot: 4, weight: '400', wrap: false,
         family: 'Arial, sans-serif'
       });
+      const mod = nMods ? (drawW / nMods) : nativeMod;
       return { ok: true, x: mod, fitted: fit < 0.999, msg: '' };
     }
     function nlDrawLabel(ctx, ox, oy, payload, side) {
@@ -11685,8 +11729,9 @@ def home() -> HTMLResponse:
           + 'mm;image-rendering:pixelated;';
         host.innerHTML = '';
         host.appendChild(img);
-        setPrintFetchStatus(r.info.ok ? (r.info.msg || ('Code128 X=' + r.info.x + ' نقطة · جاهز')) : ('تحذير: ' + r.info.msg), s);
-      }).catch(() => {});
+        const info = r.info || {};
+        setPrintFetchStatus(info.ok ? (info.msg || ('Code128 X=' + info.x + ' نقطة · جاهز')) : ('تحذير: ' + (info.msg || '')), s);
+      }).catch(function () {});
     }
 
     /* designer: same bitmap as the label background, zones are just drag handles */
@@ -11697,11 +11742,13 @@ def home() -> HTMLResponse:
         return;
       }
       const side = printSideKey(labelEl.getAttribute('data-side') || 'left');
-      const r = nlRenderSide(sample, side);
-      labelEl.style.backgroundImage = 'url(' + r.canvas.toDataURL('image/png') + ')';
-      labelEl.style.backgroundSize = '100% 100%';
-      labelEl.style.backgroundRepeat = 'no-repeat';
-      labelEl.style.imageRendering = 'pixelated';
+      try {
+        const r = nlRenderSide(sample, side);
+        labelEl.style.backgroundImage = 'url(' + r.canvas.toDataURL('image/png') + ')';
+        labelEl.style.backgroundSize = '100% 100%';
+        labelEl.style.backgroundRepeat = 'no-repeat';
+        labelEl.style.imageRendering = 'pixelated';
+      } catch (_) {}
     }
 
     /* print */
@@ -11722,12 +11769,16 @@ def home() -> HTMLResponse:
       if (lOk && !rOk) pr = Object.assign({}, pl);
       else if (rOk && !lOk) pl = Object.assign({}, pr);
       try { await ensureJsBarcodeLib(); } catch (_) { setPrintFetchStatus('تعذر تحميل مكتبة الباركود.'); return; }
-      const res = nlRenderSheet(pl, pr);
-      if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
-      const url = res.canvas.toDataURL('image/png');
-      try { savePrintFormState(); } catch (_) {}
-      setPrintFetchStatus('جاري الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» بدون كروم...');
-      await nlPrintDirectToRongta(url, pages);
+      try {
+        const res = nlRenderSheet(pl, pr);
+        if (!res.ok) { setPrintFetchStatus('توقفت الطباعة: ' + res.warns.join(' | ')); return; }
+        const url = res.canvas.toDataURL('image/png');
+        try { savePrintFormState(); } catch (_) {}
+        setPrintFetchStatus('جاري الطباعة مباشرة على «' + RONGTA_PRINTER_NAME + '» بدون كروم...');
+        await nlPrintDirectToRongta(url, pages);
+      } catch (e) {
+        setPrintFetchStatus((e && e.message) ? String(e.message) : 'تعذر تجهيز الطباعة.');
+      }
     }
     async function nlPrintDirectToRongta(dataUrl, pages) {
       const copies = Math.max(1, Number(pages) || 1);
@@ -11967,11 +12018,12 @@ def home() -> HTMLResponse:
         [full, stripped].forEach((k) => { if (k && !out.includes(k)) out.push(k); });
       } else {
         out.push(up);
-        // باركود بمسافات تنسيق: الجزء الأول أيضاً (223112U001 من 223112U001        HI)
+        // جزء أول فقط إن كان الاستعلام بدون لاحقة (مو 58101P2A00        IF29)
         if (/\s/.test(s)) {
           const first = s.split(/[\s,/|;\\+]+/).map((p) => p.trim()).filter(Boolean)[0] || '';
           const fk = String(first).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-          if (fk && fk.length >= 6 && !out.includes(fk)) out.push(fk);
+          const hasSuffix = fk && up.length > fk.length && up.indexOf(fk) === 0;
+          if (fk && fk.length >= 6 && !out.includes(fk) && !hasSuffix) out.push(fk);
         }
       }
       return out.slice(0, LOCATION_BARCODE_SEARCH_KEYS_MAX_JS);
